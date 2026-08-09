@@ -2041,7 +2041,11 @@ def _render_report(result: dict[str, Any], candidates: list[dict[str, Any]]) -> 
 
 
 def run_component_tournament(
-    *, simulations: int = 25_000, seed: int = 20260802, force_goal_model: bool = False
+    *,
+    simulations: int = 25_000,
+    seed: int = 20260802,
+    force_goal_model: bool = False,
+    report_path: Path = REPORT,
 ) -> dict[str, Any]:
     if simulations < 1_000:
         raise ValueError("Component tournament requires at least 1,000 simulations")
@@ -2742,5 +2746,6 @@ def run_component_tournament(
     RESULTS_JSON.write_text(
         json.dumps(_jsonable(result), indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    REPORT.write_text(_render_report(result, candidates), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_render_report(result, candidates), encoding="utf-8")
     return result

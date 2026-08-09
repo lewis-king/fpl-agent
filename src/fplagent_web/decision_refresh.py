@@ -25,6 +25,19 @@ DEFAULT_REFRESH_STATE = ROOT / "data" / "web" / "state" / "workspace-refresh.jso
 RefreshMode = Literal["gw1", "weekly"]
 RefreshReason = Literal["app_open", "manual", "scheduled", "material_change"]
 PipelineRunner = Callable[..., Mapping[str, Any]]
+STAGE_LABELS = {
+    "initial_squad": "solving the legal initial squad",
+    "residual_tournament": "testing the residual squad field",
+    "component_selection": "selecting the component policy",
+    "component_candidates": "generating component-native challengers",
+    "component_holdout": "running the component holdout",
+    "robust_search": "searching globally robust squads",
+    "horizon_audit": "auditing the eight-week horizon",
+    "synthesis": "synthesising the decision families",
+    "preseason_role_scenario": "stress-testing preseason roles",
+    "preseason_role_threshold": "measuring role-risk thresholds",
+    "availability_watch": "checking final availability evidence",
+}
 
 
 class WorkspaceRefreshCoordinator:
@@ -99,8 +112,8 @@ class WorkspaceRefreshCoordinator:
                 manager_entry_id=manager_entry_id,
                 event=event,
                 message=(
-                    "Refreshing official evidence and checking whether the current decision can "
-                    "be reused."
+                    "Checking official FPL changes and validating lineup evidence before "
+                    "simulation."
                 ),
             )
             self._active_run_id = run_id
@@ -143,6 +156,8 @@ class WorkspaceRefreshCoordinator:
                 )
                 self._write_state(interrupted)
                 return interrupted
+            if state.status == "running" and self._active_run_id == state.run_id:
+                return self._with_pipeline_progress(state)
             return state
 
     def _execute(self, state: WorkspaceRefreshView) -> None:
@@ -193,6 +208,12 @@ class WorkspaceRefreshCoordinator:
                     "receipt_path": str(receipt_path) if receipt_sha256 else None,
                     "receipt_sha256": receipt_sha256,
                     "completed_stages": stages,
+                    "completed_stage_count": len(stages),
+                    "total_stages": len(stages) or None,
+                    "progress_percent": 100 if raw_status == "published" else None,
+                    "failure_code": (
+                        str(result["failure_code"]) if result.get("failure_code") else None
+                    ),
                     "message": str(
                         result.get("message")
                         or "The decision refresh ended without a publication message."
@@ -200,14 +221,25 @@ class WorkspaceRefreshCoordinator:
                 }
             )
         except Exception as exc:  # noqa: BLE001 - pipeline failure must preserve the active receipt
+            retryable = bool(getattr(exc, "retryable", True))
+            failure_code = str(getattr(exc, "code", type(exc).__name__.lower()))
             completed = state.model_copy(
                 update={
-                    "status": "failed",
+                    "status": "failed" if retryable else "blocked",
                     "completed_at": self._now().isoformat(),
+                    "failure_code": failure_code,
                     "message": (
-                        "The new decision run failed, so the last valid workspace was retained: "
-                        f"{exc}"
-                    ),
+                        (
+                            "The refresh hit a temporary failure; the last valid workspace was "
+                            "retained and an automatic retry remains allowed: "
+                        )
+                        if retryable
+                        else (
+                            "The refresh was blocked before publication; the last valid "
+                            "workspace was retained and automatic retries are paused: "
+                        )
+                    )
+                    + str(exc),
                 }
             )
         with self._lock:
@@ -215,6 +247,43 @@ class WorkspaceRefreshCoordinator:
                 self._write_state(completed)
                 self._active_run_id = None
                 self._worker = None
+
+    def _with_pipeline_progress(self, state: WorkspaceRefreshView) -> WorkspaceRefreshView:
+        receipt_path = self.gw1_receipt_path if state.mode == "gw1" else self.weekly_receipt_path
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return state
+        if receipt.get("status") != "running" or receipt.get("checked_at") != state.requested_at:
+            return state
+        completed_stages = [
+            str(stage["name"])
+            for stage in receipt.get("stages", [])
+            if isinstance(stage, Mapping) and stage.get("name")
+        ]
+        current_stage = str(receipt["current_stage"]) if receipt.get("current_stage") else None
+        total = int(receipt.get("total_stages") or 0) or None
+        completed_count = len(completed_stages)
+        percent = min(99, round(100 * completed_count / total)) if total else None
+        if current_stage and total:
+            message = (
+                f"Stage {completed_count + 1} of {total}: "
+                f"{STAGE_LABELS.get(current_stage, current_stage.replace('_', ' '))}."
+            )
+        elif completed_count:
+            message = f"Completed {completed_count} validated pipeline stages."
+        else:
+            message = state.message
+        return state.model_copy(
+            update={
+                "completed_stages": completed_stages,
+                "current_stage": current_stage,
+                "completed_stage_count": completed_count,
+                "total_stages": total,
+                "progress_percent": percent,
+                "message": message,
+            }
+        )
 
     def _now(self) -> datetime:
         value = self.clock()

@@ -128,7 +128,9 @@ job refetches the official FPL bootstrap and fixtures and invokes the existing G
 deadline pipeline. Content hashes reuse unchanged stages; changed generations stay in staging until
 the evidence gate passes and publication is atomic. A failed or interrupted run cannot replace the
 active decision and cannot hold local server shutdown open. Its successful pipeline receipt and
-hash appear in the evidence dialog.
+hash appear in the evidence dialog. While a run is active, the refresh endpoint reports the current
+stage, completed-stage count and total-stage count; the browser renders that receipt as a progress
+bar rather than an indefinite spinner.
 
 The local API also runs persisted automatic windows at T−72h, T−24h, T−6h, T−60m and T−10m.
 Between windows it compares the public FPL bootstrap and fixture feed with the active snapshot at a
@@ -139,8 +141,13 @@ continuously moving transfer counters do not. Scheduler state is available from
 
 For GW1, publication stages the squad-specific preseason role scenario, fresh-seed stress threshold
 and availability watch alongside synthesis. Every artifact must describe the same decision and
-official generation before any byte becomes active. A stale role receipt or a change during the
-final recheck rolls every published artifact back.
+official generation before any byte becomes active. The pipeline checks the cheap role-evidence
+lineage immediately after the official refresh and recollects the public preseason lineup layer if
+the FPL player mapping changed. If that repair cannot produce a coherent receipt, simulation never
+starts and the scheduler circuit-breaks repeated automatic attempts. Runtime tournament prose is
+written beneath the ignored decision staging directory, so application refreshes cannot rewrite
+the versioned research reports. A change during the final recheck rolls every published artifact
+back.
 
 `scripts/refresh_current_forecasts.sh` remains a forecast-only maintenance command. Refreshing does
 not retrain models: the UI reports input observation, trained-model creation and manager sync times

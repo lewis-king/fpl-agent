@@ -224,10 +224,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible {
   color: var(--accent-dark);
   animation: reveal-up 520ms var(--spring) both;
 }
-.run-notice div { display: grid; gap: 2px; }
+.run-notice-copy { display: grid; gap: 2px; }
 .run-notice strong { font-size: 12px; }
 .run-notice span { font-size: 11px; color: #58705e; }
 .run-notice button { min-height: 40px; border: 0; background: transparent; color: var(--accent-dark); font-size: 11px; font-weight: 680; cursor: pointer; }
+.run-notice .run-progress-row { display: grid; grid-template-columns: minmax(120px, 220px) auto; align-items: center; gap: 9px; margin-top: 5px; }
+.run-notice .run-progress-track { height: 4px; overflow: hidden; border-radius: 999px; background: rgba(49,91,62,.14); }
+.run-notice .run-progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 600ms var(--ease-out); }
+.run-notice small { color: #58705e; font-size: 9px; font-weight: 650; letter-spacing: .03em; white-space: nowrap; }
 .run-notice.is-error { border-color: rgba(160,74,64,.2); background: #f0e1dd; color: var(--danger); }
 .run-notice.is-error span, .run-notice.is-error button { color: #83544d; }
 .run-notice.is-attention { border-color: rgba(165,107,49,.22); background: var(--warning-pale); color: var(--warning); }

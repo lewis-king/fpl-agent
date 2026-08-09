@@ -150,6 +150,35 @@ def test_scheduler_catches_up_only_latest_window_and_throttles_retry(
     assert retried.status == "running"
 
 
+def test_scheduler_does_not_retry_deterministic_block_after_timeout(
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 8, 21, 12, 30, tzinfo=UTC)]
+    refresh = FakeRefreshCoordinator()
+    scheduler = _scheduler(tmp_path, now=now, refresh=refresh)
+    scheduler.tick()
+    refresh.current = WorkspaceRefreshView(
+        run_id="refresh-1",
+        status="blocked",
+        mode="gw1",
+        reason="scheduled",
+        requested_at=now[0].isoformat(),
+        started_at=now[0].isoformat(),
+        completed_at=now[0].isoformat(),
+        manager_entry_id=431892,
+        event=1,
+        failure_code="preseason_role_evidence_incoherent",
+        message="Automatic retries are paused.",
+    )
+    now[0] += timedelta(hours=2)
+
+    held = scheduler.tick()
+
+    assert held.status == "waiting"
+    assert "automatic retries are paused" in held.message.lower()
+    assert len(refresh.requests) == 1
+
+
 def test_scheduler_moves_to_next_event_after_current_deadline(tmp_path: Path) -> None:
     now = [datetime(2026, 8, 21, 17, 31, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
@@ -248,3 +277,47 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
     assert covered.status == "waiting"
     assert covered.material_change_detected is False
     assert len(refresh.requests) == 1
+
+
+def test_material_change_does_not_duplicate_a_blocked_app_open_attempt(
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 8, 8, 10, tzinfo=UTC)]
+    refresh = FakeRefreshCoordinator()
+    refresh.current = WorkspaceRefreshView(
+        run_id="app-open-blocked",
+        status="blocked",
+        mode="gw1",
+        reason="app_open",
+        requested_at=now[0].isoformat(),
+        started_at=now[0].isoformat(),
+        completed_at=now[0].isoformat(),
+        manager_entry_id=431892,
+        event=1,
+        failure_code="preseason_role_evidence_incoherent",
+        message="Role evidence could not be made coherent.",
+    )
+    builder = WorkspaceBuilder(
+        active_decision_path=tmp_path / "missing-active.json",
+        profile_path=tmp_path / "profile.json",
+        deadline_status_path=None,
+    )
+    scheduler = DeadlineRefreshScheduler(
+        workspace_loader=lambda: builder.build(now=now[0]),
+        profile_loader=_profile,
+        refresh_coordinator=refresh,  # type: ignore[arg-type]
+        material_probe=lambda: OfficialChangeProbeResult(
+            checked_at=now[0].isoformat(),
+            changed=True,
+            local_fingerprint="old-generation",
+            remote_fingerprint="new-generation",
+        ),
+        state_path=tmp_path / "schedule.json",
+        clock=lambda: now[0],
+    )
+
+    result = scheduler.tick()
+
+    assert result.status == "waiting"
+    assert "automatic retries are paused" in result.message.lower()
+    assert refresh.requests == []

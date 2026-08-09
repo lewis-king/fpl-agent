@@ -46,6 +46,12 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
         calls.append("refresh")
         return {"official": {"snapshot_id": "snapshot-1", "publishable": True}}
 
+    def role_lineage_validator(**_: Any) -> dict[str, Any]:
+        return {"status": "current", "role_evidence_sha256": "role-evidence"}
+
+    def role_evidence_refresher() -> dict[str, Any]:
+        raise AssertionError("current role evidence must not be fetched again")
+
     def initial_squad_runner(stability_samples: int) -> dict[str, Any]:
         assert stability_samples == 3
         calls.append("initial_squad")
@@ -56,8 +62,12 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
         }
 
     def named_runner(name: str, result: dict[str, Any]):
-        def run(**_: Any) -> dict[str, Any]:
+        def run(**runner_kwargs: Any) -> dict[str, Any]:
             calls.append(name)
+            report_path = runner_kwargs.get("report_path")
+            if report_path is not None:
+                Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(report_path).write_text(f"# {name}\n", encoding="utf-8")
             return result
 
         return run
@@ -89,9 +99,7 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             Path(kwargs["results_path"]).write_text(
                 json.dumps(result, sort_keys=True) + "\n", encoding="utf-8"
             )
-            Path(kwargs["report_path"]).write_text(
-                f"# {name}\n", encoding="utf-8"
-            )
+            Path(kwargs["report_path"]).write_text(f"# {name}\n", encoding="utf-8")
             return result
 
         return run
@@ -106,9 +114,7 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
         }
         output = kwargs.get("output_path")
         if output is not None:
-            Path(output).write_text(
-                json.dumps(result, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            Path(output).write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
         return result
 
     def evidence_auditor(**kwargs: Any) -> dict[str, Any]:
@@ -164,9 +170,7 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
                 },
             ),
             "component_candidate_runner": component_candidate_runner,
-            "robust_runner": named_runner(
-                "robust_search", {"leader": {"candidate_id": "R-five"}}
-            ),
+            "robust_runner": named_runner("robust_search", {"leader": {"candidate_id": "R-five"}}),
             "horizon_runner": named_runner(
                 "horizon_audit",
                 {
@@ -186,6 +190,8 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
                 "preseason_role_threshold",
                 {"verdict": "bounded", "boundary": {"classification": "test"}},
             ),
+            "role_lineage_validator": role_lineage_validator,
+            "role_evidence_refresher": role_evidence_refresher,
             "availability_auditor": availability_auditor,
             "evidence_auditor": evidence_auditor,
             "prospective_freezer": prospective_freezer,
@@ -236,6 +242,14 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "preseason_role_threshold",
         "availability_watch",
     ]
+    runtime_reports = {path.name for path in (tmp_path / "staging").rglob("runtime-reports/*.md")}
+    assert runtime_reports == {
+        "residual-tournament.md",
+        "component-selection.md",
+        "component-holdout.md",
+        "robust-search.md",
+        "horizon-audit.md",
+    }
 
 
 def test_failed_staged_gate_does_not_replace_active_gw1_decision(tmp_path: Path) -> None:
@@ -268,9 +282,7 @@ def test_stale_staged_availability_cannot_replace_active_gw1_decision(
             "issues": ["role receipt predates the official snapshot"],
         }
         if kwargs.get("output_path") is not None:
-            Path(kwargs["output_path"]).write_text(
-                json.dumps(result) + "\n", encoding="utf-8"
-            )
+            Path(kwargs["output_path"]).write_text(json.dumps(result) + "\n", encoding="utf-8")
         return result
 
     kwargs["availability_auditor"] = stale_availability
@@ -279,6 +291,52 @@ def test_stale_staged_availability_cannot_replace_active_gw1_decision(
         run_gw1_deadline_pipeline(**kwargs)
 
     assert active.read_bytes() == b"previous-good-decision"
+
+
+def test_stale_role_evidence_is_repaired_before_expensive_stages(tmp_path: Path) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+    validation_calls = 0
+
+    def validator(**_: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            raise ValueError("stale FPL mapping generation")
+        return {"status": "current", "role_evidence_sha256": "repaired"}
+
+    def refresher() -> dict[str, Any]:
+        calls.append("role_evidence_refresh")
+        return {"created_at": "2026-08-07T11:30:01+00:00"}
+
+    kwargs["role_lineage_validator"] = validator
+    kwargs["role_evidence_refresher"] = refresher
+
+    result = run_gw1_deadline_pipeline(**kwargs)
+
+    assert result["status"] == "published"
+    assert validation_calls == 2
+    assert calls[:3] == ["refresh", "role_evidence_refresh", "initial_squad"]
+
+
+def test_role_evidence_refresh_failure_stops_before_tournaments(tmp_path: Path) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+
+    def stale(**_: Any) -> dict[str, Any]:
+        raise ValueError("stale FPL mapping generation")
+
+    def failed_refresh() -> dict[str, Any]:
+        calls.append("role_evidence_refresh")
+        raise RuntimeError("lineup source unavailable")
+
+    kwargs["role_lineage_validator"] = stale
+    kwargs["role_evidence_refresher"] = failed_refresh
+
+    with pytest.raises(PreseasonPipelineError) as caught:
+        run_gw1_deadline_pipeline(**kwargs)
+
+    assert caught.value.code == "preseason_role_evidence_refresh_failed"
+    assert caught.value.retryable is True
+    assert calls == ["refresh", "role_evidence_refresh"]
 
 
 def test_failed_final_recheck_rolls_back_all_published_gw1_artifacts(

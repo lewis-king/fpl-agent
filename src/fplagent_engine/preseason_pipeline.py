@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import MANIFESTS
+from fplagent_data.preseason_lineups import collect_preseason_lineups
 
 from .availability_watch import PLAYERS as OFFICIAL_PLAYERS
 from .availability_watch import RECEIPT as AVAILABILITY_WATCH_RECEIPT
@@ -43,7 +45,12 @@ from .optimizer import select_initial_squad
 from .paths import DECISIONS
 from .preseason_role_scenario import REPORT as ROLE_SCENARIO_REPORT
 from .preseason_role_scenario import RESULTS_JSON as ROLE_SCENARIO_RESULTS
-from .preseason_role_scenario import ROLE_EVIDENCE, ROLE_RECEIPT, run_preseason_role_scenario_audit
+from .preseason_role_scenario import (
+    ROLE_EVIDENCE,
+    ROLE_RECEIPT,
+    run_preseason_role_scenario_audit,
+    validate_preseason_role_lineage,
+)
 from .preseason_role_threshold import REPORT as ROLE_THRESHOLD_REPORT
 from .preseason_role_threshold import RESULTS_JSON as ROLE_THRESHOLD_RESULTS
 from .preseason_role_threshold import run_preseason_role_threshold_audit
@@ -112,10 +119,34 @@ ROLE_THRESHOLD_CONFIG = {
     "selection_seed": 20260814,
     "holdout_seed": 20260815,
 }
+GW1_STAGE_ORDER = (
+    "initial_squad",
+    "residual_tournament",
+    "component_selection",
+    "component_candidates",
+    "component_holdout",
+    "robust_search",
+    "horizon_audit",
+    "synthesis",
+    "preseason_role_scenario",
+    "preseason_role_threshold",
+    "availability_watch",
+)
 
 
 class PreseasonPipelineError(ValueError):
     """The GW1 deadline pipeline cannot safely proceed or publish."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "preseason_pipeline_blocked",
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
 
 
 def _implementation_hash() -> str:
@@ -148,14 +179,10 @@ def _compact_stage(name: str, result: Mapping[str, Any]) -> dict[str, Any]:
         summary.update(
             budget_spent=result.get("budget_spent"),
             bank=result.get("bank"),
-            gw1_expected_points=(result.get("gameweeks") or {}).get("1", {}).get(
-                "expected_points"
-            ),
+            gw1_expected_points=(result.get("gameweeks") or {}).get("1", {}).get("expected_points"),
         )
     elif name == "residual_tournament":
-        summary["recommended_candidate"] = (result.get("recommendation") or {}).get(
-            "candidate_id"
-        )
+        summary["recommended_candidate"] = (result.get("recommendation") or {}).get("candidate_id")
     elif name in {"component_selection", "component_holdout"}:
         summary["recommended_candidate"] = result.get("recommended_candidate")
         summary["promotion_status"] = (result.get("promotion_gate") or {}).get("status")
@@ -171,9 +198,7 @@ def _compact_stage(name: str, result: Mapping[str, Any]) -> dict[str, Any]:
         summary["verdict"] = result.get("verdict")
     elif name == "preseason_role_scenario":
         summary["verdict"] = result.get("verdict")
-        summary["supported_deep_squad_scenarios"] = result.get(
-            "supported_deep_squad_scenarios"
-        )
+        summary["supported_deep_squad_scenarios"] = result.get("supported_deep_squad_scenarios")
     elif name == "preseason_role_threshold":
         summary["verdict"] = result.get("verdict")
         summary["boundary"] = result.get("boundary")
@@ -191,6 +216,7 @@ def _record_progress(
     input_fingerprint: str,
     input_identity: Mapping[str, Any],
     stages: list[dict[str, Any]],
+    current_stage: str | None,
 ) -> None:
     _atomic_json(
         receipt_path,
@@ -201,9 +227,81 @@ def _record_progress(
             "input_fingerprint": input_fingerprint,
             "input_identity": input_identity,
             "stages": stages,
+            "current_stage": current_stage,
+            "completed_stage_count": len(stages),
+            "total_stages": len(GW1_STAGE_ORDER),
             "published": False,
         },
     )
+
+
+def _call_with_report_path(
+    runner: Callable[..., Mapping[str, Any]],
+    *args: Any,
+    report_path: Path,
+    **kwargs: Any,
+) -> Mapping[str, Any]:
+    """Redirect runtime prose when a runner supports an explicit report destination."""
+    parameters = inspect.signature(runner).parameters.values()
+    if any(
+        parameter.name == "report_path" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    ):
+        kwargs["report_path"] = report_path
+    return runner(*args, **kwargs)
+
+
+def _ensure_role_evidence_current(
+    *,
+    role_receipt_path: Path,
+    role_evidence_path: Path,
+    validator: Callable[..., Mapping[str, Any]],
+    refresher: Callable[[], Mapping[str, Any]],
+) -> dict[str, Any]:
+    try:
+        return {
+            "refreshed": False,
+            **dict(
+                validator(
+                    role_receipt_path=role_receipt_path,
+                    role_evidence_path=role_evidence_path,
+                )
+            ),
+        }
+    except (KeyError, OSError, ValueError) as stale_error:
+        print(
+            "GW1 pipeline: preseason role evidence is stale; refreshing it before simulations",
+            flush=True,
+        )
+        try:
+            refresh = dict(refresher())
+        except Exception as refresh_error:
+            raise PreseasonPipelineError(
+                "Preseason role evidence is stale and its source refresh failed before any "
+                f"tournament started: {refresh_error}",
+                code="preseason_role_evidence_refresh_failed",
+                retryable=True,
+            ) from refresh_error
+        try:
+            current = dict(
+                validator(
+                    role_receipt_path=role_receipt_path,
+                    role_evidence_path=role_evidence_path,
+                )
+            )
+        except (KeyError, OSError, ValueError) as validation_error:
+            raise PreseasonPipelineError(
+                "Preseason role evidence remained incoherent after refresh; expensive "
+                f"simulation was not started: {validation_error}",
+                code="preseason_role_evidence_incoherent",
+                retryable=False,
+            ) from validation_error
+        return {
+            "refreshed": True,
+            "previous_issue": str(stale_error),
+            "refresh_created_at": refresh.get("created_at"),
+            **current,
+        }
 
 
 def run_gw1_deadline_pipeline(
@@ -235,12 +333,10 @@ def run_gw1_deadline_pipeline(
     robust_runner: Callable[..., Mapping[str, Any]] = run_robust_search,
     horizon_runner: Callable[..., Mapping[str, Any]] = run_horizon_audit,
     synthesis_runner: Callable[..., Mapping[str, Any]] = run_decision_synthesis,
-    role_scenario_runner: Callable[..., Mapping[str, Any]] = (
-        run_preseason_role_scenario_audit
-    ),
-    role_threshold_runner: Callable[..., Mapping[str, Any]] = (
-        run_preseason_role_threshold_audit
-    ),
+    role_scenario_runner: Callable[..., Mapping[str, Any]] = (run_preseason_role_scenario_audit),
+    role_threshold_runner: Callable[..., Mapping[str, Any]] = (run_preseason_role_threshold_audit),
+    role_lineage_validator: Callable[..., Mapping[str, Any]] = (validate_preseason_role_lineage),
+    role_evidence_refresher: Callable[[], Mapping[str, Any]] = (collect_preseason_lineups),
     availability_auditor: Callable[..., Mapping[str, Any]] = audit_availability_watch,
     evidence_auditor: Callable[..., Mapping[str, Any]] = audit_deadline_evidence,
     prospective_freezer: Callable[..., Mapping[str, Any]] = freeze_gw1_prospective_contract,
@@ -265,6 +361,18 @@ def run_gw1_deadline_pipeline(
         if not path.is_file():
             raise PreseasonPipelineError(f"{label} is missing after refresh: {path}")
 
+    role_preflight = _ensure_role_evidence_current(
+        role_receipt_path=role_receipt_path,
+        role_evidence_path=role_evidence_path,
+        validator=role_lineage_validator,
+        refresher=role_evidence_refresher,
+    )
+    print(
+        "GW1 pipeline: preseason role evidence "
+        + ("refreshed and passed preflight" if role_preflight["refreshed"] else "passed preflight"),
+        flush=True,
+    )
+
     rules = rules_loader()
     decision_created_at = _generation_time(
         direct_forecast_path,
@@ -277,12 +385,8 @@ def run_gw1_deadline_pipeline(
         "event": 1,
         "direct_forecast_sha256": sha256_file(direct_forecast_path),
         "component_forecast_sha256": sha256_file(component_forecast_path),
-        "market_goal_rate_status": (refresh.get("market_goal_rates") or {}).get(
-            "status"
-        ),
-        "market_goal_rate_raw_sha256": (refresh.get("market_goal_rates") or {}).get(
-            "raw_sha256"
-        ),
+        "market_goal_rate_status": (refresh.get("market_goal_rates") or {}).get("status"),
+        "market_goal_rate_raw_sha256": (refresh.get("market_goal_rates") or {}).get("raw_sha256"),
         "market_goal_rate_rates_sha256": (refresh.get("market_goal_rates") or {}).get(
             "rates_sha256"
         ),
@@ -322,8 +426,7 @@ def run_gw1_deadline_pipeline(
         and previous.get("input_fingerprint") == input_fingerprint
         and all(path.is_file() for path in published_paths.values())
         and all(
-            previous.get("published_artifacts", {}).get(name, {}).get("sha256")
-            == sha256_file(path)
+            previous.get("published_artifacts", {}).get(name, {}).get("sha256") == sha256_file(path)
             for name, path in published_paths.items()
         )
         and Path(str(previous.get("prospective_contract", {}).get("path", ""))).is_file()
@@ -371,6 +474,7 @@ def run_gw1_deadline_pipeline(
     staged_role_threshold = stage_dir / "preseason-role-threshold.json"
     staged_role_threshold_report = stage_dir / "preseason-role-threshold.md"
     staged_availability_watch = stage_dir / "availability-watch.json"
+    runtime_reports = stage_dir / "runtime-reports"
     stages: list[dict[str, Any]] = []
     _record_progress(
         pipeline_receipt_path,
@@ -378,22 +482,59 @@ def run_gw1_deadline_pipeline(
         input_fingerprint=input_fingerprint,
         input_identity=input_identity,
         stages=stages,
+        current_stage=GW1_STAGE_ORDER[0],
     )
 
     runners: list[tuple[str, Callable[[], Mapping[str, Any]]]] = [
-        ("initial_squad", lambda: initial_squad_runner(stability_samples)),
-        ("residual_tournament", lambda: tournament_runner(**TOURNAMENT_CONFIG)),
+        (
+            "initial_squad",
+            lambda: _call_with_report_path(
+                initial_squad_runner,
+                stability_samples,
+                report_path=runtime_reports / "initial-squad.md",
+            ),
+        ),
+        (
+            "residual_tournament",
+            lambda: _call_with_report_path(
+                tournament_runner,
+                **TOURNAMENT_CONFIG,
+                report_path=runtime_reports / "residual-tournament.md",
+            ),
+        ),
         (
             "component_selection",
-            lambda: component_tournament_runner(**COMPONENT_SELECTION_CONFIG),
+            lambda: _call_with_report_path(
+                component_tournament_runner,
+                **COMPONENT_SELECTION_CONFIG,
+                report_path=runtime_reports / "component-selection.md",
+            ),
         ),
         ("component_candidates", component_candidate_runner),
         (
             "component_holdout",
-            lambda: component_tournament_runner(**COMPONENT_HOLDOUT_CONFIG),
+            lambda: _call_with_report_path(
+                component_tournament_runner,
+                **COMPONENT_HOLDOUT_CONFIG,
+                report_path=runtime_reports / "component-holdout.md",
+            ),
         ),
-        ("robust_search", lambda: robust_runner(**ROBUST_CONFIG)),
-        ("horizon_audit", lambda: horizon_runner(**HORIZON_CONFIG)),
+        (
+            "robust_search",
+            lambda: _call_with_report_path(
+                robust_runner,
+                **ROBUST_CONFIG,
+                report_path=runtime_reports / "robust-search.md",
+            ),
+        ),
+        (
+            "horizon_audit",
+            lambda: _call_with_report_path(
+                horizon_runner,
+                **HORIZON_CONFIG,
+                report_path=runtime_reports / "horizon-audit.md",
+            ),
+        ),
         (
             "synthesis",
             lambda: synthesis_runner(
@@ -443,7 +584,15 @@ def run_gw1_deadline_pipeline(
         ),
     ]
     try:
-        for name, runner in runners:
+        for stage_index, (name, runner) in enumerate(runners):
+            _record_progress(
+                pipeline_receipt_path,
+                checked_at=checked_text,
+                input_fingerprint=input_fingerprint,
+                input_identity=input_identity,
+                stages=stages,
+                current_stage=name,
+            )
             print(f"GW1 pipeline: starting {name.replace('_', ' ')}", flush=True)
             result = dict(runner())
             if name == "availability_watch" and not result.get("current"):
@@ -458,6 +607,9 @@ def run_gw1_deadline_pipeline(
                 input_fingerprint=input_fingerprint,
                 input_identity=input_identity,
                 stages=stages,
+                current_stage=(
+                    runners[stage_index + 1][0] if stage_index + 1 < len(runners) else None
+                ),
             )
             print(f"GW1 pipeline: completed {name.replace('_', ' ')}", flush=True)
     except Exception as exc:
@@ -488,9 +640,7 @@ def run_gw1_deadline_pipeline(
             staged_availability_watch,
         ):
             if not path.is_file():
-                raise PreseasonPipelineError(
-                    f"synthesis did not create staged artifact: {path}"
-                )
+                raise PreseasonPipelineError(f"synthesis did not create staged artifact: {path}")
         staged_gate = dict(
             evidence_auditor(
                 as_of=checked_text,
@@ -545,13 +695,9 @@ def run_gw1_deadline_pipeline(
         _atomic_publish(staged_report, published_report_path)
         _atomic_publish(staged_decision, published_decision_path)
         _atomic_publish(staged_role_scenario, published_role_scenario_path)
-        _atomic_publish(
-            staged_role_scenario_report, published_role_scenario_report_path
-        )
+        _atomic_publish(staged_role_scenario_report, published_role_scenario_report_path)
         _atomic_publish(staged_role_threshold, published_role_threshold_path)
-        _atomic_publish(
-            staged_role_threshold_report, published_role_threshold_report_path
-        )
+        _atomic_publish(staged_role_threshold_report, published_role_threshold_report_path)
         _atomic_publish(staged_availability_watch, availability_watch_path)
         final_gate = dict(
             evidence_auditor(
@@ -578,11 +724,9 @@ def run_gw1_deadline_pipeline(
                 output_path=availability_watch_path,
             )
         )
-        if (
-            not final_availability.get("current")
-            or final_availability.get("lineage")
-            != _read_json(staged_availability_watch).get("lineage")
-        ):
+        if not final_availability.get("current") or final_availability.get("lineage") != _read_json(
+            staged_availability_watch
+        ).get("lineage"):
             raise PreseasonPipelineError(
                 "published GW1 availability evidence changed during publication"
             )

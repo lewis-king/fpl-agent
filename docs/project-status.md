@@ -48,9 +48,12 @@ in the [points-first product roadmap](points-first-roadmap.md).
   player-level forecast errors.
 - The web application now serves the last validated workspace immediately, syncs the authenticated
   MCP squad, and launches one persisted single-flight GW1/weekly decision refresh on every app open.
-  It polls a typed status contract, joins duplicate requests, exposes the successful pipeline hash
-  in provenance, and retains the prior receipt on blocked, failed or interrupted runs. The daemon
-  worker also prevents a long tournament from blocking local server shutdown.
+  It polls a typed stage-progress contract, joins duplicate requests, exposes the successful
+  pipeline hash in provenance, and retains the prior receipt on blocked, failed or interrupted
+  runs. GW1 now validates and, when necessary, refreshes checksum-bound preseason role evidence
+  before any expensive tournament starts. Deterministic evidence blocks pause automatic retries
+  until the source generation changes or the manager requests a manual retry. The daemon worker
+  also prevents a long tournament from blocking local server shutdown.
 - The same coordinator now owns automatic T−72h, T−24h, T−6h, T−60m and T−10m runs. A lightweight
   semantic probe detects material public FPL status/news, price, rule and fixture changes between
   windows on a deadline-sensitive cadence; ordinary transfer-counter movement is deliberately left
@@ -176,9 +179,9 @@ in the [points-first product roadmap](points-first-roadmap.md).
 - The GW1 publisher now creates the squad-specific role scenario, stress threshold and availability
   watch inside the same fingerprinted staging transaction as synthesis. Publication requires a
   current aligned watch, final checksums are revalidated after the atomic switch, and any failure
-  restores the complete previous artifact set. The live lineup source was refreshed on 8 August:
-  it currently has 53 confirmed lineup events and coverage for 18 of 20 clubs; Brentford and
-  Brighton remain explicit unknowns.
+  restores the complete previous artifact set. The live lineup source was refreshed on 9 August:
+  it currently has 66 confirmed lineup events and coverage for 19 of 20 clubs; Brentford remains
+  the only explicit unknown.
 - A full-pool one-swap audit now enumerates all 2,259 legal same-position replacements around the
   published squad. It found a genuine horizon-membership omission, Mukiele to Senesi. Equal
   full-field replay ranks the challenger second of 49 over the eight-week horizon (+0.316 central

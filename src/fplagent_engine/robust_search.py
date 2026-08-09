@@ -649,6 +649,7 @@ def run_robust_search(
     evolution_generations: int = 10,
     evolution_offspring: int = 2_048,
     minimum_seed_distance: int = 3,
+    report_path: Path = REPORT,
 ) -> dict[str, Any]:
     _validate_config(
         discovery_candidates,
@@ -1262,7 +1263,8 @@ def run_robust_search(
     }
     RESULTS_JSON.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     DECISION_JSON.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    REPORT.write_text(_render_report(result, meta), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_render_report(result, meta), encoding="utf-8")
     print(
         f"Robust search: complete; leader {leader['candidate_id']} "
         f"({leader['display_name']})",

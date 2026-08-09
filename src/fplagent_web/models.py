@@ -259,13 +259,16 @@ class WorkspaceRefreshView(StrictModel):
     receipt_path: str | None = None
     receipt_sha256: str | None = None
     completed_stages: list[str] = Field(default_factory=list)
+    current_stage: str | None = None
+    completed_stage_count: int = 0
+    total_stages: int | None = None
+    progress_percent: int | None = None
+    failure_code: str | None = None
     message: str
 
 
 class DeadlineScheduleView(StrictModel):
-    schema_version: Literal["deadline-refresh-schedule-v1"] = (
-        "deadline-refresh-schedule-v1"
-    )
+    schema_version: Literal["deadline-refresh-schedule-v1"] = "deadline-refresh-schedule-v1"
     status: Literal["waiting", "running", "covered", "deadline_passed", "error"]
     checked_at: str
     event: int | None = None

@@ -1885,6 +1885,7 @@ def run_tournament(
     selection_simulations: int = 5_000,
     holdout_simulations: int = 25_000,
     seed: int = 20260802,
+    report_path: Path = REPORT,
 ) -> dict[str, Any]:
     ensure_engine_layout()
     TOURNAMENT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2125,5 +2126,6 @@ def run_tournament(
             }
         )
     pq.write_table(pa.Table.from_pylist(table_rows), RESULTS_PARQUET, compression="zstd")
-    REPORT.write_text(_render_report(result, candidates), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_render_report(result, candidates), encoding="utf-8")
     return result

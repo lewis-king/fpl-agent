@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -534,6 +535,7 @@ def run_horizon_audit(
     candidate_seed: int = 20260807,
     selection_seed: int = 20260808,
     holdout_seed: int = 20260809,
+    report_path: Path = REPORT,
 ) -> dict[str, Any]:
     if horizon_candidates < 32 or selection_simulations < 1_000:
         raise ValueError("horizon audit needs at least 32 challengers and 1,000 selection worlds")
@@ -819,7 +821,8 @@ def run_horizon_audit(
     pq.write_table(pa.Table.from_pylist(rows_out), FINAL_PARQUET, compression="zstd")
     RESULTS_JSON.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     DECISION_JSON.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    REPORT.write_text(_render_report(result, meta), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_render_report(result, meta), encoding="utf-8")
     print(
         f"Horizon audit: complete; {verdict}; leader {leader['candidate_id']}",
         flush=True,

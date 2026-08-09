@@ -552,7 +552,9 @@ def _render(receipt: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def select_initial_squad(stability_samples: int = 20) -> dict[str, Any]:
+def select_initial_squad(
+    stability_samples: int = 20, *, report_path: Path = DECISION_REPORT
+) -> dict[str, Any]:
     ensure_engine_layout()
     if not CURRENT_FORECAST.exists():
         raise FileNotFoundError("Current forecast missing; run fplagent forecast first")
@@ -633,5 +635,6 @@ def select_initial_squad(stability_samples: int = 20) -> dict[str, Any]:
         ],
     }
     DECISION_JSON.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    DECISION_REPORT.write_text(_render(receipt), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(_render(receipt), encoding="utf-8")
     return receipt

@@ -209,6 +209,11 @@ export interface WorkspaceRefresh {
   receipt_path: string | null
   receipt_sha256: string | null
   completed_stages: string[]
+  current_stage: string | null
+  completed_stage_count: number
+  total_stages: number | null
+  progress_percent: number | null
+  failure_code: string | null
   message: string
 }
 

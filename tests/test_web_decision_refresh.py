@@ -15,6 +15,11 @@ from fplagent_web.profile import ManagerProfileStore
 from fplagent_web.workspace import WorkspaceBuilder
 
 
+class DeterministicPipelineError(ValueError):
+    code = "stale_preseason_role_evidence"
+    retryable = False
+
+
 def _wait_for_terminal(
     coordinator: WorkspaceRefreshCoordinator,
     *,
@@ -84,9 +89,12 @@ def test_refresh_coordinator_is_single_flight_and_persists_publication(
     assert final.receipt_path == str(tmp_path / "pipeline.json")
     assert final.receipt_sha256 is not None
     assert final.completed_stages == ["initial_squad", "synthesis"]
-    assert WorkspaceRefreshView.model_validate_json(
-        (tmp_path / "refresh.json").read_text(encoding="utf-8")
-    ) == final
+    assert (
+        WorkspaceRefreshView.model_validate_json(
+            (tmp_path / "refresh.json").read_text(encoding="utf-8")
+        )
+        == final
+    )
 
 
 def test_failed_refresh_keeps_previous_artifact_and_reports_safe_failure(
@@ -113,6 +121,80 @@ def test_failed_refresh_keeps_previous_artifact_and_reports_safe_failure(
     assert final.status == "failed"
     assert "last valid workspace was retained" in final.message
     assert active.read_text(encoding="utf-8") == "previous validated receipt"
+
+
+def test_deterministic_refresh_failure_blocks_automatic_retry(tmp_path: Path) -> None:
+    def runner(**_: Any) -> dict[str, Any]:
+        raise DeterministicPipelineError("role evidence is incoherent")
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="material_change",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    final = _wait_for_terminal(coordinator)
+
+    assert final.status == "blocked"
+    assert final.failure_code == "stale_preseason_role_evidence"
+    assert "automatic retries are paused" in final.message
+
+
+def test_running_refresh_surfaces_pipeline_stage_progress(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    receipt = tmp_path / "pipeline.json"
+    requested_at = "2026-08-08T10:00:00+00:00"
+
+    def runner(**_: Any) -> dict[str, Any]:
+        receipt.write_text(
+            """{
+  "status": "running",
+  "checked_at": "2026-08-08T10:00:00+00:00",
+  "current_stage": "robust_search",
+  "total_stages": 11,
+  "stages": [
+    {"name": "initial_squad"},
+    {"name": "residual_tournament"},
+    {"name": "component_selection"},
+    {"name": "component_candidates"},
+    {"name": "component_holdout"}
+  ]
+}\n""",
+            encoding="utf-8",
+        )
+        entered.set()
+        assert release.wait(timeout=1)
+        return {"status": "blocked", "message": "test finished"}
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_receipt_path=receipt,
+        clock=lambda: datetime.fromisoformat(requested_at),
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="manual",
+        manager_entry_id=431892,
+        event=1,
+    )
+    assert entered.wait(timeout=1)
+
+    running = coordinator.status()
+
+    assert running.current_stage == "robust_search"
+    assert running.completed_stage_count == 5
+    assert running.total_stages == 11
+    assert running.progress_percent == 45
+    assert running.message == "Stage 6 of 11: searching globally robust squads."
+    release.set()
+    _wait_for_terminal(coordinator)
 
 
 def test_weekly_refresh_requires_a_manager_identity_without_starting_runner(

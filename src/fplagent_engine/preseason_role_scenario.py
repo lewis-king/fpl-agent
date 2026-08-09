@@ -623,6 +623,28 @@ def _verify_role_lineage(
     return receipt, evidence_sha
 
 
+def validate_preseason_role_lineage(
+    *,
+    role_receipt_path: Path = ROLE_RECEIPT,
+    role_evidence_path: Path = ROLE_EVIDENCE,
+    fpl_dir: Path = FPL_DIR,
+) -> dict[str, Any]:
+    """Validate the cheap role-evidence contract before any simulation starts."""
+    receipt, evidence_sha = _verify_role_lineage(
+        role_receipt_path=role_receipt_path,
+        role_evidence_path=role_evidence_path,
+        fpl_dir=fpl_dir,
+    )
+    return {
+        "status": "current",
+        "created_at": receipt.get("created_at"),
+        "role_evidence_sha256": evidence_sha,
+        "role_mapping_fingerprint": (receipt.get("inputs") or {}).get(
+            "role_mapping_fingerprint"
+        ),
+    }
+
+
 def _load_synthesis_candidates(
     decision: dict[str, Any],
     maximum_candidates: int | None,

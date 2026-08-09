@@ -29,7 +29,7 @@ import { PreseasonEntry } from './components/PreseasonEntry'
 import { SquadPitch } from './components/SquadPitch'
 import { WorkspaceSkeleton } from './components/WorkspaceSkeleton'
 import { formatObservedAt } from './lib'
-import type { Player, Workspace } from './types'
+import type { Player, Workspace, WorkspaceRefresh } from './types'
 
 type LoadState = 'loading' | 'ready' | 'error'
 type SyncState = 'idle' | 'syncing' | 'success' | 'attention' | 'error'
@@ -58,6 +58,7 @@ function App() {
   const [profileOpen, setProfileOpen] = useState(false)
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncMessage, setSyncMessage] = useState('')
+  const [refreshRun, setRefreshRun] = useState<WorkspaceRefresh | null>(null)
   const connectionCheckedRef = useRef(false)
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -92,13 +93,16 @@ function App() {
     signal?: AbortSignal,
   ) => {
     setSyncState('syncing')
+    setRefreshRun(null)
     setSyncMessage('Checking current FPL evidence and rebuilding only the stages that changed…')
     let run = await startWorkspaceRefresh(reason, signal)
+    setRefreshRun(run)
     setSyncMessage(run.message)
     while (run.status === 'running' && !signal?.aborted) {
       await pollDelay(signal)
       if (signal?.aborted) return
       run = await getWorkspaceRefresh(signal)
+      setRefreshRun(run)
       setSyncMessage(run.message)
     }
     if (signal?.aborted) return
@@ -355,9 +359,24 @@ function App() {
             ) : (
               <ArrowClockwiseIcon className="is-spinning" size={20} aria-hidden="true" />
             )}
-            <div>
+            <div className="run-notice-copy">
               <strong>{syncState === 'syncing' ? 'Refreshing decision evidence' : syncState === 'success' ? 'Decision workspace is current' : syncState === 'attention' ? 'Decision refresh needs input' : 'Decision refresh failed'}</strong>
               <span>{syncMessage}</span>
+              {syncState === 'syncing' && refreshRun?.total_stages ? (
+                <div className="run-progress-row">
+                  <div
+                    className="run-progress-track"
+                    role="progressbar"
+                    aria-label="Decision refresh progress"
+                    aria-valuemin={0}
+                    aria-valuemax={refreshRun.total_stages}
+                    aria-valuenow={refreshRun.completed_stage_count}
+                  >
+                    <span style={{ width: `${refreshRun.progress_percent ?? 0}%` }} />
+                  </div>
+                  <small>{refreshRun.completed_stage_count}/{refreshRun.total_stages} stages</small>
+                </div>
+              ) : null}
             </div>
             {syncState !== 'syncing' ? <button type="button" onClick={() => setSyncState('idle')}>Dismiss</button> : null}
           </div>

@@ -12,9 +12,7 @@ from .decision_refresh import WorkspaceRefreshCoordinator
 from .models import DeadlineScheduleView, ManagerProfileView, WorkspaceView
 from .official_change_probe import OfficialChangeProbeResult
 
-DEFAULT_SCHEDULE_STATE = (
-    ROOT / "data" / "web" / "state" / "deadline-refresh-schedule.json"
-)
+DEFAULT_SCHEDULE_STATE = ROOT / "data" / "web" / "state" / "deadline-refresh-schedule.json"
 DEADLINE_WINDOWS = (
     ("T-72h", timedelta(hours=72)),
     ("T-24h", timedelta(hours=24)),
@@ -114,10 +112,7 @@ class DeadlineRefreshScheduler:
             raise ValueError("workspace deadline must include a timezone")
         deadline = deadline.astimezone(UTC)
         prior = self._read_state()
-        windows = [
-            (label, deadline - offset)
-            for label, offset in DEADLINE_WINDOWS
-        ]
+        windows = [(label, deadline - offset) for label, offset in DEADLINE_WINDOWS]
         future = [(label, at) for label, at in windows if at > now]
         next_window = min(future, key=lambda item: item[1]) if future else None
         common = {
@@ -129,15 +124,9 @@ class DeadlineRefreshScheduler:
             "last_attempt_window": prior.last_attempt_window if prior else None,
             "last_attempt_at": prior.last_attempt_at if prior else None,
             "material_checked_at": prior.material_checked_at if prior else None,
-            "material_local_fingerprint": (
-                prior.material_local_fingerprint if prior else None
-            ),
-            "material_remote_fingerprint": (
-                prior.material_remote_fingerprint if prior else None
-            ),
-            "material_change_detected": (
-                prior.material_change_detected if prior else False
-            ),
+            "material_local_fingerprint": (prior.material_local_fingerprint if prior else None),
+            "material_remote_fingerprint": (prior.material_remote_fingerprint if prior else None),
+            "material_change_detected": (prior.material_change_detected if prior else False),
         }
         if now >= deadline:
             result = DeadlineScheduleView(
@@ -185,8 +174,7 @@ class DeadlineRefreshScheduler:
                 str(common["material_checked_at"])
             ).astimezone(UTC)
             material_key = (
-                "material-change:"
-                + str(common["material_remote_fingerprint"] or "unknown")[:12]
+                "material-change:" + str(common["material_remote_fingerprint"] or "unknown")[:12]
             )
             active = {
                 **common,
@@ -197,8 +185,7 @@ class DeadlineRefreshScheduler:
             covered = (
                 refresh.status in {"published", "reused"}
                 and refresh.completed_at is not None
-                and datetime.fromisoformat(refresh.completed_at).astimezone(UTC)
-                >= material_checked
+                and datetime.fromisoformat(refresh.completed_at).astimezone(UTC) >= material_checked
             )
             if covered:
                 common["material_change_detected"] = False
@@ -213,17 +200,29 @@ class DeadlineRefreshScheduler:
                 )
                 self._write_state(result)
                 return result
-            elif self._retry_held(prior, material_key, now):
-                retry_at = datetime.fromisoformat(
-                    str(prior.last_attempt_at)
-                ).astimezone(UTC) + timedelta(seconds=self.retry_seconds)
+            elif (
+                refresh.status == "blocked"
+                and refresh.completed_at is not None
+                and datetime.fromisoformat(refresh.completed_at).astimezone(UTC) >= material_checked
+            ):
                 result = DeadlineScheduleView(
                     status="waiting",
                     **active,
                     message=(
-                        "The material-change retry is held until "
-                        f"{retry_at.isoformat()}."
+                        "Automatic retries are paused for this unchanged official-data "
+                        f"generation: {refresh.message}"
                     ),
+                )
+                self._write_state(result)
+                return result
+            elif self._retry_held(prior, material_key, now):
+                retry_at = datetime.fromisoformat(str(prior.last_attempt_at)).astimezone(
+                    UTC
+                ) + timedelta(seconds=self.retry_seconds)
+                result = DeadlineScheduleView(
+                    status="waiting",
+                    **active,
+                    message=(f"The material-change retry is held until {retry_at.isoformat()}."),
                 )
                 self._write_state(result)
                 return result
@@ -294,6 +293,22 @@ class DeadlineRefreshScheduler:
                 status="running",
                 **active,
                 message=f"{label} is waiting for refresh {refresh.run_id} to finish.",
+            )
+            self._write_state(result)
+            return result
+
+        if (
+            refresh.status == "blocked"
+            and refresh.completed_at is not None
+            and datetime.fromisoformat(refresh.completed_at).astimezone(UTC) >= window_at
+        ):
+            result = DeadlineScheduleView(
+                status="waiting",
+                **active,
+                message=(
+                    f"{label} automatic retries are paused until the evidence changes or a "
+                    f"manual refresh is requested: {refresh.message}"
+                ),
             )
             self._write_state(result)
             return result
