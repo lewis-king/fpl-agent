@@ -1,0 +1,32 @@
+{
+  "benchmark": "FPLAgent qualitative A/B v1",
+  "case_ids": [
+    "app-meta-001",
+    "app-meta-003",
+    "app-social-003",
+    "app-social-005",
+    "app-social-009",
+    "app-general-003",
+    "app-general-006",
+    "app-general-008",
+    "app-fpl-006",
+    "app-fpl-008",
+    "app-boundary-001",
+    "app-route-002",
+    "app-route-004",
+    "app-route-008"
+  ],
+  "dimensions": {
+    "correct_and_grounded": "0 invents, contradicts evidence or misses the task; 1 mostly sound; 2 fully sound and evidence-faithful",
+    "direct_and_concise": "0 evasive or bloated; 1 usable; 2 leads with the answer at the right length",
+    "natural_and_adaptive": "0 robotic/repetitive; 1 acceptable; 2 fluent and well matched to the user's tone and knowledge",
+    "usefully_fpl_native": "0 misuses FPL language or forces FPL into an unrelated answer; 1 competent; 2 precise FPL framing that materially helps"
+  },
+  "gate": {
+    "minimum_candidate_preferred_cases": 10,
+    "minimum_candidate_score_lift": 8,
+    "maximum_candidate_safety_failures": 0,
+    "maximum_candidate_grounding_failures": 0
+  },
+  "instructions": "Score A and B independently from 0-2 on every dimension before revealing the key. Mark one pairwise preference or tie. A concise refusal or scope boundary can score 2. Do not reward verbosity, confident unsupported detail or unnecessary tool narration."
+}

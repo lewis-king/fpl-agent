@@ -1,0 +1,1482 @@
+{
+  "audit_family_leaders": {
+    "eight_week_horizon": {
+      "candidate_id": "R-2f0b2cc758",
+      "central_p10": 291.50384647208386,
+      "central_p90": 369.12657412150855,
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "origin_ids": [
+        "C001",
+        "C003",
+        "S001"
+      ],
+      "robust_regret": 0.13208169271029307,
+      "scenario_regrets": {
+        "gw1_3_open_d088": 0.14847772178660534,
+        "gw1_5_open_d088": 0.04081113542852677,
+        "gw1_8_fixed_d088": 0.3946990669492152,
+        "gw1_8_open_d070": 0.15065749529034633,
+        "gw1_8_open_d080": 0.0,
+        "gw1_8_open_d088": 0.0,
+        "gw1_8_open_d094": 0.0,
+        "gw1_8_roll_gw2_d088": 0.0,
+        "gw6_8_open_equal": 0.10657203781127578
+      },
+      "scenario_values": {
+        "gw1_3_open_d088": 164.7790679558595,
+        "gw1_5_open_d088": 242.20391293036516,
+        "gw1_8_fixed_d088": 325.7064858451409,
+        "gw1_8_open_d070": 194.3411940101058,
+        "gw1_8_open_d080": 257.23419663319333,
+        "gw1_8_open_d088": 329.85219017992137,
+        "gw1_8_open_d094": 402.3194446954804,
+        "gw1_8_roll_gw2_d088": 329.4134453792892,
+        "gw6_8_open_equal": 187.8765080078888
+      },
+      "weighted_mean_regret": 0.06642734915056252,
+      "worst_scenario_regret": 0.3946990669492152
+    },
+    "five_week_robust": {
+      "base_cvar10": 249.92042541503906,
+      "base_p10": 264.1000061035156,
+      "base_p90": 351.29998779296875,
+      "candidate_id": "R-bf35263c58",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a321.5m bench",
+      "gw1_bench_spend": 21.5,
+      "gw1_formation": "4-3-3",
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "robust_regret": 0.7707742939453208,
+      "scenario_regrets": {
+        "base_anchored_open": 1.0815600000000245,
+        "base_evidence_fixed": 0.909576416015625,
+        "base_evidence_open": 0.634857177734375,
+        "base_evidence_roll_gw2": 0.806976318359375,
+        "base_raw_open": 0.1855600000000095,
+        "high_goal_fixed": 0.8600799999999822,
+        "high_goal_open": 0.2943599999999833,
+        "high_goal_roll_gw2": 0.0
+      },
+      "scenario_values": {
+        "base_anchored_open": 309.11424,
+        "base_evidence_fixed": 303.33551025390625,
+        "base_evidence_open": 306.8697509765625,
+        "base_evidence_roll_gw2": 306.87176513671875,
+        "base_raw_open": 286.66936,
+        "high_goal_fixed": 290.7386,
+        "high_goal_open": 292.53276,
+        "high_goal_roll_gw2": 292.6722
+      },
+      "weighted_mean_regret": 0.6671790585937529,
+      "worst_scenario_regret": 1.0815600000000245
+    }
+  },
+  "candidate_coverage": {
+    "best_horizon_specific_finalist": {
+      "candidate_id": "R-34f848ccd5",
+      "central_p10": 291.3065406976504,
+      "central_p90": 368.18329818479197,
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "4-3-3",
+      "origin_ids": [
+        "horizon-neighbour:R-6a93cd8709"
+      ],
+      "robust_regret": 0.6280012232412083,
+      "scenario_regrets": {
+        "gw1_3_open_d088": 0.759899209154014,
+        "gw1_5_open_d088": 0.19467689955965284,
+        "gw1_8_fixed_d088": 0.9490713377260818,
+        "gw1_8_open_d070": 0.4713737138876297,
+        "gw1_8_open_d080": 0.39095753690691026,
+        "gw1_8_open_d088": 0.5335365306673907,
+        "gw1_8_open_d094": 0.7277644686047324,
+        "gw1_8_roll_gw2_d088": 0.09479173003524011,
+        "gw6_8_open_equal": 1.0831362722015285
+      },
+      "scenario_values": {
+        "gw1_3_open_d088": 164.16764646849208,
+        "gw1_5_open_d088": 242.05004716623404,
+        "gw1_8_fixed_d088": 325.152113574364,
+        "gw1_8_open_d070": 194.0204777915085,
+        "gw1_8_open_d080": 256.8432390962864,
+        "gw1_8_open_d088": 329.318653649254,
+        "gw1_8_open_d094": 401.59168022687567,
+        "gw1_8_roll_gw2_d088": 329.318653649254,
+        "gw6_8_open_equal": 186.89994377349853
+      },
+      "weighted_mean_regret": 0.5142174610011282,
+      "worst_scenario_regret": 1.0831362722015285
+    },
+    "common_finalists": 40,
+    "coverage_caveat": "The synthesis ranking is restricted to squads deeply evaluated by both audit families. Horizon-only finalists are reported separately and are not assigned unmeasured five-week robustness scores.",
+    "horizon_finalists": 48,
+    "horizon_optimizer_candidates": 128,
+    "horizon_specific_deep_finalists": 8,
+    "protected_horizon_neighbours": 32,
+    "robust_finalists": 64
+  },
+  "created_at": "2026-08-04T09:07:38.751165+00:00",
+  "deadline_rule": "This is not a lock. Refresh availability, price, forecast and fixture inputs and rerun both audit families plus this synthesis immediately before the GW1 deadline.",
+  "decision": {
+    "candidate": {
+      "archetype": "robust-neighbourhood",
+      "bank": 0.0,
+      "budget_spent": 100.0,
+      "candidate_id": "R-e80223d1fc",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+      "gw1_bench_spend": 23.0,
+      "gw1_formation": "5-3-2",
+      "gw1_outfield_bench_spend": 18.5,
+      "lineups": {
+        "1": {
+          "bench_order": [
+            346,
+            368,
+            124,
+            109
+          ],
+          "captain": 426,
+          "expected_points": 58.55685758590698,
+          "formation": "5-3-2",
+          "starters": [
+            384,
+            229,
+            84,
+            418,
+            533,
+            61,
+            426,
+            427,
+            480,
+            106,
+            55
+          ],
+          "vice_captain": 229
+        },
+        "2": {
+          "bench_order": [
+            84,
+            480,
+            124,
+            109
+          ],
+          "captain": 426,
+          "expected_points": 58.042701721191406,
+          "formation": "4-3-3",
+          "starters": [
+            384,
+            61,
+            418,
+            533,
+            229,
+            426,
+            427,
+            368,
+            346,
+            55,
+            106
+          ],
+          "vice_captain": 384
+        },
+        "3": {
+          "bench_order": [
+            229,
+            346,
+            124,
+            109
+          ],
+          "captain": 426,
+          "expected_points": 56.46922445297241,
+          "formation": "4-4-2",
+          "starters": [
+            384,
+            84,
+            61,
+            418,
+            533,
+            426,
+            368,
+            427,
+            480,
+            106,
+            55
+          ],
+          "vice_captain": 368
+        },
+        "4": {
+          "bench_order": [
+            418,
+            124,
+            480,
+            384
+          ],
+          "captain": 229,
+          "expected_points": 53.95862936973572,
+          "formation": "4-3-3",
+          "starters": [
+            109,
+            229,
+            61,
+            533,
+            84,
+            426,
+            368,
+            427,
+            55,
+            346,
+            106
+          ],
+          "vice_captain": 426
+        },
+        "5": {
+          "bench_order": [
+            55,
+            533,
+            124,
+            109
+          ],
+          "captain": 229,
+          "expected_points": 56.32224941253662,
+          "formation": "4-4-2",
+          "starters": [
+            384,
+            229,
+            61,
+            84,
+            418,
+            426,
+            480,
+            427,
+            368,
+            106,
+            346
+          ],
+          "vice_captain": 426
+        }
+      },
+      "minimum_seed_swap_distance": 0,
+      "origin_ids": [
+        "C009",
+        "C011"
+      ],
+      "proxy_score": -0.6925652623176575,
+      "selected": [
+        55,
+        61,
+        84,
+        106,
+        109,
+        124,
+        229,
+        346,
+        368,
+        384,
+        418,
+        426,
+        427,
+        480,
+        533
+      ]
+    },
+    "candidate_id": "R-e80223d1fc",
+    "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+    "formation": "5-3-2",
+    "squad": {
+      "bank": 0.0,
+      "bench": [
+        {
+          "captain": false,
+          "element": 346,
+          "name": "Calvert-Lewin",
+          "position": "FWD",
+          "price": 6.0,
+          "team": "Leeds",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 368,
+          "name": "Szoboszlai",
+          "position": "MID",
+          "price": 7.0,
+          "team": "Liverpool",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 124,
+          "name": "Gro\u00df",
+          "position": "MID",
+          "price": 5.5,
+          "team": "Brighton",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 109,
+          "name": "Verbruggen",
+          "position": "GK",
+          "price": 4.5,
+          "team": "Brighton",
+          "vice_captain": false
+        }
+      ],
+      "budget_spent": 100.0,
+      "formation": "5-3-2",
+      "starters": [
+        {
+          "captain": false,
+          "element": 384,
+          "name": "Donnarumma",
+          "position": "GK",
+          "price": 5.5,
+          "team": "Man City",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 229,
+          "name": "Tarkowski",
+          "position": "DEF",
+          "price": 6.0,
+          "team": "Everton",
+          "vice_captain": true
+        },
+        {
+          "captain": false,
+          "element": 84,
+          "name": "Collins",
+          "position": "DEF",
+          "price": 5.5,
+          "team": "Brentford",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 418,
+          "name": "Maguire",
+          "position": "DEF",
+          "price": 5.0,
+          "team": "Man Utd",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 533,
+          "name": "Mukiele",
+          "position": "DEF",
+          "price": 5.5,
+          "team": "Sunderland",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 61,
+          "name": "Truffert",
+          "position": "DEF",
+          "price": 5.5,
+          "team": "Bournemouth",
+          "vice_captain": false
+        },
+        {
+          "captain": true,
+          "element": 426,
+          "name": "Bruno Fernandes",
+          "position": "MID",
+          "price": 12.0,
+          "team": "Man Utd",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 427,
+          "name": "Mbeumo",
+          "position": "MID",
+          "price": 8.0,
+          "team": "Man Utd",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 480,
+          "name": "Gibbs-White",
+          "position": "MID",
+          "price": 8.0,
+          "team": "Nott'm Forest",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 106,
+          "name": "Igor Thiago",
+          "position": "FWD",
+          "price": 8.0,
+          "team": "Brentford",
+          "vice_captain": false
+        },
+        {
+          "captain": false,
+          "element": 55,
+          "name": "Watkins",
+          "position": "FWD",
+          "price": 8.0,
+          "team": "Aston Villa",
+          "vice_captain": false
+        }
+      ]
+    },
+    "synthesis_regret": 0.9845164467901556,
+    "transfer_policy": {
+      "2": {
+        "available": 1,
+        "in": [
+          {
+            "element": 60,
+            "name": "Hill"
+          }
+        ],
+        "out": [
+          {
+            "element": 533,
+            "name": "Mukiele"
+          }
+        ],
+        "used": 1
+      },
+      "3": {
+        "available": 1,
+        "in": [],
+        "out": [],
+        "used": 0
+      },
+      "4": {
+        "available": 2,
+        "in": [
+          {
+            "element": 155,
+            "name": "Enzo"
+          },
+          {
+            "element": 498,
+            "name": "Senesi"
+          }
+        ],
+        "out": [
+          {
+            "element": 418,
+            "name": "Maguire"
+          },
+          {
+            "element": 427,
+            "name": "Mbeumo"
+          }
+        ],
+        "used": 2
+      },
+      "5": {
+        "available": 1,
+        "in": [
+          {
+            "element": 471,
+            "name": "Milenkovi\u0107"
+          }
+        ],
+        "out": [
+          {
+            "element": 84,
+            "name": "Collins"
+          }
+        ],
+        "used": 1
+      },
+      "6": {
+        "available": 1,
+        "in": [
+          {
+            "element": 427,
+            "name": "Mbeumo"
+          }
+        ],
+        "out": [
+          {
+            "element": 480,
+            "name": "Gibbs-White"
+          }
+        ],
+        "used": 1
+      },
+      "7": {
+        "available": 1,
+        "in": [
+          {
+            "element": 112,
+            "name": "Van Hecke"
+          }
+        ],
+        "out": [
+          {
+            "element": 471,
+            "name": "Milenkovi\u0107"
+          }
+        ],
+        "used": 1
+      },
+      "8": {
+        "available": 1,
+        "in": [
+          {
+            "element": 84,
+            "name": "Collins"
+          }
+        ],
+        "out": [
+          {
+            "element": 60,
+            "name": "Hill"
+          }
+        ],
+        "used": 1
+      }
+    }
+  },
+  "decision_status": "current_evidence_provisional_until_deadline",
+  "historical_evidence": {
+    "caveat": "The 2019/20 cohort contains only ten elite managers and unusually early wildcard use; the 2025/26 top-100 trail is richer but transfer rows include wildcard restructures. These data inform decay and adaptability, not a causal optimal horizon.",
+    "fpl_genius_2025_26_top100_activity": [
+      {
+        "event": 1,
+        "managers_making_transfers": 0,
+        "managers_rolling": 100,
+        "transfer_rows": 0
+      },
+      {
+        "event": 2,
+        "managers_making_transfers": 39,
+        "managers_rolling": 61,
+        "transfer_rows": 270
+      },
+      {
+        "event": 3,
+        "managers_making_transfers": 78,
+        "managers_rolling": 22,
+        "transfer_rows": 316
+      },
+      {
+        "event": 4,
+        "managers_making_transfers": 81,
+        "managers_rolling": 19,
+        "transfer_rows": 688
+      },
+      {
+        "event": 5,
+        "managers_making_transfers": 33,
+        "managers_rolling": 67,
+        "transfer_rows": 42
+      },
+      {
+        "event": 6,
+        "managers_making_transfers": 81,
+        "managers_rolling": 19,
+        "transfer_rows": 281
+      },
+      {
+        "event": 7,
+        "managers_making_transfers": 69,
+        "managers_rolling": 31,
+        "transfer_rows": 150
+      },
+      {
+        "event": 8,
+        "managers_making_transfers": 52,
+        "managers_rolling": 48,
+        "transfer_rows": 119
+      }
+    ],
+    "vaastav_2019_20_early_chips": [
+      {
+        "chip": "wildcard",
+        "event": 2,
+        "managers": 2
+      },
+      {
+        "chip": "freehit",
+        "event": 4,
+        "managers": 1
+      },
+      {
+        "chip": "wildcard",
+        "event": 4,
+        "managers": 4
+      },
+      {
+        "chip": "3xc",
+        "event": 5,
+        "managers": 1
+      },
+      {
+        "chip": "wildcard",
+        "event": 5,
+        "managers": 1
+      }
+    ],
+    "vaastav_2019_20_top10_retention": [
+      {
+        "event": 2,
+        "maximum_retained": 15,
+        "mean_retained": 13.0,
+        "median_retained": 14.0,
+        "minimum_retained": 7
+      },
+      {
+        "event": 3,
+        "maximum_retained": 14,
+        "mean_retained": 11.9,
+        "median_retained": 13.0,
+        "minimum_retained": 7
+      },
+      {
+        "event": 4,
+        "maximum_retained": 13,
+        "mean_retained": 7.5,
+        "median_retained": 7.5,
+        "minimum_retained": 1
+      },
+      {
+        "event": 5,
+        "maximum_retained": 12,
+        "mean_retained": 7.2,
+        "median_retained": 6.5,
+        "minimum_retained": 2
+      },
+      {
+        "event": 6,
+        "maximum_retained": 12,
+        "mean_retained": 6.7,
+        "median_retained": 6.5,
+        "minimum_retained": 2
+      },
+      {
+        "event": 7,
+        "maximum_retained": 11,
+        "mean_retained": 6.2,
+        "median_retained": 6.0,
+        "minimum_retained": 2
+      },
+      {
+        "event": 8,
+        "maximum_retained": 10,
+        "mean_retained": 5.9,
+        "median_retained": 5.5,
+        "minimum_retained": 2
+      }
+    ]
+  },
+  "horizon_weight_champion_intervals": [
+    {
+      "candidate_id": "R-bf35263c58",
+      "lower": 0.0,
+      "midpoint_regret": 1.020225591524382,
+      "upper": 0.15090374390829625
+    },
+    {
+      "candidate_id": "R-e80223d1fc",
+      "lower": 0.15090374390829625,
+      "midpoint_regret": 0.9996614485486934,
+      "upper": 0.7360538638858656
+    },
+    {
+      "candidate_id": "R-2f0b2cc758",
+      "lower": 0.7360538638858656,
+      "midpoint_regret": 0.718615619033099,
+      "upper": 1.0
+    }
+  ],
+  "long_horizon_challenger": {
+    "candidate_id": "R-2f0b2cc758",
+    "central_eight_week_delta": {
+      "beat_probability": 0.54388,
+      "delta_95ci_high": 1.5531664786016104,
+      "delta_95ci_low": 1.2117470260011198,
+      "mean_delta": 1.382456752301365,
+      "tie_probability": 0.0
+    },
+    "eight_week_horizon": {
+      "candidate_id": "R-2f0b2cc758",
+      "central_p10": 291.50384647208386,
+      "central_p90": 369.12657412150855,
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "origin_ids": [
+        "C001",
+        "C003",
+        "S001"
+      ],
+      "robust_regret": 0.13208169271029307,
+      "scenario_regrets": {
+        "gw1_3_open_d088": 0.14847772178660534,
+        "gw1_5_open_d088": 0.04081113542852677,
+        "gw1_8_fixed_d088": 0.3946990669492152,
+        "gw1_8_open_d070": 0.15065749529034633,
+        "gw1_8_open_d080": 0.0,
+        "gw1_8_open_d088": 0.0,
+        "gw1_8_open_d094": 0.0,
+        "gw1_8_roll_gw2_d088": 0.0,
+        "gw6_8_open_equal": 0.10657203781127578
+      },
+      "scenario_values": {
+        "gw1_3_open_d088": 164.7790679558595,
+        "gw1_5_open_d088": 242.20391293036516,
+        "gw1_8_fixed_d088": 325.7064858451409,
+        "gw1_8_open_d070": 194.3411940101058,
+        "gw1_8_open_d080": 257.23419663319333,
+        "gw1_8_open_d088": 329.85219017992137,
+        "gw1_8_open_d094": 402.3194446954804,
+        "gw1_8_roll_gw2_d088": 329.4134453792892,
+        "gw6_8_open_equal": 187.8765080078888
+      },
+      "weighted_mean_regret": 0.06642734915056252,
+      "worst_scenario_regret": 0.3946990669492152
+    },
+    "five_week_robust": {
+      "base_cvar10": 250.69979858398438,
+      "base_p10": 264.5,
+      "base_p90": 351.20001220703125,
+      "candidate_id": "R-2f0b2cc758",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "origin_ids": [
+        "C001",
+        "C003",
+        "S001"
+      ],
+      "robust_regret": 2.051503424804692,
+      "scenario_regrets": {
+        "base_anchored_open": 0.10544000000004417,
+        "base_evidence_fixed": 0.091552734375,
+        "base_evidence_open": 0.12237548828125,
+        "base_evidence_roll_gw2": 0.371063232421875,
+        "base_raw_open": 3.845959999999991,
+        "high_goal_fixed": 4.710280000000012,
+        "high_goal_open": 4.390679999999975,
+        "high_goal_roll_gw2": 3.9538799999999696
+      },
+      "scenario_values": {
+        "base_anchored_open": 310.09036,
+        "base_evidence_fixed": 304.1535339355469,
+        "base_evidence_open": 307.3822326660156,
+        "base_evidence_roll_gw2": 307.30767822265625,
+        "base_raw_open": 283.00896,
+        "high_goal_fixed": 286.8884,
+        "high_goal_open": 288.43644,
+        "high_goal_roll_gw2": 288.71832
+      },
+      "weighted_mean_regret": 1.1652445664062527,
+      "worst_scenario_regret": 4.710280000000012
+    }
+  },
+  "method": {
+    "family_worst_weight": 0.2,
+    "formula": "(1-family_worst_weight) * weighted audit-family regret + family_worst_weight * maximum audit-family regret",
+    "horizon_family_weight": 0.5,
+    "reason": "The five-week audit owns scoring-environment and component-model stress; the eight-week audit owns horizon, decay, late-fixture and transfer-timing stress. They receive equal prior weight, with a minimax surcharge for family brittleness.",
+    "robust_family_weight": 0.5,
+    "weighted_family_weight": 0.8
+  },
+  "ranking": [
+    {
+      "candidate_id": "R-e80223d1fc",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+      "family_weighted_regret": 0.9510223711097673,
+      "family_worst_regret": 1.1184927495117087,
+      "gw1_bench_spend": 23.0,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.7835519927078258,
+      "origin_ids": [
+        "C009",
+        "C011"
+      ],
+      "rank": 1,
+      "robust_family_regret": 1.1184927495117087,
+      "synthesis_regret": 0.9845164467901556
+    },
+    {
+      "candidate_id": "R-dc7de17def",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.1338593290332015,
+      "family_worst_regret": 1.5502726911621114,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.7174459669042915,
+      "origin_ids": [
+        "C007"
+      ],
+      "rank": 2,
+      "robust_family_regret": 1.5502726911621114,
+      "synthesis_regret": 1.2171420014589835
+    },
+    {
+      "candidate_id": "R-ad155aeb95",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.176258847971047,
+      "family_worst_regret": 1.5767334306640692,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.7757842652780245,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 3,
+      "robust_family_regret": 1.5767334306640692,
+      "synthesis_regret": 1.2563537645096514
+    },
+    {
+      "candidate_id": "R-6dcff8b173",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.1958160209423907,
+      "family_worst_regret": 1.5759533388671882,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8156787030175929,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 4,
+      "robust_family_regret": 1.5759533388671882,
+      "synthesis_regret": 1.2718434845273503
+    },
+    {
+      "candidate_id": "R-82f2d8901a",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.2024730338461165,
+      "family_worst_regret": 1.595237066162115,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8097090015301183,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 5,
+      "robust_family_regret": 1.595237066162115,
+      "synthesis_regret": 1.2810258403093162
+    },
+    {
+      "candidate_id": "R-2f0b2cc758",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.0917925587574926,
+      "family_worst_regret": 2.051503424804692,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.13208169271029307,
+      "origin_ids": [
+        "C001",
+        "C003",
+        "S001"
+      ],
+      "rank": 6,
+      "robust_family_regret": 2.051503424804692,
+      "synthesis_regret": 1.2837347319669326
+    },
+    {
+      "candidate_id": "R-c78e39e675",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.2323106181462204,
+      "family_worst_regret": 1.628853173095702,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.835768063196739,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 7,
+      "robust_family_regret": 1.628853173095702,
+      "synthesis_regret": 1.3116191291361168
+    },
+    {
+      "candidate_id": "R-0145b125ed",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+      "family_weighted_regret": 1.2168608206293858,
+      "family_worst_regret": 1.7063506079101471,
+      "gw1_bench_spend": 23.0,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.7273710333486247,
+      "origin_ids": [
+        "C002",
+        "C005"
+      ],
+      "rank": 8,
+      "robust_family_regret": 1.7063506079101471,
+      "synthesis_regret": 1.314758778085538
+    },
+    {
+      "candidate_id": "R-c5221e2e35",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.1425187472746985,
+      "family_worst_regret": 2.0830490019531354,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.20198849259626173,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 9,
+      "robust_family_regret": 2.0830490019531354,
+      "synthesis_regret": 1.330624798210386
+    },
+    {
+      "candidate_id": "R-bf35263c58",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a321.5m bench",
+      "family_weighted_regret": 1.249822271303025,
+      "family_worst_regret": 1.7288702486607292,
+      "gw1_bench_spend": 21.5,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 1.7288702486607292,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 10,
+      "robust_family_regret": 0.7707742939453208,
+      "synthesis_regret": 1.345631866774566
+    },
+    {
+      "candidate_id": "R-5ec2efb0bf",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.1676577866282893,
+      "family_worst_regret": 2.0968049851074158,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.23851058814916315,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 11,
+      "robust_family_regret": 2.0968049851074158,
+      "synthesis_regret": 1.3534872263241147
+    },
+    {
+      "candidate_id": "R-2d6c476dc0",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.1717746939076346,
+      "family_worst_regret": 2.0910936264648443,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.25245576135042486,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 12,
+      "robust_family_regret": 2.0910936264648443,
+      "synthesis_regret": 1.3556384804190764
+    },
+    {
+      "candidate_id": "R-060855a345",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.2870615698492314,
+      "family_worst_regret": 1.6906950036621025,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8834281360363605,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 13,
+      "robust_family_regret": 1.6906950036621025,
+      "synthesis_regret": 1.3677882566118056
+    },
+    {
+      "candidate_id": "R-6707f2967c",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.2025597148364549,
+      "family_worst_regret": 2.138087518554692,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.26703191111821756,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 14,
+      "robust_family_regret": 2.138087518554692,
+      "synthesis_regret": 1.3896652755801022
+    },
+    {
+      "candidate_id": "R-61175a0cc3",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.2615614969251647,
+      "family_worst_regret": 2.2014606420898497,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.32166235176047964,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 15,
+      "robust_family_regret": 2.2014606420898497,
+      "synthesis_regret": 1.4495413259581018
+    },
+    {
+      "candidate_id": "R-466945eb61",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.2908254492887743,
+      "family_worst_regret": 2.1961685954589742,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.38548230311857423,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 16,
+      "robust_family_regret": 2.1961685954589742,
+      "synthesis_regret": 1.4718940785228143
+    },
+    {
+      "candidate_id": "R-0bef525404",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.3768156798501279,
+      "family_worst_regret": 2.0652641657714907,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.688367193928765,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 17,
+      "robust_family_regret": 2.0652641657714907,
+      "synthesis_regret": 1.5145053770344006
+    },
+    {
+      "candidate_id": "R-06e8b643f1",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.4812395081069323,
+      "family_worst_regret": 1.8056120007324257,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 1.1568670154814389,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 18,
+      "robust_family_regret": 1.8056120007324257,
+      "synthesis_regret": 1.5461140066320311
+    },
+    {
+      "candidate_id": "R-2a67f53150",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.5815861424900366,
+      "family_worst_regret": 2.6630948020019622,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.5000774829781108,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 19,
+      "robust_family_regret": 2.6630948020019622,
+      "synthesis_regret": 1.7978878743924218
+    },
+    {
+      "candidate_id": "R-97d02f3f64",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.6909303165094685,
+      "family_worst_regret": 2.225949209472658,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 1.155911423546279,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 20,
+      "robust_family_regret": 2.225949209472658,
+      "synthesis_regret": 1.7979340951021063
+    },
+    {
+      "candidate_id": "R-e30b37b7e3",
+      "display_name": "3-4-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a320.0m bench",
+      "family_weighted_regret": 1.8610902027889382,
+      "family_worst_regret": 1.946080974425529,
+      "gw1_bench_spend": 20.0,
+      "gw1_formation": "3-4-3",
+      "horizon_family_regret": 1.946080974425529,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 21,
+      "robust_family_regret": 1.7760994311523475,
+      "synthesis_regret": 1.8780883571162565
+    },
+    {
+      "candidate_id": "R-8166c36cb8",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.7237825788523133,
+      "family_worst_regret": 2.647439263671872,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8001258940327546,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 22,
+      "robust_family_regret": 2.647439263671872,
+      "synthesis_regret": 1.9085139158162252
+    },
+    {
+      "candidate_id": "R-db6f7f1011",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.7571984078785527,
+      "family_worst_regret": 2.6589069711914077,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8554898445656978,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 23,
+      "robust_family_regret": 2.6589069711914077,
+      "synthesis_regret": 1.937540120541124
+    },
+    {
+      "candidate_id": "R-6a6ac7fde7",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.662196879974975,
+      "family_worst_regret": 3.1066088745117257,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.21778488543822394,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 24,
+      "robust_family_regret": 3.1066088745117257,
+      "synthesis_regret": 1.9510792788823252
+    },
+    {
+      "candidate_id": "R-d2a9357b83",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.7801012050273233,
+      "family_worst_regret": 2.6619527600097683,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8982496500448782,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 25,
+      "robust_family_regret": 2.6619527600097683,
+      "synthesis_regret": 1.9564715160238126
+    },
+    {
+      "candidate_id": "R-61ccedb220",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.7878821516811012,
+      "family_worst_regret": 2.678199074462884,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.8975652288993183,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 26,
+      "robust_family_regret": 2.678199074462884,
+      "synthesis_regret": 1.965945536237458
+    },
+    {
+      "candidate_id": "R-f35fc409d2",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.7014533789455502,
+      "family_worst_regret": 3.1201611936035176,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.2827455642875828,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 27,
+      "robust_family_regret": 3.1201611936035176,
+      "synthesis_regret": 1.9851949418771437
+    },
+    {
+      "candidate_id": "R-73915df68a",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 1.8150413758664246,
+      "family_worst_regret": 2.7056061342773488,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 0.9244766174555002,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 28,
+      "robust_family_regret": 2.7056061342773488,
+      "synthesis_regret": 1.9931543275486097
+    },
+    {
+      "candidate_id": "R-96e8db27cd",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.7294415608993012,
+      "family_worst_regret": 3.12372055004883,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.3351625717497723,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 29,
+      "robust_family_regret": 3.12372055004883,
+      "synthesis_regret": 2.008297358729207
+    },
+    {
+      "candidate_id": "R-1ac7148a96",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.7337173213495563,
+      "family_worst_regret": 3.137384046874993,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.33005059582411944,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 30,
+      "robust_family_regret": 3.137384046874993,
+      "synthesis_regret": 2.0144506664546435
+    },
+    {
+      "candidate_id": "R-37157bd4c7",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.7639282464134665,
+      "family_worst_regret": 3.1698027370605497,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.3580537557663831,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 31,
+      "robust_family_regret": 3.1698027370605497,
+      "synthesis_regret": 2.045103144542883
+    },
+    {
+      "candidate_id": "R-5939d509fb",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.5m bench",
+      "family_weighted_regret": 1.951598784928224,
+      "family_worst_regret": 3.129097643554691,
+      "gw1_bench_spend": 22.5,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 0.774099926301757,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 32,
+      "robust_family_regret": 3.129097643554691,
+      "synthesis_regret": 2.1870985566535177
+    },
+    {
+      "candidate_id": "R-696e53708a",
+      "display_name": "4-3-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a322.0m bench",
+      "family_weighted_regret": 2.2464565379259245,
+      "family_worst_regret": 3.3156705761718817,
+      "gw1_bench_spend": 22.0,
+      "gw1_formation": "4-3-3",
+      "horizon_family_regret": 1.1772424996799669,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 33,
+      "robust_family_regret": 3.3156705761718817,
+      "synthesis_regret": 2.460299345575116
+    },
+    {
+      "candidate_id": "R-b133d2c368",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a324.0m bench",
+      "family_weighted_regret": 2.50941869441478,
+      "family_worst_regret": 4.254045122314449,
+      "gw1_bench_spend": 24.0,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 0.7647922665151112,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 34,
+      "robust_family_regret": 4.254045122314449,
+      "synthesis_regret": 2.858343979994714
+    },
+    {
+      "candidate_id": "R-29d7148a23",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a324.0m bench",
+      "family_weighted_regret": 2.9119769595918554,
+      "family_worst_regret": 4.047238620605472,
+      "gw1_bench_spend": 24.0,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 1.776715298578239,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 35,
+      "robust_family_regret": 4.047238620605472,
+      "synthesis_regret": 3.1390292917945786
+    },
+    {
+      "candidate_id": "R-4a9f97e761",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a324.0m bench",
+      "family_weighted_regret": 2.972920231133789,
+      "family_worst_regret": 4.19496226245117,
+      "gw1_bench_spend": 24.0,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 1.750878199816407,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 36,
+      "robust_family_regret": 4.19496226245117,
+      "synthesis_regret": 3.217328637397265
+    },
+    {
+      "candidate_id": "R-cfccaf7ce8",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a324.0m bench",
+      "family_weighted_regret": 3.137112626093753,
+      "family_worst_regret": 4.428639873779304,
+      "gw1_bench_spend": 24.0,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 1.8455853784082026,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 37,
+      "robust_family_regret": 4.428639873779304,
+      "synthesis_regret": 3.395418075630863
+    },
+    {
+      "candidate_id": "R-5f303bfed6",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.5m bench",
+      "family_weighted_regret": 3.199180996537266,
+      "family_worst_regret": 5.483708212402349,
+      "gw1_bench_spend": 23.5,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 0.9146537806721835,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 38,
+      "robust_family_regret": 5.483708212402349,
+      "synthesis_regret": 3.656086439710283
+    },
+    {
+      "candidate_id": "R-0eb57c4f34",
+      "display_name": "5-2-3 \u00b7 Bruno Fernandes captain \u00b7 \u00a324.0m bench",
+      "family_weighted_regret": 3.2085849919834972,
+      "family_worst_regret": 5.597199335693357,
+      "gw1_bench_spend": 24.0,
+      "gw1_formation": "5-2-3",
+      "horizon_family_regret": 0.8199706482736372,
+      "origin_ids": [
+        "swap-neighbourhood"
+      ],
+      "rank": 39,
+      "robust_family_regret": 5.597199335693357,
+      "synthesis_regret": 3.68630786072547
+    },
+    {
+      "candidate_id": "R-9258ac89ae",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a329.0m bench",
+      "family_weighted_regret": 12.317552107500742,
+      "family_worst_regret": 15.080870133300781,
+      "gw1_bench_spend": 29.0,
+      "gw1_formation": "5-3-2",
+      "horizon_family_regret": 9.554234081700702,
+      "origin_ids": [
+        "S028"
+      ],
+      "rank": 40,
+      "robust_family_regret": 15.080870133300781,
+      "synthesis_regret": 12.87021571266075
+    }
+  ],
+  "selected_family_metrics": {
+    "eight_week_horizon": {
+      "candidate_id": "R-e80223d1fc",
+      "central_p10": 291.67931498879653,
+      "central_p90": 368.5020068352128,
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+      "gw1_bench_spend": 23.0,
+      "gw1_formation": "5-3-2",
+      "origin_ids": [
+        "C009",
+        "C011"
+      ],
+      "robust_regret": 0.7835519927078258,
+      "scenario_regrets": {
+        "gw1_3_open_d088": 0.0,
+        "gw1_5_open_d088": 0.06775194986329325,
+        "gw1_8_fixed_d088": 2.167634250613048,
+        "gw1_8_open_d070": 0.03522860221474389,
+        "gw1_8_open_d080": 0.12107684645934569,
+        "gw1_8_open_d088": 0.4331636245026971,
+        "gw1_8_open_d094": 0.7790232159880475,
+        "gw1_8_roll_gw2_d088": 0.31061790931141786,
+        "gw6_8_open_equal": 1.1388682668304284
+      },
+      "scenario_values": {
+        "gw1_3_open_d088": 164.9275456776461,
+        "gw1_5_open_d088": 242.1769721159304,
+        "gw1_8_fixed_d088": 323.93355066147706,
+        "gw1_8_open_d070": 194.4566229031814,
+        "gw1_8_open_d080": 257.113119786734,
+        "gw1_8_open_d088": 329.41902655541867,
+        "gw1_8_open_d094": 401.54042147949235,
+        "gw1_8_roll_gw2_d088": 329.1028274699778,
+        "gw6_8_open_equal": 186.84421177886964
+      },
+      "weighted_mean_regret": 0.4375314282315202,
+      "worst_scenario_regret": 2.167634250613048
+    },
+    "five_week_robust": {
+      "base_cvar10": 250.35231018066406,
+      "base_p10": 264.70001220703125,
+      "base_p90": 351.5,
+      "candidate_id": "R-e80223d1fc",
+      "display_name": "5-3-2 \u00b7 Bruno Fernandes captain \u00b7 \u00a323.0m bench",
+      "gw1_bench_spend": 23.0,
+      "gw1_formation": "5-3-2",
+      "origin_ids": [
+        "C009",
+        "C011"
+      ],
+      "robust_regret": 1.1184927495117087,
+      "scenario_regrets": {
+        "base_anchored_open": 0.3258000000000152,
+        "base_evidence_fixed": 1.62347412109375,
+        "base_evidence_open": 0.10772705078125,
+        "base_evidence_roll_gw2": 0.125335693359375,
+        "base_raw_open": 1.7160799999999767,
+        "high_goal_fixed": 2.0527999999999906,
+        "high_goal_open": 2.245079999999973,
+        "high_goal_roll_gw2": 1.6610399999999572
+      },
+      "scenario_values": {
+        "base_anchored_open": 309.87,
+        "base_evidence_fixed": 302.6216125488281,
+        "base_evidence_open": 307.3968811035156,
+        "base_evidence_roll_gw2": 307.55340576171875,
+        "base_raw_open": 285.13884,
+        "high_goal_fixed": 289.54588,
+        "high_goal_open": 290.58204,
+        "high_goal_roll_gw2": 291.01116
+      },
+      "weighted_mean_regret": 0.7429636660156206,
+      "worst_scenario_regret": 2.245079999999973
+    }
+  },
+  "source_artifacts": {
+    "horizon_results": "/home/lewis/Workspace/fpl-agent/data/model/horizon_audit_v1/results.json",
+    "horizon_results_sha256": "93bb9d0f0491936705a236a439b6de79f0c132f03f132afd61d910855bae891c",
+    "robust_results": "/home/lewis/Workspace/fpl-agent/data/model/robust_search_v2_global/results.json",
+    "robust_results_sha256": "6a849fe1633fa9989c465b7b9e8ee69c150cc6e507bdde605624a2020f5401c8",
+    "robust_shortlist": "/home/lewis/Workspace/fpl-agent/data/model/robust_search_v2_global/shortlist.json",
+    "robust_shortlist_sha256": "15565e1b963b1ee4e627fe73183418e324fdb201ba1f0e6a38f542fc98fe2399"
+  },
+  "verdict": "The synthesis selects a balanced common finalist rather than either audit-family leader.",
+  "version": "gw1_decision_synthesis_v1"
+}

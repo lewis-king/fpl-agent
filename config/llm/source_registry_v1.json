@@ -1,0 +1,167 @@
+{
+  "schema_version": "source-policy-v1",
+  "reviewed_at": "2026-08-04",
+  "default_decision": "deny",
+  "uses": [
+    "intent_discovery",
+    "sft",
+    "rag",
+    "evaluation",
+    "automated_fetch",
+    "live_tool"
+  ],
+  "sources": [
+    {
+      "source_id": "owned-training-seed",
+      "source_type": "first_party",
+      "locator": "config/llm/training_seeds/*",
+      "rights": "owned",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "allow",
+        "rag": "allow",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "deny"
+      },
+      "notes": "Original FPLAgent examples; evaluation contamination checks still apply."
+    },
+    {
+      "source_id": "owned-reports",
+      "source_type": "first_party",
+      "locator": "reports/*.md",
+      "rights": "owned",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "allow",
+        "rag": "allow",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "deny"
+      },
+      "notes": "Versioned methodology and decision reports written for this project."
+    },
+    {
+      "source_id": "engine-generated-receipts",
+      "source_type": "first_party_generated",
+      "locator": "data/decisions/*",
+      "rights": "owned",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "allow",
+        "rag": "allow",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "allow"
+      },
+      "notes": "Use point-in-time receipts and retain their input/model/version hashes."
+    },
+    {
+      "source_id": "synthetic-screenshot-renderer",
+      "source_type": "first_party_generated",
+      "locator": "future standalone renderer",
+      "rights": "owned_assets_and_generated_layout",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "allow",
+        "rag": "deny",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "deny"
+      },
+      "notes": "Only use generic or rights-cleared assets; split by squad and template."
+    },
+    {
+      "source_id": "user-supplied-screenshots",
+      "source_type": "user_supplied",
+      "locator": "locked screenshot benchmark",
+      "rights": "limited_project_input_with_third_party_ui",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "deny",
+        "rag": "deny",
+        "evaluation": "allow",
+        "automated_fetch": "deny",
+        "live_tool": "deny"
+      },
+      "notes": "Use as locked evaluation references, not as training examples."
+    },
+    {
+      "source_id": "official-fpl-game",
+      "source_type": "official_service",
+      "locator": "https://fantasy.premierleague.com/",
+      "terms_url": "https://fantasy.premierleague.com/help/terms",
+      "rights": "all_rights_reserved_and_service_terms",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "deny",
+        "rag": "allow",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "allow"
+      },
+      "notes": "Project owner has accepted continued extraction for private, non-commercial research. Cache and rate-limit requests, record point-in-time provenance, do not redistribute raw dumps, and turn structured facts into original SFT examples rather than copying official prose. Re-review before any public or commercial deployment."
+    },
+    {
+      "source_id": "official-fpl-derived-synthetic",
+      "source_type": "transformed_research_data",
+      "locator": "generated from provenance-bearing official FPL extracts",
+      "rights": "structured_facts_with_original_project_expression",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "allow",
+        "rag": "allow",
+        "evaluation": "allow",
+        "automated_fetch": "allow",
+        "live_tool": "deny"
+      },
+      "notes": "Retain upstream URI, timestamp and checksum. Training prompts and answers must be newly generated, not copied official prose."
+    },
+    {
+      "source_id": "reddit-user-content",
+      "source_type": "community_platform",
+      "locator": "https://www.reddit.com/",
+      "terms_url": "https://redditinc.com/policies/data-api-terms",
+      "rights": "user_owned_restricted_platform_access",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "deny",
+        "rag": "deny",
+        "evaluation": "deny",
+        "automated_fetch": "deny",
+        "live_tool": "deny"
+      },
+      "notes": "Manual discovery of broad, non-identifying FPL intents only. Reddit's API terms do not grant third-party AI-training rights without rightsholder permission."
+    },
+    {
+      "source_id": "general-public-web",
+      "source_type": "public_web",
+      "locator": "source-specific",
+      "rights": "unknown_until_reviewed",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "review",
+        "rag": "review",
+        "evaluation": "review",
+        "automated_fetch": "review",
+        "live_tool": "deny"
+      },
+      "notes": "A public URL is not a training licence. Record author, URL, access date, licence, terms, robots policy and checksums before ingestion."
+    },
+    {
+      "source_id": "explicit-open-license-dataset",
+      "source_type": "licensed_dataset",
+      "locator": "source-specific",
+      "rights": "explicit_licence_requires_lineage_review",
+      "decisions": {
+        "intent_discovery": "allow",
+        "sft": "review",
+        "rag": "review",
+        "evaluation": "review",
+        "automated_fetch": "review",
+        "live_tool": "deny"
+      },
+      "notes": "Allow only after verifying the licence covers the actual content and intended use, including attribution/share-alike obligations and upstream lineage."
+    }
+  ]
+}

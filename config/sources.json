@@ -1,0 +1,64 @@
+{
+  "solio": {
+    "season": "2025-26",
+    "access": "public_static_files",
+    "homepage": "https://eos.solioanalytics.com/",
+    "files": {
+      "manifest.json": "https://eos.solioanalytics.com/manifest.json",
+      "leaderboards.json": "https://eos.solioanalytics.com/leaderboards.json",
+      "dist.json": "https://eos.solioanalytics.com/dist.json",
+      "eos.bin": "https://eos.solioanalytics.com/eos.bin",
+      "eos_active.bin": "https://eos.solioanalytics.com/eos_active.bin"
+    }
+  },
+  "fpl_genius": {
+    "season": "2025/26",
+    "access": "public_undocumented_application_endpoint",
+    "homepage": "https://fplgeni.us/",
+    "trpc": "https://fplgeni.us/api/trpc",
+    "model_version": "manager_agency_v1",
+    "usage_note": "Finite cached research cohort only; never a production dependency"
+  },
+  "veterans": {
+    "access": "public_reddit_rss_and_google_sheets",
+    "rss": "https://www.reddit.com/user/mikecro2/submitted/.rss",
+    "selection_workbook_id": "1mjT4XihjnZ-d1eVc1b4Je5tmBccntB2gTrJAnYeEtWE"
+  },
+  "vaastav": {
+    "access": "public_github_files",
+    "repository": "https://github.com/vaastav/Fantasy-Premier-League",
+    "raw_base": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data",
+    "seasons": [
+      "2016-17", "2017-18", "2018-19", "2019-20", "2020-21",
+      "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"
+    ],
+    "season_files": ["gws/merged_gw.csv", "players_raw.csv", "fixtures.csv", "teams.csv"]
+  },
+  "vaastav_deadlines": {
+    "access": "public_github_commit_history",
+    "repository": "https://github.com/vaastav/Fantasy-Premier-League",
+    "api_base": "https://api.github.com/repos/vaastav/Fantasy-Premier-League",
+    "raw_base": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League",
+    "seasons": ["2023-24", "2024-25", "2025-26"],
+    "snapshot_files": ["players_raw.csv", "fixtures.csv", "teams.csv"]
+  },
+  "supporting": {
+    "access": "public_github_files",
+    "files": {
+      "paul_top50.xlsx": "https://raw.githubusercontent.com/paulmusco/ironhack-project-3/master/data/Top_50_fpl.xlsx",
+      "titan_managers.csv": "https://raw.githubusercontent.com/mavizzi/Titan-FPL-Managers-Performance-Analysis-2022-23/main/titan_managers.csv",
+      "soong_manager_history.json": "https://raw.githubusercontent.com/fredricksoong-ai/fpl-data-store/main/seasons/2025-2026/final/manager_history.json",
+      "soong_my_squad_final.json": "https://raw.githubusercontent.com/fredricksoong-ai/fpl-data-store/main/seasons/2025-2026/final/my_squad.json",
+      "soong_rival_squads_final.json": "https://raw.githubusercontent.com/fredricksoong-ai/fpl-data-store/main/seasons/2025-2026/final/rival_squads.json"
+    }
+  },
+  "fpl_current": {
+    "season": "2026-27",
+    "access": "public_undocumented_official_application_endpoint",
+    "base": "https://fantasy.premierleague.com/api",
+    "files": {
+      "bootstrap-static.json": "https://fantasy.premierleague.com/api/bootstrap-static/",
+      "fixtures.json": "https://fantasy.premierleague.com/api/fixtures/"
+    }
+  }
+}

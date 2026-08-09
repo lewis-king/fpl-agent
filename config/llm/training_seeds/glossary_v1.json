@@ -1,0 +1,92 @@
+[
+  {
+    "term": "blank",
+    "definition": "A gameweek in which a player produces no meaningful FPL return beyond ordinary appearance points, or scores no points at all.",
+    "caveat": "It does not imply that the player was absent or injured."
+  },
+  {
+    "term": "haul",
+    "definition": "A large FPL score, normally produced by multiple returns, bonus points or an unusually valuable single performance.",
+    "caveat": "There is no official points threshold for a haul."
+  },
+  {
+    "term": "return",
+    "definition": "An FPL-relevant scoring contribution such as a goal, assist or clean sheet, depending on position and context.",
+    "caveat": "Community usage is informal and sometimes excludes appearance points."
+  },
+  {
+    "term": "nailed",
+    "definition": "Community shorthand for a player believed to have a very secure place in the starting XI.",
+    "caveat": "It is a confidence judgement, not a guarantee of starting or playing 60 minutes."
+  },
+  {
+    "term": "xMins",
+    "definition": "Expected minutes: a probability-weighted estimate of how long a player is likely to play, including the chance of not appearing.",
+    "caveat": "It is an uncertain forecast rather than a promised number of minutes."
+  },
+  {
+    "term": "differential",
+    "definition": "A relatively low-owned player whose points can separate a manager from relevant opponents.",
+    "caveat": "Low ownership alone does not make a player a good pick."
+  },
+  {
+    "term": "template",
+    "definition": "The group of highly owned or commonly selected players that appears across many active squads.",
+    "caveat": "Template status describes ownership, not whether the players remain optimal."
+  },
+  {
+    "term": "enabler",
+    "definition": "A low-cost selection used to free budget for more expensive players elsewhere while still providing acceptable minutes or points.",
+    "caveat": "An enabler still has an opportunity cost and should not be selected solely for price."
+  },
+  {
+    "term": "fodder",
+    "definition": "A minimum-price or very cheap squad player selected mainly to satisfy squad structure or budget constraints.",
+    "caveat": "A non-playing fodder pick can weaken autosub resilience."
+  },
+  {
+    "term": "effective ownership",
+    "definition": "Ownership adjusted for captaincy and similar multipliers within a relevant manager population, representing rank exposure to a player's score.",
+    "caveat": "It describes covariance with opponents and is not evidence that the player will score well."
+  },
+  {
+    "term": "hit",
+    "definition": "The points cost paid when a manager makes more transfers than their available free transfers permit.",
+    "caveat": "A transfer should be compared with rolling and must overcome both the hit and future-state opportunity cost."
+  },
+  {
+    "term": "roll",
+    "definition": "Make no transfer and carry an available free transfer into a later gameweek when the active rules permit it.",
+    "caveat": "The current transfer-carry limit must be retrieved from the active-season rules."
+  },
+  {
+    "term": "cameo",
+    "definition": "A short substitute appearance, often too brief to earn the 60-minute appearance point or clean-sheet eligibility.",
+    "caveat": "Any appearance can still block an autosub under the relevant rules."
+  },
+  {
+    "term": "xGI",
+    "definition": "Expected goal involvements, usually the sum of expected goals and expected assists over a stated period or per-90 basis.",
+    "caveat": "The metric is descriptive evidence and does not automatically account for future minutes or fixtures."
+  },
+  {
+    "term": "fixture swing",
+    "definition": "A point in the schedule where one or more clubs move from a difficult fixture run to an easier one, or the reverse.",
+    "caveat": "Fixture difficulty and the useful planning horizon must be stated rather than assumed."
+  },
+  {
+    "term": "double gameweek",
+    "definition": "A gameweek in which a club has more than one fixture allocated to the same FPL event.",
+    "caveat": "Two fixtures do not guarantee two starts or make every player a good selection."
+  },
+  {
+    "term": "blank gameweek",
+    "definition": "A gameweek in which a club has no fixture allocated to that FPL event.",
+    "caveat": "Postponements and rescheduling mean the current fixture snapshot is authoritative."
+  },
+  {
+    "term": "minutes risk",
+    "definition": "Uncertainty about whether a player starts, appears, reaches key minute thresholds or is substituted early.",
+    "caveat": "It should be represented probabilistically and updated with timestamped team news."
+  }
+]

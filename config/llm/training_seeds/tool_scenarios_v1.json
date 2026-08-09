@@ -1,0 +1,149 @@
+[
+  {
+    "id": "tool-seed-price-001",
+    "user": "Can you check the latest price for the player I selected as ID 73?",
+    "tool_calls": [
+      {
+        "name": "get_live_player_snapshot",
+        "arguments": {
+          "player_ids": [73],
+          "as_of": "2025-10-04T09:00:00+01:00"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "snapshot_at": "2025-10-04T08:55:00+01:00",
+        "players": [{"player_id": 73, "price": 7.1, "status": "available"}]
+      }
+    ],
+    "assistant": "Player 73 is £7.1m in the official snapshot from 08:55 BST. The price is time-sensitive, so that snapshot time belongs with the answer.",
+    "metadata": {"task_type": "live-fact", "temporal_class": "snapshot", "synthetic": true}
+  },
+  {
+    "id": "tool-seed-captain-001",
+      "user": "Compare players 14 and 81 for captain in event 12. Use the robust policy for manager 7.",
+    "tool_calls": [
+      {
+        "name": "compare_captains",
+        "arguments": {
+          "manager_id": 7,
+          "event": 12,
+          "candidate_player_ids": [14, 81],
+          "risk_policy": "robust",
+          "as_of": "2025-11-20T18:00:00+00:00"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "receipt_id": "synthetic-captain-001",
+        "captain_player_id": 81,
+        "vice_captain_player_id": 14,
+        "mean_advantage": 0.7,
+        "main_risk": "player 81 has the wider minutes interval"
+      }
+    ],
+    "assistant": "Captain player 81 and vice player 14 under the robust policy. The simulated mean edge is 0.7 points, but player 81 has the wider minutes interval, so this is a modest preference rather than a lock.",
+    "metadata": {"task_type": "captaincy", "temporal_class": "decision-receipt", "synthetic": true}
+  },
+  {
+    "id": "tool-seed-hit-001",
+      "user": "For manager 8, evaluate 31 to 44 over events 18 to 22 and include the hit.",
+    "tool_calls": [
+      {
+        "name": "evaluate_transfers",
+        "arguments": {
+          "manager_id": 8,
+          "transfers": [{"player_out_id": 31, "player_in_id": 44}],
+          "start_event": 18,
+          "horizon": 5,
+          "as_of": "2026-01-02T16:00:00+00:00"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "receipt_id": "synthetic-transfer-001",
+        "roll_points": 27.4,
+        "transfer_points_before_hit": 30.1,
+        "hit_cost": 4.0,
+        "transfer_points_after_hit": 26.1
+      }
+    ],
+    "assistant": "Roll. The move gains 2.7 projected points before the hit but falls 1.3 points behind after the four-point cost: 26.1 versus 27.4 over five events. That does not clear the current evidence gate.",
+    "metadata": {"task_type": "transfer", "temporal_class": "decision-receipt", "synthetic": true}
+  },
+  {
+    "id": "tool-seed-rules-001",
+    "user": "Check the active rules for what happens when my captain records no appearance.",
+    "tool_calls": [
+      {
+        "name": "search_knowledge",
+        "arguments": {
+          "query": "captain no appearance vice captain scoring rule",
+          "as_of": "2026-08-01T12:00:00+01:00",
+          "namespaces": ["rules"],
+          "season": "2026-27"
+        }
+      }
+    ],
+    "tool_results": [
+      {
+        "source_id": "synthetic-active-rule-001",
+        "observed_at": "2026-07-30T10:00:00+01:00",
+        "claim": "If the captain does not play, the vice-captain receives the captain multiplier if eligible."
+      }
+    ],
+    "assistant": "Under the retrieved 2026/27 rule, an eligible vice-captain receives the captain multiplier when the captain does not play. This is based on the rules snapshot observed on 30 July 2026.",
+    "metadata": {"task_type": "rules", "temporal_class": "versioned-document", "synthetic": true}
+  },
+  {
+    "id": "tool-seed-stale-001",
+    "user": "A report from Monday says player 90 missed training. Is he definitely out on Saturday?",
+    "tool_calls": [
+      {
+        "name": "get_live_player_snapshot",
+        "arguments": {
+          "player_ids": [90],
+          "as_of": "2026-02-06T14:00:00+00:00"
+        }
+      },
+      {
+        "name": "search_knowledge",
+        "arguments": {
+          "query": "player 90 training availability press conference",
+          "as_of": "2026-02-06T14:00:00+00:00",
+          "namespaces": ["news"],
+          "season": "2025-26",
+          "event": 25
+        }
+      }
+    ],
+    "tool_results": [
+      {"snapshot_at": "2026-02-06T13:50:00+00:00", "players": [{"player_id": 90, "status": "doubtful"}]},
+      {"claims": [], "freshness": "no newer attributable claim found"}
+    ],
+    "assistant": "No. As of 13:50 GMT the official snapshot lists player 90 as doubtful, and there is no newer attributable team-news claim. Monday's missed session is not enough to call him definitely out.",
+    "metadata": {"task_type": "staleness", "temporal_class": "news", "synthetic": true}
+  },
+  {
+    "id": "tool-seed-receipt-001",
+    "user": "Give me the short version of decision receipt synthetic-robust-14.",
+    "tool_calls": [
+      {"name": "get_decision_receipt", "arguments": {"receipt_id": "synthetic-robust-14"}}
+    ],
+    "tool_results": [
+      {
+        "selected": "squad-b",
+        "highest_mean": "squad-a",
+        "mean_sacrifice": 0.3,
+        "robust_regret_selected": 0.8,
+        "robust_regret_highest_mean": 1.9,
+        "main_risk": "squad-b allocates more money to the bench"
+      }
+    ],
+    "assistant": "Squad B is the recommendation. It gives up 0.3 expected points versus the highest-mean squad but cuts robust regret from 1.9 to 0.8 across the tested scenarios. Its main trade-off is greater bench spend.",
+    "metadata": {"task_type": "receipt-explanation", "temporal_class": "decision-receipt", "synthetic": true}
+  }
+]

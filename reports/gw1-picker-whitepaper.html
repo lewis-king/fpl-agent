@@ -1,0 +1,1083 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The evidence, models and survival trials behind FPLAgent's provisional 2026/27 Gameweek 1 squad.">
+  <meta name="theme-color" content="#ede8dc">
+  <title>Picking the first fifteen — FPLAgent GW1 whitepaper</title>
+  <script>document.documentElement.classList.add('js');</script>
+  <style>
+    @font-face{font-family:Manrope;src:url('./assets/manrope-400.ttf') format('truetype');font-weight:400;font-display:swap}
+    @font-face{font-family:Manrope;src:url('./assets/manrope-500.ttf') format('truetype');font-weight:500;font-display:swap}
+    @font-face{font-family:Manrope;src:url('./assets/manrope-600.ttf') format('truetype');font-weight:600;font-display:swap}
+    @font-face{font-family:Manrope;src:url('./assets/manrope-700.ttf') format('truetype');font-weight:700;font-display:swap}
+    @font-face{font-family:Newsreader;src:url('./assets/newsreader-400.ttf') format('truetype');font-weight:400;font-display:swap}
+    @font-face{font-family:Newsreader;src:url('./assets/newsreader-500.ttf') format('truetype');font-weight:500;font-display:swap}
+    @font-face{font-family:Newsreader;src:url('./assets/newsreader-600.ttf') format('truetype');font-weight:600;font-display:swap}
+
+    :root{
+      --paper:#ede8dc;
+      --paper-deep:#e1dacb;
+      --paper-light:#f8f5ee;
+      --ink:#20211e;
+      --ink-soft:#5e5b53;
+      --ink-faint:#898379;
+      --rule:rgba(32,33,30,.16);
+      --red:#8b3028;
+      --red-dark:#67231e;
+      --red-wash:#dec5bd;
+      --pitch:#28372f;
+      --sans:Manrope,"Avenir Next",sans-serif;
+      --serif:Newsreader,"Bitstream Charter",Georgia,serif;
+      --mono:"IBM Plex Mono","SFMono-Regular",Consolas,monospace;
+      --ease:cubic-bezier(.32,.72,0,1);
+      --shadow:0 24px 70px rgba(54,47,37,.11),0 2px 8px rgba(54,47,37,.06);
+    }
+
+    *{box-sizing:border-box}
+    html{scroll-behavior:smooth;background:var(--paper)}
+    body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.7;-webkit-font-smoothing:antialiased}
+    body::before{content:"";position:fixed;inset:0;z-index:20;pointer-events:none;opacity:.15;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.15'/%3E%3C/svg%3E")}
+    img,svg{display:block;max-width:100%}
+    a{color:inherit;text-decoration-thickness:.08em;text-underline-offset:.18em}
+    button{font:inherit}
+    ::selection{background:var(--red-wash);color:var(--ink)}
+
+    .scroll-progress{position:fixed;z-index:32;inset:0 auto auto 0;height:3px;width:100%;transform-origin:left center;background:var(--red);animation:reading-progress auto var(--ease);animation-timeline:scroll(root)}
+    @keyframes reading-progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+
+    .site-nav{position:fixed;z-index:30;top:18px;left:50%;transform:translateX(-50%);width:min(920px,calc(100% - 32px));display:flex;align-items:center;justify-content:space-between;gap:18px;padding:7px 8px 7px 18px;border-radius:999px;background:rgba(239,235,225,.86);box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 12px 38px rgba(45,40,33,.12),0 0 0 1px rgba(52,48,41,.08);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+    .wordmark{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;letter-spacing:.02em;text-decoration:none;white-space:nowrap}
+    .wordmark__mark{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--ink);color:var(--paper-light);font-family:var(--serif);font-weight:600;font-size:14px}
+    .nav-links{display:flex;align-items:center;gap:3px}
+    .nav-links a{padding:8px 11px;border-radius:999px;color:var(--ink-soft);font-size:11px;font-weight:600;text-decoration:none;transition:color 500ms var(--ease),background 500ms var(--ease)}
+    .nav-links a:hover,.nav-links a.is-active{color:var(--ink);background:rgba(255,255,255,.55)}
+    .nav-action{display:flex;align-items:center;gap:9px;padding:5px 5px 5px 13px;border-radius:999px;background:var(--ink);color:var(--paper-light);font-size:11px;font-weight:600;text-decoration:none;transition:transform 500ms var(--ease),background 500ms var(--ease)}
+    .nav-action:hover{background:var(--red-dark);transform:translateY(-1px)}
+    .nav-action:active{transform:scale(.98)}
+    .nav-action__icon{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.12);transition:transform 600ms var(--ease)}
+    .nav-action:hover .nav-action__icon{transform:translate(2px,-1px)}
+    .menu-button{display:none;width:36px;height:36px;padding:0;border:0;border-radius:50%;background:var(--ink);color:var(--paper);position:relative}
+    .menu-button span{position:absolute;left:11px;width:14px;height:1px;background:currentColor;transition:transform 600ms var(--ease),opacity 300ms var(--ease)}
+    .menu-button span:first-child{transform:translateY(-3px)}
+    .menu-button span:last-child{transform:translateY(3px)}
+    .menu-button[aria-expanded="true"] span:first-child{transform:rotate(45deg)}
+    .menu-button[aria-expanded="true"] span:last-child{transform:rotate(-45deg)}
+
+    .container{width:min(1260px,calc(100% - 64px));margin-inline:auto}
+    .reading-column{width:min(760px,calc(100% - 48px));margin-inline:auto}
+    .eyebrow{display:inline-flex;align-items:center;gap:9px;padding:6px 10px;border-radius:999px;background:rgba(32,33,30,.055);box-shadow:inset 0 0 0 1px rgba(32,33,30,.06);font-size:9px;line-height:1;text-transform:uppercase;letter-spacing:.22em;font-weight:700;color:var(--ink-soft)}
+    .eyebrow::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--red)}
+    .section-number{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--red);font-weight:600}
+    h1,h2,h3,p{margin-top:0}
+    h1,h2,h3{font-family:var(--serif);font-weight:500;letter-spacing:-.035em}
+    h1{font-size:clamp(3.4rem,7.3vw,7.8rem);line-height:.88;margin-bottom:30px}
+    h2{font-size:clamp(2.5rem,5vw,5.4rem);line-height:.94;margin-bottom:32px}
+    h3{font-size:clamp(1.55rem,2.2vw,2.35rem);line-height:1.05;margin-bottom:18px}
+    .deck{font-family:var(--serif);font-size:clamp(1.25rem,2vw,1.75rem);line-height:1.35;color:var(--ink-soft);max-width:31em}
+    .body-large{font-family:var(--serif);font-size:clamp(1.3rem,2.2vw,1.85rem);line-height:1.48;letter-spacing:-.012em}
+    .muted{color:var(--ink-soft)}
+    .small{font-size:12px;line-height:1.55;color:var(--ink-soft)}
+    .numeric{font-family:var(--mono);font-variant-numeric:tabular-nums}
+    .accent{color:var(--red)}
+    .rule-top{border-top:1px solid var(--rule)}
+
+    .hero{min-height:100dvh;display:grid;grid-template-columns:minmax(390px,.82fr) minmax(540px,1.18fr);overflow:hidden;background:var(--paper-light)}
+    .hero__copy{position:relative;z-index:2;display:flex;flex-direction:column;justify-content:flex-end;padding:140px clamp(32px,5vw,88px) 68px;background:var(--paper-light)}
+    .hero__copy::after{content:"";position:absolute;right:-110px;top:0;width:220px;height:100%;background:linear-gradient(90deg,var(--paper-light),rgba(248,245,238,0));pointer-events:none}
+    .hero__meta{display:flex;gap:18px;flex-wrap:wrap;padding-top:26px;margin-top:32px;border-top:1px solid var(--rule);font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-faint)}
+    .hero__visual{position:relative;min-height:100dvh;background:var(--ink);overflow:hidden}
+    .hero__visual img{width:100%;height:100%;object-fit:cover;object-position:76% center;filter:saturate(.94) contrast(1.01) brightness(1.22);transform:scale(1.015);animation:hero-in 1400ms var(--ease) both}
+    @keyframes hero-in{from{opacity:0;transform:scale(1.045)}to{opacity:1;transform:scale(1.015)}}
+    .hero__caption{position:absolute;right:28px;bottom:28px;width:min(310px,calc(100% - 56px));padding:16px 18px;border-radius:18px;background:rgba(28,29,26,.82);color:#f5f0e5;box-shadow:inset 0 1px 0 rgba(255,255,255,.11),0 18px 50px rgba(0,0,0,.23);backdrop-filter:blur(12px);font-size:11px;line-height:1.5}
+    .hero__caption strong{display:block;margin-bottom:5px;font-size:10px;text-transform:uppercase;letter-spacing:.16em;color:#c99184}
+    .hero__edition{position:absolute;top:92px;right:28px;writing-mode:vertical-rl;font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.2em;color:rgba(248,245,238,.62)}
+
+    .abstract{padding:124px 0 132px}
+    .abstract-grid{display:grid;grid-template-columns:.7fr 1.3fr;gap:clamp(48px,9vw,150px);align-items:start}
+    .abstract__aside{position:sticky;top:110px}
+    .abstract__aside p{max-width:25em;font-size:12px;color:var(--ink-soft)}
+    .abstract__lead::first-letter{float:left;font-family:var(--serif);font-size:6.2rem;line-height:.72;padding:.08em .11em 0 0;color:var(--red)}
+    .abstract__lead{font-family:var(--serif);font-size:clamp(1.45rem,2.2vw,2rem);line-height:1.5;letter-spacing:-.013em}
+    .pullquote{margin:74px 0;padding:38px 0;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);font-family:var(--serif);font-size:clamp(2.1rem,4.2vw,4.5rem);line-height:1.03;letter-spacing:-.04em}
+    .pullquote em{font-weight:400;color:var(--red)}
+
+    .stat-tape{background:var(--ink);color:var(--paper-light);overflow:hidden}
+    .stat-tape__track{display:flex;width:max-content;animation:tape 40s cubic-bezier(.45,.05,.55,.95) infinite}
+    .stat-tape__group{display:flex;align-items:stretch}
+    .stat-tape__item{min-width:260px;padding:28px 38px;border-right:1px solid rgba(255,255,255,.12)}
+    .stat-tape__value{display:block;font-family:var(--serif);font-size:2.5rem;line-height:1;color:#f3eadd}
+    .stat-tape__label{display:block;margin-top:8px;font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:rgba(255,255,255,.55)}
+    @keyframes tape{to{transform:translateX(-50%)}}
+
+    section.chapter{padding:140px 0}
+    .chapter--light{background:var(--paper-light)}
+    .chapter--dark{background:var(--ink);color:var(--paper-light)}
+    .chapter--red{background:var(--red-dark);color:var(--paper-light)}
+    .chapter-head{display:grid;grid-template-columns:.66fr 1.34fr;gap:clamp(50px,10vw,160px);align-items:start;margin-bottom:86px}
+    .chapter-head__index{padding-top:12px;font-size:11px;color:var(--ink-soft)}
+    .chapter-head__index strong{display:block;font-family:var(--serif);font-size:4.7rem;line-height:.8;font-weight:400;color:var(--red)}
+    .chapter--dark .chapter-head__index,.chapter--red .chapter-head__index{color:rgba(255,255,255,.55)}
+    .chapter--dark .chapter-head__index strong,.chapter--red .chapter-head__index strong{color:#c98c80}
+    .chapter-head__copy p{max-width:46em;color:var(--ink-soft)}
+    .chapter--dark .chapter-head__copy p,.chapter--red .chapter-head__copy p{color:rgba(255,255,255,.64)}
+
+    .bezel{padding:7px;border-radius:30px;background:rgba(255,255,255,.24);box-shadow:0 0 0 1px rgba(39,37,32,.08),var(--shadow)}
+    .bezel__inner{height:100%;border-radius:23px;background:var(--paper-light);box-shadow:inset 0 1px 1px rgba(255,255,255,.72),inset 0 0 0 1px rgba(65,58,48,.055);overflow:hidden}
+    .chapter--dark .bezel{background:rgba(255,255,255,.045);box-shadow:0 0 0 1px rgba(255,255,255,.08),0 26px 90px rgba(0,0,0,.21)}
+    .chapter--dark .bezel__inner{background:#292a26;box-shadow:inset 0 1px 1px rgba(255,255,255,.08),inset 0 0 0 1px rgba(255,255,255,.035)}
+    .chapter--red .bezel{background:rgba(255,255,255,.07);box-shadow:0 0 0 1px rgba(255,255,255,.09),0 26px 90px rgba(47,8,5,.18)}
+    .chapter--red .bezel__inner{background:#772921;box-shadow:inset 0 1px 1px rgba(255,255,255,.08),inset 0 0 0 1px rgba(255,255,255,.035)}
+
+    .source-map{display:grid;grid-template-columns:1.15fr .85fr;gap:24px;align-items:stretch}
+    .source-map__main{padding:38px}
+    .source-map__main h3{max-width:11em}
+    .source-list{display:grid;gap:0;margin-top:36px}
+    .source-row{display:grid;grid-template-columns:46px 1fr auto;gap:16px;align-items:center;padding:17px 0;border-top:1px solid var(--rule)}
+    .source-row__index{font-family:var(--mono);font-size:9px;color:var(--red)}
+    .source-row strong{display:block;font-size:12px}
+    .source-row small{display:block;color:var(--ink-faint);font-size:10px}
+    .source-row__rows{font-family:var(--mono);font-size:10px;text-align:right;color:var(--ink-soft)}
+    .source-map__side{display:grid;grid-template-rows:1fr auto;gap:24px}
+    .mini-panel{padding:30px;min-height:220px;display:flex;flex-direction:column;justify-content:space-between}
+    .mini-panel__label{font-size:9px;text-transform:uppercase;letter-spacing:.18em;color:var(--ink-faint);font-weight:700}
+    .mini-panel__number{font-family:var(--serif);font-size:clamp(3.7rem,6vw,6.5rem);line-height:.8;letter-spacing:-.06em}
+    .mini-panel--red{background:var(--red)!important;color:var(--paper-light)}
+    .mini-panel--red .mini-panel__label{color:rgba(255,255,255,.58)}
+    .mini-panel--red p{color:rgba(255,255,255,.7)}
+
+    .pipeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);margin-top:74px}
+    .pipeline::before{content:"";position:absolute;top:22px;left:8%;right:8%;height:1px;background:var(--rule)}
+    .pipeline__step{position:relative;padding:58px 24px 0 0}
+    .pipeline__dot{position:absolute;top:14px;left:0;display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:var(--paper);box-shadow:0 0 0 6px var(--paper),0 0 0 7px var(--rule);font-family:var(--mono);font-size:7px;color:var(--red)}
+    .pipeline__step h3{font-family:var(--sans);font-size:13px;letter-spacing:-.01em;font-weight:700;margin-bottom:10px}
+    .pipeline__step p{font-size:11px;line-height:1.55;color:var(--ink-soft);max-width:19em}
+
+    .edge-figure{display:grid;grid-template-columns:.78fr 1.22fr;gap:64px;align-items:center;margin-top:100px}
+    .edge-bars{padding:42px}
+    .bar-row{display:grid;grid-template-columns:105px 1fr 58px;gap:16px;align-items:center;margin:22px 0}
+    .bar-row__label{font-size:10px;font-weight:700}
+    .bar-row__track{height:12px;border-radius:99px;background:var(--paper-deep);overflow:hidden}
+    .bar-row__fill{height:100%;border-radius:inherit;background:var(--ink);transform-origin:left;animation:bar-grow 1300ms var(--ease) both}
+    .bar-row--accent .bar-row__fill{background:var(--red)}
+    .bar-row__value{font-family:var(--mono);font-size:10px;text-align:right}
+    @keyframes bar-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+    .edge-split{display:flex;height:16px;border-radius:99px;overflow:hidden;background:var(--paper-deep);margin:28px 0 12px}
+    .edge-split span:first-child{width:57%;background:var(--red)}
+    .edge-split span:last-child{width:43%;background:#9a9387}
+    .edge-legend{display:grid;grid-template-columns:1fr 1fr;gap:24px;font-size:10px;color:var(--ink-soft)}
+    .edge-legend i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;background:var(--red)}
+    .edge-legend div:last-child i{background:#9a9387}
+
+    .quality-strip{display:grid;grid-template-columns:repeat(13,1fr);gap:5px;margin:38px 0 12px}
+    .quality-strip span{height:56px;border-radius:8px;background:var(--pitch);position:relative;overflow:hidden}
+    .quality-strip span::after{content:"";position:absolute;width:5px;height:5px;border-radius:50%;background:#d2b9a3;left:50%;top:50%;transform:translate(-50%,-50%)}
+    .quality-caption{display:flex;justify-content:space-between;gap:20px;font-family:var(--mono);font-size:9px;color:var(--ink-faint)}
+
+    .hurdle{display:grid;grid-template-columns:1fr 88px 1fr 88px .95fr;align-items:center;gap:0;padding:44px 34px}
+    .hurdle__node{text-align:center}
+    .hurdle__node strong{display:block;font-family:var(--serif);font-size:2rem;font-weight:500;line-height:1.05}
+    .hurdle__node small{display:block;margin-top:9px;color:rgba(255,255,255,.53);font-size:9px;text-transform:uppercase;letter-spacing:.13em}
+    .hurdle__operator{font-family:var(--serif);font-size:2.9rem;text-align:center;color:#bd8276}
+    .hurdle__result{padding:25px 20px;border-radius:18px;background:#ece5d8;color:var(--ink);box-shadow:inset 0 1px 0 #fff;text-align:center}
+    .hurdle__result strong{display:block;font-family:var(--serif);font-size:2.5rem;line-height:1}
+    .hurdle__result small{font-size:9px;text-transform:uppercase;letter-spacing:.13em;color:var(--ink-faint)}
+
+    .model-grid{display:grid;grid-template-columns:.82fr 1.18fr;gap:24px;margin-top:32px}
+    .model-card{padding:32px}
+    .model-card h3{font-family:var(--sans);font-size:15px;font-weight:700;letter-spacing:-.02em}
+    .param-list{margin:30px 0 0;padding:0;list-style:none}
+    .param-list li{display:flex;justify-content:space-between;gap:18px;padding:12px 0;border-top:1px solid rgba(255,255,255,.09);font-size:10px;color:rgba(255,255,255,.58)}
+    .param-list strong{color:var(--paper-light);font-family:var(--mono);font-weight:500}
+    .gate-list{display:grid;gap:18px;margin-top:28px}
+    .gate-row{display:grid;grid-template-columns:140px 1fr 76px;gap:15px;align-items:center}
+    .gate-row__label{font-size:10px;color:rgba(255,255,255,.64)}
+    .gate-row__track{height:6px;border-radius:9px;background:rgba(255,255,255,.1);overflow:hidden}
+    .gate-row__fill{height:100%;border-radius:inherit;background:#c58e82}
+    .gate-row__value{font-family:var(--mono);font-size:9px;text-align:right}
+
+    .season-table{width:100%;border-collapse:collapse;margin-top:70px;font-size:11px}
+    .season-table th,.season-table td{padding:18px 12px;border-bottom:1px solid rgba(255,255,255,.1);text-align:right;font-variant-numeric:tabular-nums}
+    .season-table th:first-child,.season-table td:first-child{text-align:left}
+    .season-table th{font-size:8px;text-transform:uppercase;letter-spacing:.15em;color:rgba(255,255,255,.45);font-weight:600}
+    .season-table td{font-family:var(--mono)}
+    .season-table td:first-child{font-family:var(--sans);font-weight:600}
+    .season-table .win{color:#d4a298}
+
+    .decision-summary{display:grid;grid-template-columns:.72fr 1.28fr;gap:24px}
+    .decision-note{padding:38px;display:flex;flex-direction:column;justify-content:space-between;min-height:610px}
+    .decision-note__score{margin-top:auto}
+    .decision-note__score span{font-family:var(--serif);font-size:7rem;line-height:.75;letter-spacing:-.07em;color:var(--red)}
+    .decision-note__score small{display:block;margin-top:18px;font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-faint)}
+    .receipt-list{margin:30px 0 0;padding:0;list-style:none}
+    .receipt-list li{display:flex;justify-content:space-between;gap:16px;padding:13px 0;border-top:1px solid var(--rule);font-size:10px}
+    .receipt-list strong{font-family:var(--mono);font-weight:500}
+    .pitch-wrap{padding:25px;background:var(--paper-deep)}
+    .pitch{position:relative;min-height:560px;border-radius:19px;overflow:hidden;background:var(--pitch);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)}
+    .pitch::before{content:"";position:absolute;inset:25px;border:1px solid rgba(238,235,222,.34);background:linear-gradient(90deg,rgba(255,255,255,.018) 50%,transparent 50%);background-size:25% 100%}
+    .pitch::after{content:"";position:absolute;left:25px;right:25px;top:50%;height:1px;background:rgba(238,235,222,.34)}
+    .pitch-circle{position:absolute;z-index:1;left:50%;top:50%;width:116px;height:116px;border:1px solid rgba(238,235,222,.34);border-radius:50%;transform:translate(-50%,-50%)}
+    .player{position:absolute;z-index:2;transform:translate(-50%,-50%);text-align:center}
+    .player__pin{display:grid;place-items:center;width:39px;height:39px;margin:0 auto 7px;border-radius:50% 50% 48% 48%;background:var(--paper-light);color:var(--ink);box-shadow:0 5px 16px rgba(0,0,0,.22),inset 0 0 0 4px rgba(139,48,40,.13);font-family:var(--mono);font-size:9px;font-weight:600}
+    .player--captain .player__pin{background:var(--red);color:#fff;box-shadow:0 5px 16px rgba(0,0,0,.25),0 0 0 4px rgba(255,255,255,.12)}
+    .player__name{display:block;padding:3px 7px;border-radius:99px;background:rgba(24,31,27,.72);color:#f4efe5;font-size:8px;font-weight:700;white-space:nowrap}
+    .bench-rail{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+    .bench-player{padding:12px;border-radius:12px;background:#d5cebf;text-align:center;font-size:9px;font-weight:700}
+    .bench-player small{display:block;font-family:var(--mono);font-size:7px;color:var(--ink-faint);font-weight:400;margin-top:3px}
+
+    .thin-edge{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:30px;margin:80px 0}
+    .thin-edge__line{height:1px;background:var(--rule)}
+    .thin-edge__number{text-align:center}
+    .thin-edge__number strong{display:block;font-family:var(--serif);font-size:5.3rem;line-height:.8;color:var(--red)}
+    .thin-edge__number span{display:block;margin-top:14px;font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:var(--ink-faint)}
+
+    .swarm{position:relative;min-height:480px;padding:36px;overflow:hidden}
+    .swarm__dots{display:grid;grid-template-columns:repeat(16,1fr);gap:10px;align-content:center;height:320px}
+    .swarm__dots i{display:block;aspect-ratio:1;border-radius:50%;background:rgba(255,255,255,.16);transform:scale(var(--s,1));animation:breathe 5s var(--ease) infinite alternate;animation-delay:var(--d,0s)}
+    .swarm__dots i:nth-child(7n){background:#b9786c}.swarm__dots i:nth-child(11n){transform:scale(1.45)}.swarm__dots i:first-child{background:#f2e9da;box-shadow:0 0 0 6px rgba(255,255,255,.08)}
+    @keyframes breathe{to{transform:scale(calc(var(--s,1) * 1.18));opacity:.64}}
+    .swarm__legend{display:flex;justify-content:space-between;gap:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,.1);font-size:9px;text-transform:uppercase;letter-spacing:.13em;color:rgba(255,255,255,.5)}
+
+    .trial-grid{display:grid;grid-template-columns:1.18fr .82fr;gap:24px;margin-top:24px}
+    .trial-card{padding:34px}
+    .result-bars{margin-top:38px}
+    .result-row{display:grid;grid-template-columns:64px 1fr 70px;gap:14px;align-items:center;margin:18px 0}
+    .result-row strong{font-family:var(--mono);font-size:10px}
+    .result-track{height:23px;background:rgba(255,255,255,.06);border-radius:7px;overflow:hidden}
+    .result-fill{height:100%;border-radius:inherit;background:#7a766e}
+    .result-row:first-child .result-fill{background:#c48b7e}
+    .result-row span{font-family:var(--mono);font-size:9px;text-align:right}
+    .trial-note{display:flex;flex-direction:column;justify-content:space-between}
+    .trial-note__big{font-family:var(--serif);font-size:6rem;line-height:.75;color:#d0a096}
+    .trial-note__big small{display:block;font-family:var(--sans);font-size:9px;text-transform:uppercase;letter-spacing:.15em;color:rgba(255,255,255,.46);margin-top:22px}
+
+    .premium-list{margin-top:74px}
+    .premium-row{display:grid;grid-template-columns:160px 100px 1fr 82px;gap:20px;align-items:center;padding:21px 0;border-top:1px solid rgba(255,255,255,.1)}
+    .premium-row__name strong{display:block;font-family:var(--serif);font-size:1.5rem;font-weight:500}
+    .premium-row__name small,.premium-row__xp{font-family:var(--mono);font-size:8px;color:rgba(255,255,255,.46)}
+    .premium-row__track{height:2px;background:rgba(255,255,255,.15);position:relative}
+    .premium-row__track span{position:absolute;left:var(--pos);top:50%;width:12px;height:12px;border-radius:50%;background:#c58c80;transform:translate(-50%,-50%)}
+    .premium-row__delta{font-family:var(--mono);font-size:10px;text-align:right;color:#d0a096}
+
+    .two-lenses{display:grid;grid-template-columns:1fr 92px 1fr;align-items:center;margin:72px 0}
+    .lens{padding:38px;min-height:360px;display:flex;flex-direction:column;justify-content:space-between}
+    .lens__icon{width:82px;height:82px;border-radius:50%;display:grid;place-items:center;background:rgba(139,48,40,.08);color:var(--red)}
+    .lens__icon svg{width:42px;height:42px}
+    .lens h3{font-size:2.4rem;margin-bottom:10px}
+    .lens p{font-size:11px;color:var(--ink-soft)}
+    .lens__stat{font-family:var(--mono);font-size:9px;color:var(--ink-faint)}
+    .lens-bridge{font-family:var(--serif);font-size:3.8rem;text-align:center;color:var(--red)}
+
+    .component-flow{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:58px}
+    .component-step{position:relative;padding:25px 20px;min-height:165px;border-radius:17px;background:#e7e0d3}
+    .component-step::after{content:"→";position:absolute;right:-13px;top:50%;z-index:2;transform:translateY(-50%);font-family:var(--serif);font-size:1.7rem;color:var(--red)}
+    .component-step:last-child::after{display:none}
+    .component-step span{font-family:var(--mono);font-size:8px;color:var(--red)}
+    .component-step strong{display:block;margin-top:32px;font-family:var(--serif);font-size:1.35rem;line-height:1.05;font-weight:500}
+    .component-step small{display:block;margin-top:9px;font-size:9px;color:var(--ink-soft)}
+
+    .blend-figure{display:grid;grid-template-columns:.7fr 1.3fr;gap:56px;align-items:center;margin-top:80px}
+    .blend-dial{position:relative;width:min(290px,100%);aspect-ratio:1;border-radius:50%;margin:auto;background:conic-gradient(var(--red) 0 5%,#d7d0c2 5% 100%);display:grid;place-items:center}
+    .blend-dial::before{content:"";width:72%;height:72%;border-radius:50%;background:var(--paper-light);box-shadow:inset 0 0 0 1px var(--rule)}
+    .blend-dial__value{position:absolute;text-align:center}
+    .blend-dial__value strong{display:block;font-family:var(--serif);font-size:4.5rem;line-height:.8;color:var(--red)}
+    .blend-dial__value small{font-size:8px;text-transform:uppercase;letter-spacing:.15em;color:var(--ink-faint)}
+
+    .verdict{padding:160px 0;background:var(--paper-light)}
+    .verdict-grid{display:grid;grid-template-columns:.75fr 1.25fr;gap:clamp(60px,10vw,150px)}
+    .verdict-mark{position:sticky;top:120px;width:124px;height:124px;border-radius:50%;display:grid;place-items:center;background:var(--red);color:#fff;font-family:var(--serif);font-size:4.3rem;box-shadow:0 0 0 8px var(--paper-light),0 0 0 9px var(--rule)}
+    .verdict-list{counter-reset:verdict;margin:54px 0 0;padding:0;list-style:none}
+    .verdict-list li{counter-increment:verdict;display:grid;grid-template-columns:42px 1fr;gap:18px;padding:24px 0;border-top:1px solid var(--rule)}
+    .verdict-list li::before{content:counter(verdict,decimal-leading-zero);font-family:var(--mono);font-size:9px;color:var(--red);padding-top:5px}
+    .verdict-list strong{display:block;font-family:var(--serif);font-size:1.45rem;font-weight:500}
+    .verdict-list span{display:block;margin-top:6px;font-size:11px;color:var(--ink-soft)}
+
+    .limits-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:0;margin-top:64px;border-top:1px solid rgba(255,255,255,.15)}
+    .limit{padding:32px 34px;border-bottom:1px solid rgba(255,255,255,.15)}
+    .limit:nth-child(odd){border-right:1px solid rgba(255,255,255,.15)}
+    .limit__num{font-family:var(--mono);font-size:9px;color:#d0a096}
+    .limit h3{font-family:var(--sans);font-size:14px;font-weight:700;letter-spacing:-.01em;margin:20px 0 10px}
+    .limit p{font-size:11px;line-height:1.6;color:rgba(255,255,255,.6)}
+
+    .roadmap{position:relative;margin-top:80px}
+    .roadmap::before{content:"";position:absolute;left:29px;top:12px;bottom:12px;width:1px;background:rgba(255,255,255,.22)}
+    .roadmap-item{position:relative;display:grid;grid-template-columns:60px 190px 1fr;gap:28px;padding:0 0 54px}
+    .roadmap-item:last-child{padding-bottom:0}
+    .roadmap-item__dot{position:relative;z-index:1;display:grid;place-items:center;width:59px;height:59px;border-radius:50%;background:var(--paper-light);color:var(--red-dark);font-family:var(--mono);font-size:10px;box-shadow:0 0 0 8px var(--red-dark)}
+    .roadmap-item h3{font-family:var(--sans);font-size:14px;font-weight:700;letter-spacing:-.01em;margin:18px 0 0}
+    .roadmap-item p{margin:15px 0 0;font-size:11px;line-height:1.65;color:rgba(255,255,255,.64);max-width:55em}
+    .roadmap-item__gate{display:inline-block;margin-top:10px;font-family:var(--mono);font-size:8px;text-transform:uppercase;letter-spacing:.1em;color:#d5a59b}
+
+    .appendix{padding:130px 0;background:#dcd5c8}
+    .appendix details{border-top:1px solid var(--rule)}
+    .appendix details:last-child{border-bottom:1px solid var(--rule)}
+    .appendix summary{display:grid;grid-template-columns:60px 1fr auto;gap:20px;align-items:center;padding:25px 0;cursor:pointer;list-style:none;font-family:var(--serif);font-size:1.6rem;letter-spacing:-.02em}
+    .appendix summary::-webkit-details-marker{display:none}
+    .appendix summary span:first-child{font-family:var(--mono);font-size:9px;color:var(--red)}
+    .appendix summary::after{content:"+";font-family:var(--sans);font-size:1rem;transition:transform 500ms var(--ease)}
+    .appendix details[open] summary::after{transform:rotate(45deg)}
+    .appendix__content{padding:0 0 46px 80px;max-width:900px;font-size:12px;color:var(--ink-soft)}
+    .appendix__content table{width:100%;border-collapse:collapse;margin:22px 0;font-size:10px}
+    .appendix__content th,.appendix__content td{text-align:left;padding:11px 8px;border-bottom:1px solid var(--rule);vertical-align:top}
+    .appendix__content th{font-size:8px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-faint)}
+    .appendix__content code{font-family:var(--mono);font-size:.9em;background:rgba(255,255,255,.38);padding:2px 5px;border-radius:4px}
+    .appendix__content pre{overflow:auto;padding:20px;border-radius:16px;background:var(--ink);color:#eee6d9;font-family:var(--mono);font-size:9px;line-height:1.65}
+    .source-links{display:grid;grid-template-columns:1fr 1fr;gap:10px 26px;margin:22px 0}
+    .source-links a{font-size:10px}
+
+    .closing{padding:150px 0 54px;background:var(--ink);color:var(--paper-light)}
+    .closing__statement{max-width:1000px;font-family:var(--serif);font-size:clamp(2.7rem,5.6vw,6.3rem);line-height:.95;letter-spacing:-.045em}
+    .closing__statement em{color:#ca9286;font-style:normal}
+    .footer-row{display:flex;justify-content:space-between;gap:30px;align-items:end;margin-top:120px;padding-top:26px;border-top:1px solid rgba(255,255,255,.12);font-size:9px;text-transform:uppercase;letter-spacing:.14em;color:rgba(255,255,255,.46)}
+
+    .reveal{opacity:1;transform:none}
+    .js .reveal{opacity:0;transform:translateY(42px)}
+    .js .reveal.is-visible{opacity:1;transform:translateY(0);transition:opacity 900ms var(--ease),transform 900ms var(--ease)}
+    .js .reveal[data-delay="1"].is-visible{transition-delay:100ms}
+    .js .reveal[data-delay="2"].is-visible{transition-delay:200ms}
+    .js .reveal[data-delay="3"].is-visible{transition-delay:300ms}
+
+    @media (max-width:980px){
+      .nav-links{display:none}
+      .menu-button{display:block}
+      .nav-action{margin-left:auto}
+      .hero{grid-template-columns:1fr;min-height:auto}
+      .hero__copy{min-height:85dvh;padding:138px 28px 54px}
+      .hero__copy::after{display:none}
+      .hero__visual{min-height:68dvh}
+      .abstract-grid,.chapter-head,.source-map,.edge-figure,.model-grid,.decision-summary,.trial-grid,.blend-figure,.verdict-grid{grid-template-columns:1fr;gap:42px}
+      .abstract__aside{position:static}
+      .source-map__side{grid-template-columns:1fr 1fr;grid-template-rows:auto}
+      .pipeline{grid-template-columns:1fr 1fr;gap:40px 20px}
+      .pipeline::before{display:none}
+      .pipeline__step{padding-top:46px}
+      .two-lenses{grid-template-columns:1fr;gap:20px}
+      .lens-bridge{font-size:2rem}
+      .component-flow{grid-template-columns:1fr 1fr}
+      .component-step::after{display:none}
+      .verdict-mark{position:static}
+      .roadmap-item{grid-template-columns:60px 150px 1fr;gap:18px}
+      .mobile-menu-open .nav-links{position:fixed;inset:76px 16px auto;display:flex;flex-direction:column;align-items:stretch;padding:18px;border-radius:24px;background:rgba(239,235,225,.97);box-shadow:0 20px 60px rgba(30,28,24,.18)}
+      .mobile-menu-open .nav-links a{font-size:14px;padding:13px 15px}
+    }
+    @media (max-width:700px){
+      .container{width:calc(100% - 32px)}
+      .reading-column{width:calc(100% - 32px)}
+      .site-nav{top:10px;width:calc(100% - 20px)}
+      .nav-action{display:none}
+      .hero__copy{min-height:82dvh;padding-inline:20px}
+      .hero__visual{min-height:54dvh}
+      .hero__caption{right:16px;bottom:16px;width:calc(100% - 32px)}
+      .hero__edition{display:none}
+      h1{font-size:clamp(3.2rem,18vw,5.2rem)}
+      section.chapter,.abstract{padding:96px 0}
+      .chapter-head{margin-bottom:58px}
+      .pullquote{font-size:2.3rem}
+      .bezel{padding:5px;border-radius:23px}
+      .bezel__inner{border-radius:18px}
+      .source-map__side{grid-template-columns:1fr}
+      .source-map__main,.model-card,.trial-card,.edge-bars{padding:25px}
+      .source-row{grid-template-columns:30px 1fr}.source-row__rows{display:none}
+      .pipeline{grid-template-columns:1fr;gap:16px}
+      .edge-legend{grid-template-columns:1fr;gap:8px}
+      .bar-row{grid-template-columns:76px 1fr 48px;gap:9px}
+      .quality-strip{gap:3px}.quality-strip span{height:36px;border-radius:5px}
+      .quality-caption{display:block}.quality-caption span{display:block;margin-top:4px}
+      .hurdle{grid-template-columns:1fr;padding:26px;gap:14px}
+      .hurdle__operator{font-size:1.8rem;line-height:1}
+      .gate-row{grid-template-columns:100px 1fr 58px;gap:8px}
+      .season-table{font-size:9px;display:block;overflow-x:auto;white-space:nowrap}
+      .decision-note{min-height:auto;padding:28px}.decision-note__score{margin-top:70px}.decision-note__score span{font-size:5.2rem}
+      .pitch-wrap{padding:12px}.pitch{min-height:510px}.pitch::before{inset:14px}.pitch::after{left:14px;right:14px}
+      .player__pin{width:31px;height:31px;font-size:7px}.player__name{font-size:6.5px;padding:2px 5px}
+      .bench-rail{grid-template-columns:1fr 1fr}
+      .thin-edge{grid-template-columns:1fr;gap:24px}.thin-edge__line{display:none}.thin-edge__number strong{font-size:4.4rem}
+      .swarm{padding:24px;min-height:390px}.swarm__dots{grid-template-columns:repeat(12,1fr);gap:7px;height:270px}.swarm__legend{display:grid;gap:6px}
+      .premium-row{grid-template-columns:1fr auto;gap:8px 14px}.premium-row__xp{display:none}.premium-row__track{grid-column:1/-1;grid-row:2}.premium-row__delta{grid-column:2;grid-row:1}
+      .component-flow{grid-template-columns:1fr}.component-step{min-height:125px}.component-step strong{margin-top:20px}
+      .blend-dial{width:235px}
+      .limits-grid{grid-template-columns:1fr}.limit:nth-child(odd){border-right:0}
+      .roadmap::before{left:22px}.roadmap-item{grid-template-columns:45px 1fr;gap:18px}.roadmap-item__dot{width:45px;height:45px;box-shadow:0 0 0 6px var(--red-dark)}.roadmap-item h3{margin-top:11px}.roadmap-item>div{grid-column:2}
+      .appendix summary{grid-template-columns:38px 1fr auto;font-size:1.25rem;gap:10px}.appendix__content{padding-left:48px}.source-links{grid-template-columns:1fr}
+      .footer-row{display:grid;gap:8px;margin-top:80px}
+    }
+    @media (prefers-reduced-motion:reduce){
+      html{scroll-behavior:auto}.scroll-progress{display:none}.stat-tape__track,.hero__visual img{animation:none}.js .reveal{opacity:1;transform:none}.js .reveal.is-visible{transition:none}
+    }
+    @media print{
+      .site-nav,.scroll-progress,.stat-tape{display:none!important}
+      body::before{display:none}
+      .hero{min-height:auto;grid-template-columns:45% 55%}
+      .hero__copy,.hero__visual{min-height:720px}
+      section.chapter,.abstract{break-inside:auto;padding:64px 0}
+      .bezel{break-inside:avoid;box-shadow:none}
+      .reveal,.js .reveal{opacity:1!important;transform:none!important}
+    }
+  </style>
+</head>
+<body>
+  <div class="scroll-progress" aria-hidden="true"></div>
+
+  <nav class="site-nav" aria-label="Whitepaper navigation">
+    <a class="wordmark" href="#top"><span class="wordmark__mark">F</span><span>FPLAgent / Field Notes 01</span></a>
+    <div class="nav-links" id="nav-links">
+      <a href="#data">Data</a><a href="#model">Model</a><a href="#decision">Decision</a><a href="#trials">Trials</a><a href="#next">Next</a>
+    </div>
+    <a class="nav-action" href="./gw1-picker-technical-report.md"><span>Technical annex</span><span class="nav-action__icon" aria-hidden="true">↗</span></a>
+    <button class="menu-button" type="button" aria-controls="nav-links" aria-expanded="false" aria-label="Open contents"><span></span><span></span></button>
+  </nav>
+
+  <main id="top">
+    <header class="hero">
+      <div class="hero__copy">
+        <div>
+          <span class="eyebrow">2026/27 preseason paper</span>
+          <h1>Picking the<br>first fifteen.</h1>
+          <p class="deck">How ten seasons of public evidence, a GPU-trained forecast and two independent simulation engines converged on one provisional Gameweek&nbsp;1 squad.</p>
+          <div class="hero__meta">
+            <span>Published 02.08.2026</span><span>Decision S001</span><span>Deadline 21.08.2026</span>
+          </div>
+        </div>
+      </div>
+      <div class="hero__visual">
+        <img src="./assets/gw1-picker-cover.webp" alt="Editorial illustration of many candidate football squads converging on one illuminated formation inside a stadium">
+        <span class="hero__edition">Evidence before certainty · No. 01</span>
+        <p class="hero__caption"><strong>The search, illustrated</strong>One hundred and twenty-eight legal squads enter two different simulations. The point is not to make uncertainty disappear, but to find which decision keeps surviving it.</p>
+      </div>
+    </header>
+
+    <section class="abstract" aria-labelledby="abstract-title">
+      <div class="container abstract-grid">
+        <aside class="abstract__aside reveal">
+          <span class="eyebrow">Abstract</span>
+          <p style="margin-top:22px">A visual companion to the full technical report. All numbers come from the frozen 2 August artifact bundle; the recommendation must be regenerated before the deadline.</p>
+          <p class="numeric">Receipt SHA<br>378f8c32…19f127</p>
+        </aside>
+        <div>
+          <h2 id="abstract-title" class="visually-hidden" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)">Abstract</h2>
+          <p class="abstract__lead reveal">Fantasy Premier League invites a familiar mistake: rank the players, squeeze fifteen names under £100m, and call the answer optimal. But a player forecast is not a squad; a squad is not a five-week plan; and a high average score is not proof that the decision survives a different view of football.</p>
+          <p class="body-large reveal" data-delay="1">FPLAgent was rebuilt around those distinctions. It asks what was knowable before each historical deadline, forecasts participation separately from returns, solves the legal game across several weeks, and then attempts to defeat its own answer.</p>
+          <blockquote class="pullquote reveal">The conclusion is deliberately narrower than certainty: <em>no tested route has earned a repeatable edge over S001</em> under the information available today.</blockquote>
+          <p class="body-large reveal">That makes S001 a solid provisional picker. It does not make it clairvoyant. Summer roles, late transfers and team news remain capable of moving the answer—and the system is designed to admit it when they do.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="stat-tape" aria-label="Key facts">
+      <div class="stat-tape__track">
+        <div class="stat-tape__group">
+          <div class="stat-tape__item"><span class="stat-tape__value">244,425</span><span class="stat-tape__label">deadline-safe training rows</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">58.20</span><span class="stat-tape__label">projected GW1 points</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">128</span><span class="stat-tape__label">legal challenger squads</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">25,000</span><span class="stat-tape__label">holdout paths per tournament</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">£99.5m</span><span class="stat-tape__label">current squad cost</span></div>
+        </div>
+        <div class="stat-tape__group" aria-hidden="true">
+          <div class="stat-tape__item"><span class="stat-tape__value">244,425</span><span class="stat-tape__label">deadline-safe training rows</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">58.20</span><span class="stat-tape__label">projected GW1 points</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">128</span><span class="stat-tape__label">legal challenger squads</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">25,000</span><span class="stat-tape__label">holdout paths per tournament</span></div>
+          <div class="stat-tape__item"><span class="stat-tape__value">£99.5m</span><span class="stat-tape__label">current squad cost</span></div>
+        </div>
+      </div>
+    </div>
+
+    <section class="chapter" id="data" aria-labelledby="data-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>01</strong>Evidence before modelling</div>
+          <div class="chapter-head__copy">
+            <span class="eyebrow">Act one · Knowable at the whistle</span>
+            <h2 id="data-title">First, make the past stop leaking.</h2>
+            <p class="body-large">Most historical football data is tidy because the match has already happened. That is precisely the danger. A useful decision model must reconstruct the messy, incomplete world that existed before the deadline.</p>
+          </div>
+        </header>
+
+        <div class="source-map">
+          <div class="bezel reveal">
+            <div class="bezel__inner source-map__main">
+              <span class="section-number">THE EVIDENCE LEDGER</span>
+              <h3>Ten seasons, several imperfect windows.</h3>
+              <p class="small">Public data is treated as evidence with provenance—not an interchangeable bucket of truth. Each source has a defined job and an explicit limitation.</p>
+              <div class="source-list">
+                <div class="source-row"><span class="source-row__index">01</span><span><strong>Vaastav FPL archive</strong><small>Player/gameweek history, fixtures, teams</small></span><span class="source-row__rows">253,890 rows</span></div>
+                <div class="source-row"><span class="source-row__index">02</span><span><strong>Official FPL API</strong><small>2026/27 rules, prices, players, fixtures</small></span><span class="source-row__rows">564 players</span></div>
+                <div class="source-row"><span class="source-row__index">03</span><span><strong>Git deadline proxies</strong><small>Latest public files before inferred deadlines</small></span><span class="source-row__rows">61,870 obs.</span></div>
+                <div class="source-row"><span class="source-row__index">04</span><span><strong>Top-manager archives</strong><small>Behavioural hypotheses, never winner labels</small></span><span class="source-row__rows">multi-source</span></div>
+                <div class="source-row"><span class="source-row__index">05</span><span><strong>Solio outcome index</strong><small>Projected quality versus realised variance</small></span><span class="source-row__rows">13.1m rows</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="source-map__side">
+            <div class="bezel reveal" data-delay="1"><div class="bezel__inner mini-panel"><span class="mini-panel__label">Deadline-safe feature rows</span><span class="mini-panel__number">244,425</span><p class="small">One row per historical player and decision event after double-gameweek aggregation.</p></div></div>
+            <div class="bezel reveal" data-delay="2"><div class="bezel__inner mini-panel mini-panel--red"><span class="mini-panel__label">Forbidden production feature</span><span class="mini-panel__number">xP</span><p class="small">Historical same-gameweek expected points may have been captured after matches. It is retained only as an unsafe diagnostic.</p></div></div>
+          </div>
+        </div>
+
+        <div class="pipeline" aria-label="Point-in-time data pipeline">
+          <div class="pipeline__step reveal"><span class="pipeline__dot">1</span><h3>Preserve raw</h3><p>URL, fetch time, bytes, status and SHA-256 enter an append-only manifest.</p></div>
+          <div class="pipeline__step reveal" data-delay="1"><span class="pipeline__dot">2</span><h3>Resolve identity</h3><p>Season-specific player IDs join through the more stable FPL player code.</p></div>
+          <div class="pipeline__step reveal" data-delay="2"><span class="pipeline__dot">3</span><h3>Lag every window</h3><p>Rolling form ends one event before the target. Current-gameweek values never enter.</p></div>
+          <div class="pipeline__step reveal" data-delay="3"><span class="pipeline__dot">4</span><h3>Fail hard</h3><p>Duplicate keys, late snapshots, synthetic pre-era data or target leakage stop the build.</p></div>
+        </div>
+
+        <div class="edge-figure">
+          <div class="reveal">
+            <span class="eyebrow">What history actually says</span>
+            <h3 style="margin-top:24px">Good process shifts the distribution. It does not abolish luck.</h3>
+            <p>The 2025/26 top 100 averaged 2,504.1 points against 2,090.9 for the 3.53 million active-manager population: a 413.2-point gap. Solio attributed 234.6 points to projected decision quality and 178.7 to finishing above projection.</p>
+            <p class="small">Only two actual top-100 managers were themselves projected top 100. The system therefore optimises expected decisions; it does not pretend that a deterministic model can promise first place.</p>
+          </div>
+          <div class="bezel reveal" data-delay="1">
+            <figure class="bezel__inner edge-bars" style="margin:0">
+              <figcaption class="mini-panel__label">2025/26 average points</figcaption>
+              <div class="bar-row bar-row--accent"><span class="bar-row__label">Top 100</span><span class="bar-row__track"><span class="bar-row__fill" style="width:100%"></span></span><span class="bar-row__value">2,504.1</span></div>
+              <div class="bar-row"><span class="bar-row__label">Active field</span><span class="bar-row__track"><span class="bar-row__fill" style="width:83.5%"></span></span><span class="bar-row__value">2,090.9</span></div>
+              <div class="mini-panel__label" style="margin-top:40px">Anatomy of the 413.2-point gap</div>
+              <div class="edge-split" aria-hidden="true"><span></span><span></span></div>
+              <div class="edge-legend"><div><i></i>234.6 projected quality · 57%</div><div><i></i>178.7 above projection · 43%</div></div>
+            </figure>
+          </div>
+        </div>
+
+        <div style="margin-top:110px" class="reveal">
+          <span class="eyebrow">The contract</span>
+          <h3 style="margin-top:24px;max-width:18em">Thirteen ways bad data is refused entry.</h3>
+          <p class="muted" style="max-width:52em">The final model table has 54 columns, of which 41 are approved predictors. Every rolling player window ends at the previous event. Pre-2022 expected statistics and pre-2025 defensive-contribution fields stay null rather than becoming fictional zeroes. Coventry and Hull's missing Premier League priors remain missing; Ipswich's 454-day-old state remains visibly stale.</p>
+          <div class="quality-strip" aria-label="All thirteen hard data checks passed"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+          <div class="quality-caption"><span>13 hard checks</span><span>13 passed · 0 lag mismatches · 0 forbidden targets</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter chapter--dark" id="model" aria-labelledby="model-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>02</strong>A forecast that must earn its vote</div>
+          <div class="chapter-head__copy">
+            <span class="eyebrow">Act two · Separate selection from scoring</span>
+            <h2 id="model-title">A decimal forecast hides two different questions.</h2>
+            <p class="body-large">Will the player appear? If he does, what is he worth? Treating those as one regression rewards safe predictions near zero and masks rotation risk. FPLAgent models them separately for every position.</p>
+          </div>
+        </header>
+
+        <div class="bezel reveal">
+          <div class="bezel__inner hurdle" aria-label="Expected points equals probability of playing multiplied by expected points conditional on playing">
+            <div class="hurdle__node"><strong>Pr(minutes &gt; 0)</strong><small>Four-class minutes model</small></div>
+            <div class="hurdle__operator">×</div>
+            <div class="hurdle__node"><strong>E[points | plays]</strong><small>Conditional return model</small></div>
+            <div class="hurdle__operator">=</div>
+            <div class="hurdle__result"><strong>xP</strong><small>Unconditional expectation</small></div>
+          </div>
+        </div>
+
+        <div class="model-grid">
+          <div class="bezel reveal">
+            <div class="bezel__inner model-card">
+              <span class="section-number">FORECAST_V2</span>
+              <h3>Four positional ensembles, two seeds each.</h3>
+              <ul class="param-list">
+                <li><span>Engine</span><strong>XGBoost 3.3</strong></li>
+                <li><span>Device</span><strong>CUDA:0</strong></li>
+                <li><span>Hardware</span><strong>RTX 5090</strong></li>
+                <li><span>Point trees</span><strong>250 × 2</strong></li>
+                <li><span>Minute trees</span><strong>242 × 2</strong></li>
+                <li><span>Features</span><strong>41</strong></li>
+                <li><span>Training rows</span><strong>244,425</strong></li>
+              </ul>
+            </div>
+          </div>
+          <div class="bezel reveal" data-delay="1">
+            <div class="bezel__inner model-card">
+              <span class="section-number">PROMOTION GATE · 12 POSITION-SEASON SLICES</span>
+              <h3>Accuracy alone is not enough.</h3>
+              <p class="small">The challenger must beat availability-adjusted five-event form where the optimiser actually shops: ranking, the top shortlist and GW1.</p>
+              <div class="gate-list">
+                <div class="gate-row"><span class="gate-row__label">MAE wins</span><span class="gate-row__track"><span class="gate-row__fill" style="width:83.33%"></span></span><span class="gate-row__value">10 / 12</span></div>
+                <div class="gate-row"><span class="gate-row__label">Rank wins</span><span class="gate-row__track"><span class="gate-row__fill" style="width:50%"></span></span><span class="gate-row__value">6 / 12</span></div>
+                <div class="gate-row"><span class="gate-row__label">Shortlist wins</span><span class="gate-row__track"><span class="gate-row__fill" style="width:100%"></span></span><span class="gate-row__value">12 / 12</span></div>
+                <div class="gate-row"><span class="gate-row__label">GW1 shortlist wins</span><span class="gate-row__track"><span class="gate-row__fill" style="width:66.67%"></span></span><span class="gate-row__value">8 / 12</span></div>
+                <div class="gate-row"><span class="gate-row__label">Mean shortlist lift</span><span class="gate-row__track"><span class="gate-row__fill" style="width:71%"></span></span><span class="gate-row__value">+0.428</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <table class="season-table reveal">
+          <thead><tr><th>Unseen test season</th><th>Model MAE</th><th>Form MAE</th><th>Top-k lift</th><th>Legal GW1 model</th><th>Legal GW1 form</th></tr></thead>
+          <tbody>
+            <tr><td>2023/24</td><td>0.958</td><td>0.984</td><td class="win">+0.417</td><td>35</td><td>35</td></tr>
+            <tr><td>2024/25</td><td>0.999</td><td>1.032</td><td class="win">+0.472</td><td class="win">56</td><td>40</td></tr>
+            <tr><td>2025/26</td><td>0.982</td><td>1.053</td><td class="win">+0.396</td><td class="win">48</td><td>46</td></tr>
+          </tbody>
+        </table>
+        <p class="small reveal" style="margin-top:22px;max-width:72em;color:rgba(255,255,255,.48)">Each season is trained only on earlier seasons, with the latest prior year reserved for early stopping. The legal GW1 replay adds 18 points over three seasons with no losing year. Three decisions remain far too few to estimate the true edge; the result is encouraging evidence, not a victory lap.</p>
+      </div>
+    </section>
+
+    <section class="chapter chapter--light" id="decision" aria-labelledby="decision-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>03</strong>From players to a policy</div>
+          <div class="chapter-head__copy">
+            <span class="eyebrow">Act three · Solve the game being played</span>
+            <h2 id="decision-title">The best eleven this week is not necessarily the best fifteen to own.</h2>
+            <p class="body-large">FPL has a budget, formation rules, a bench, captaincy and transfers that carry. The answer must be a legal route through those constraints—not a sorted spreadsheet.</p>
+          </div>
+        </header>
+
+        <div class="decision-summary">
+          <div class="bezel reveal">
+            <div class="bezel__inner decision-note">
+              <div>
+                <span class="section-number">DECISION RECEIPT · S001</span>
+                <h3>The provisional first fifteen.</h3>
+                <p class="small">HiGHS solves binary membership, starter, captain and transfer decisions over GW1–GW8. Rules are loaded from the live API and validated again after the solve.</p>
+                <ul class="receipt-list">
+                  <li><span>Squad cost</span><strong>£99.5m</strong></li>
+                  <li><span>Bank</span><strong>£0.5m</strong></li>
+                  <li><span>Formation</span><strong>5–2–3</strong></li>
+                  <li><span>Captain</span><strong>Bruno</strong></li>
+                  <li><span>Vice-captain</span><strong>Senesi</strong></li>
+                  <li><span>Horizon</span><strong>GW1–GW8</strong></li>
+                  <li><span>Decay</span><strong>0.88</strong></li>
+                </ul>
+              </div>
+              <div class="decision-note__score"><span>58.20</span><small>Projected Gameweek 1 points</small></div>
+            </div>
+          </div>
+
+          <div class="bezel reveal" data-delay="1">
+            <div class="bezel__inner pitch-wrap">
+              <div class="pitch" aria-label="S001 starting lineup in a 5-2-3 formation">
+                <span class="pitch-circle" aria-hidden="true"></span>
+                <div class="player" style="left:50%;top:88%"><span class="player__pin">GK</span><span class="player__name">Donnarumma · 4.51</span></div>
+                <div class="player" style="left:13%;top:66%"><span class="player__pin">DEF</span><span class="player__name">Virgil · 4.76</span></div>
+                <div class="player" style="left:31%;top:69%"><span class="player__pin">DEF</span><span class="player__name">Tarkowski · 5.03</span></div>
+                <div class="player" style="left:50%;top:64%"><span class="player__pin">VC</span><span class="player__name">Senesi · 5.16</span></div>
+                <div class="player" style="left:69%;top:69%"><span class="player__pin">DEF</span><span class="player__name">Truffert · 4.79</span></div>
+                <div class="player" style="left:87%;top:66%"><span class="player__pin">DEF</span><span class="player__name">Mukiele · 4.98</span></div>
+                <div class="player player--captain" style="left:36%;top:43%"><span class="player__pin">C</span><span class="player__name">Bruno · 5.59</span></div>
+                <div class="player" style="left:64%;top:43%"><span class="player__pin">MID</span><span class="player__name">Mbeumo · 4.74</span></div>
+                <div class="player" style="left:24%;top:19%"><span class="player__pin">FWD</span><span class="player__name">João Pedro · 4.46</span></div>
+                <div class="player" style="left:50%;top:15%"><span class="player__pin">FWD</span><span class="player__name">Igor Thiago · 4.45</span></div>
+                <div class="player" style="left:76%;top:19%"><span class="player__pin">FWD</span><span class="player__name">Calvert-Lewin · 4.13</span></div>
+              </div>
+              <div class="bench-rail" aria-label="Bench order"><div class="bench-player">Xhaka<small>Bench 1 · 4.09</small></div><div class="bench-player">Szoboszlai<small>Bench 2 · 3.63</small></div><div class="bench-player">Mateus Fernandes<small>Bench 3 · 3.62</small></div><div class="bench-player">Verbruggen<small>GK · 3.57</small></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="thin-edge reveal">
+          <span class="thin-edge__line"></span>
+          <div class="thin-edge__number"><strong>0.026</strong><span>objective points to the exact alternative</span></div>
+          <span class="thin-edge__line"></span>
+        </div>
+
+        <div class="reading-column">
+          <p class="body-large reveal">The best squad forced to differ from S001 changes only the second goalkeeper—Verbruggen to Leno—and scores 317.194 against 317.219 over the weighted eight-week objective. That hairline gap is not hidden. It tells us confidence belongs in the <em>core and shape</em>, not every peripheral name.</p>
+          <p class="reveal">Across 20 forecast-error perturbations, only 25% recover the exact same fifteen, but the mean incumbent player survives 92% of runs; eleven players appear in at least 90%; and Bruno remains captain 85%. Changing the future decay from 0.80 to 0.95 leaves the initial squad and captain unchanged.</p>
+          <p class="reveal">The objective weights each future gameweek by <span class="numeric">0.88<sup>g−1</sup></span>, adds the captain's points a second time, and gives the deterministic bench a deliberately small 8% autosub proxy. Exact substitutions are handled later in simulation. Free transfers may carry to five; a roll is a valid action; transfer activity receives no reward.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter chapter--dark" id="trials" aria-labelledby="trials-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>04</strong>The survival trials</div>
+          <div class="chapter-head__copy">
+            <span class="eyebrow">Act four · Try to break the answer</span>
+            <h2 id="trials-title">One optimum is an anecdote. Build it some enemies.</h2>
+            <p class="body-large">Premium-heavy squads, lean benches, alternative decays and perturbed forecasts were not discussed hypothetically. They were solved into 128 legal challengers, then sent through an unseen 25,000-path holdout.</p>
+          </div>
+        </header>
+
+        <div class="trial-grid">
+          <div class="bezel reveal">
+            <div class="bezel__inner swarm">
+              <span class="section-number">THE CANDIDATE FIELD</span>
+              <div class="swarm__dots" id="candidate-swarm" data-count="128" aria-hidden="true"></div>
+              <div class="swarm__legend"><span>128 unique legal squads</span><span>205 players represented</span><span>Mean overlap 9.47 / 15</span></div>
+            </div>
+          </div>
+          <div class="bezel reveal" data-delay="1">
+            <div class="bezel__inner trial-card trial-note">
+              <div><span class="section-number">SEARCH DIVERSITY</span><h3>A family resemblance, not a clone army.</h3><p class="small" style="color:rgba(255,255,255,.58)">Pairwise overlap ranges from four to fourteen players. The field spans four bench bands, five noise levels, three horizon decays, every £9m+ MID/FWD premium and leading premium pairs.</p></div>
+              <div class="trial-note__big">4–14<small>shared players between any two squads</small></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="trial-grid" style="margin-top:24px">
+          <div class="bezel reveal">
+            <div class="bezel__inner trial-card">
+              <span class="section-number">FIVE-WEEK POLICY HOLDOUT · RESIDUAL ENGINE</span>
+              <h3>Give every finalist the same transfer rights.</h3>
+              <p class="small" style="color:rgba(255,255,255,.58)">S002 edges the incumbent by 0.28 as a frozen squad. Once both receive the same legal free-transfer planning envelope, that order reverses.</p>
+              <div class="result-bars">
+                <div class="result-row"><strong>S001</strong><span class="result-track"><span class="result-fill" style="width:100%"></span></span><span>313.26</span></div>
+                <div class="result-row"><strong>S002</strong><span class="result-track"><span class="result-fill" style="width:99.10%"></span></span><span>310.44</span></div>
+                <div class="result-row"><strong>S030</strong><span class="result-track"><span class="result-fill" style="width:98.95%"></span></span><span>309.98</span></div>
+                <div class="result-row"><strong>Saka</strong><span class="result-track"><span class="result-fill" style="width:98.51%"></span></span><span>308.60</span></div>
+                <div class="result-row"><strong>Haaland</strong><span class="result-track"><span class="result-fill" style="width:97.18%"></span></span><span>304.41</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="bezel reveal" data-delay="1">
+            <div class="bezel__inner trial-card trial-note">
+              <div><span class="section-number">MARGINAL CALIBRATION</span><h3>The uncertainty has to resemble history.</h3><p class="small" style="color:rgba(255,255,255,.58)">The residual engine uses 84,999 rolling out-of-fold forecasts. Its P10–P90 interval contains 79.75% of 36,442 historical player/gameweeks, close to the intended 80%, with −0.050 mean-point bias.</p></div>
+              <div class="trial-note__big">79.75%<small>realised coverage inside nominal 80% bands</small></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="premium-list reveal">
+          <span class="eyebrow">The premium question</span>
+          <h3 style="margin-top:25px;max-width:18em">Big names were forced into the room. Price made them answer harder questions.</h3>
+          <p style="max-width:54em;color:rgba(255,255,255,.62)">A preseason recovery stress raises availability for highly owned £9m+ attackers after long summer breaks. Haaland rises from 3.41 to 4.67 GW1 xP, Saka from 3.50 to 3.88 and Isak from 1.74 to 2.81. S001 still holds. Their absence is an opportunity-cost result, not a claim that they are poor footballers.</p>
+          <div class="premium-row"><span class="premium-row__name"><strong>Saka</strong><small>£9.5m · 3.50 xP</small></span><span class="premium-row__xp">policy stress</span><span class="premium-row__track"><span style="--pos:42%"></span></span><span class="premium-row__delta">−4.66</span></div>
+          <div class="premium-row"><span class="premium-row__name"><strong>Palmer</strong><small>£9.5m · 3.97 xP</small></span><span class="premium-row__xp">policy stress</span><span class="premium-row__track"><span style="--pos:50%"></span></span><span class="premium-row__delta">−5.57</span></div>
+          <div class="premium-row"><span class="premium-row__name"><strong>Haaland</strong><small>£15.5m · 3.41 xP</small></span><span class="premium-row__xp">policy stress</span><span class="premium-row__track"><span style="--pos:79%"></span></span><span class="premium-row__delta">−8.86</span></div>
+          <div class="premium-row"><span class="premium-row__name"><strong>Isak</strong><small>£9.0m · 1.74 xP</small></span><span class="premium-row__xp">policy stress</span><span class="premium-row__track"><span style="--pos:100%"></span></span><span class="premium-row__delta">−11.29</span></div>
+        </div>
+
+        <div class="reading-column" style="margin-top:92px">
+          <p class="body-large reveal">The bench receives the same treatment. S001 leaves £23.0m off the pitch, an amount that looks wrong if bench spend is assumed to be dead money. Thirty-five lean-bench candidates, thirty-five medium-low, thirty-five medium and twenty-three deep-bench constructions test that assumption.</p>
+          <p class="reveal" style="color:rgba(255,255,255,.62)">S002's £21m bench produces the best fixed mean. S001 wins only when transfer routes and exact autosub resilience enter. The system never rewards an expensive bench; it asks whether the extra option value earns its opportunity cost. This remains one of the least settled parts of the squad.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter chapter--light" aria-labelledby="component-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>05</strong>A second view of football</div>
+          <div class="chapter-head__copy">
+            <span class="eyebrow">Act five · Rebuild the match</span>
+            <h2 id="component-title">What if the first simulator is faithfully wrong?</h2>
+            <p class="body-large">Historical residuals preserve real error patterns, but they do not enforce football identities. A second engine predicts goals, reconstructs events, and scores every simulated match from the current rules.</p>
+          </div>
+        </header>
+
+        <div class="two-lenses">
+          <div class="bezel reveal">
+            <div class="bezel__inner lens">
+              <div class="lens__icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M8 34c7-15 15-20 32-20M8 25c9-6 19-7 32-3M8 39c9-5 19-7 32-6" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="34" r="3" fill="currentColor"/><circle cx="39" cy="14" r="3" fill="currentColor"/></svg></div>
+              <div><h3>Residual lens</h3><p>Start with the direct xP forecast. Add correlated gameweek, team, player and appearance errors learned from forward historical misses.</p></div>
+              <span class="lens__stat">84,999 OOF residual rows · exact autosubs</span>
+            </div>
+          </div>
+          <div class="lens-bridge" aria-hidden="true">+</div>
+          <div class="bezel reveal" data-delay="1">
+            <div class="bezel__inner lens">
+              <div class="lens__icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><rect x="7" y="10" width="34" height="28" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M24 10v28M7 24h34" stroke="currentColor" stroke-width="1.5"/><circle cx="24" cy="24" r="6" stroke="currentColor" stroke-width="1.5"/><path d="M7 17h5v14H7M41 17h-5v14h5" stroke="currentColor" stroke-width="1.5"/></svg></div>
+              <div><h3>Component lens</h3><p>Generate scorelines and minutes. Allocate on-pitch scorers and assists. Derive clean sheets, saves, cards, defensive contributions and bonus.</p></div>
+              <span class="lens__stat">25,000 holdout matches per policy · current rules</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="component-flow reveal" aria-label="Component simulation flow">
+          <div class="component-step"><span>01</span><strong>Minutes</strong><small>DNP, 1–59, 60–89, 90+</small></div>
+          <div class="component-step"><span>02</span><strong>Scoreline</strong><small>Correlated Poisson goals</small></div>
+          <div class="component-step"><span>03</span><strong>Identity</strong><small>On-pitch scorer and assist</small></div>
+          <div class="component-step"><span>04</span><strong>Components</strong><small>CS, saves, cards, DC, BPS</small></div>
+          <div class="component-step"><span>05</span><strong>FPL score</strong><small>XI, autosubs, captaincy</small></div>
+        </div>
+
+        <div class="blend-figure">
+          <div class="blend-dial reveal" role="img" aria-label="Decision blend uses five percent raw component output and ninety-five percent incumbent expected points"><div class="blend-dial__value"><strong>5%</strong><small>raw component weight</small></div></div>
+          <div class="reveal" data-delay="1">
+            <span class="eyebrow">Detail must earn influence</span>
+            <h3 style="margin-top:24px">The richer model is deliberately kept on a short lead.</h3>
+            <p>Goals, assists and bonus models pass season-forward promotion; saves do not and fall back to an empirical rate. The full component reconstruction is tested on 2024/25, where 5% raw component plus 95% incumbent xP wins the shortlist comparison. That blend is then frozen before 2025/26, where it scores 3.981 top-k realised points against 3.954 for xP.</p>
+            <p>The tempting 100% raw component result performs brilliantly on 2025/26—but worse on the season used for selection. It is not allowed to rewrite the decision after the fact. Complexity is a challenger, not a throne.</p>
+          </div>
+        </div>
+
+        <table class="season-table reveal" style="color:var(--ink);margin-top:88px">
+          <thead><tr><th style="color:var(--ink-faint)">Component integrity gate</th><th style="color:var(--ink-faint)">Observed</th><th style="color:var(--ink-faint)">Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>Rule reconstruction</td><td class="accent">99.9931%</td><td style="font-family:var(--sans);text-align:right">86,749 / 86,755 player-fixtures exact</td></tr>
+            <tr><td>Sampled goals reconciled</td><td class="accent">3,319,250</td><td style="font-family:var(--sans);text-align:right">Only 132 own/unattributed; no assist exceeds a goal</td></tr>
+            <tr><td>League points per match</td><td class="accent">89.15</td><td style="font-family:var(--sans);text-align:right">Actual 2025/26: 90.48 · xP-implied: 91.96</td></tr>
+            <tr><td>Bonus conservation</td><td class="accent">6.00</td><td style="font-family:var(--sans);text-align:right">Exactly six bonus points per match scenario</td></tr>
+          </tbody>
+        </table>
+
+        <div class="reading-column" style="margin-top:85px">
+          <p class="body-large reveal">The independent search discovers fifteen new legal squads across component weights from 0% to 100% and decays from 0.80 to 0.95. C002 comes closest—but scores 310.80 against S001's 311.00 under the historically supported decision blend, a paired Monte Carlo interval of −0.32 to −0.07.</p>
+          <p class="reveal">The literal raw-component leader, C014, looks dramatic and finishes 22.67 decision points below S001 after anchoring to the evidence-selected weight. The promotion gate passes because the component system is coherent and adds tested information; the recommendation remains S001 because the new candidates fail to beat it.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="verdict" aria-labelledby="verdict-title">
+      <div class="container verdict-grid">
+        <div><div class="verdict-mark reveal" aria-hidden="true">S</div></div>
+        <div>
+          <span class="eyebrow">The verdict</span>
+          <h2 id="verdict-title" class="reveal" style="margin-top:28px">Why S001 is solid—without pretending it is certain.</h2>
+          <p class="body-large reveal">The case is cumulative. No individual statistic carries the recommendation; a chain of independent refusals does.</p>
+          <ol class="verdict-list">
+            <li class="reveal"><div><strong>The inputs respect time.</strong><span>Lag checks, snapshot timing and forbidden-feature gates prevent the easiest forms of hindsight.</span></div></li>
+            <li class="reveal"><div><strong>The forecast wins where decisions happen.</strong><span>It beats a frozen form baseline across MAE, ranking, shortlists and legal GW1 replays.</span></div></li>
+            <li class="reveal"><div><strong>The solver models the FPL problem.</strong><span>Budget, formation, clubs, captaincy, bench and free-transfer carry are constraints—not prose.</span></div></li>
+            <li class="reveal"><div><strong>The core survives perturbation.</strong><span>Different decays, model noise, availability recovery and bench structures preserve the central construction.</span></div></li>
+            <li class="reveal"><div><strong>Two simulators keep the same answer.</strong><span>A historical residual engine and a component football engine disagree in useful ways but retain S001.</span></div></li>
+            <li class="reveal"><div><strong>Disagreement stays visible.</strong><span>S002 wins the fixed contest, C014 wins raw components, and the second goalkeeper is nearly a coin toss. None is hidden.</span></div></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter chapter--dark" aria-labelledby="limits-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>06</strong>The honest boundary</div>
+          <div class="chapter-head__copy"><span class="eyebrow">What remains unproven</span><h2 id="limits-title">The most dangerous errors are not inside the confidence interval.</h2><p class="body-large">Twenty-five thousand paths can make simulation noise tiny while missing an injury, a new tactical role or an entire class of model error. Precision is not the same as completeness.</p></div>
+        </header>
+        <div class="limits-grid">
+          <div class="limit reveal"><span class="limit__num">01</span><h3>No prospective season yet</h3><p>Every inspected historical year is now development evidence. The first untouched test begins when 2026/27 pre-deadline receipts are frozen.</p></div>
+          <div class="limit reveal" data-delay="1"><span class="limit__num">02</span><h3>Only three legal GW1 replays</h3><p>The +18-point total is promising but far too small to quantify expected edge, downside or podium probability.</p></div>
+          <div class="limit reveal"><span class="limit__num">03</span><h3>Minutes are the live fault line</h3><p>Friendlies, new managers, transfer windows and late injuries can move premium participation far faster than historical features.</p></div>
+          <div class="limit reveal" data-delay="1"><span class="limit__num">04</span><h3>Promoted clubs are cold</h3><p>Coventry and Hull have no Premier League team prior; new signings have no cross-league translation. Missing values are honest, but not an edge.</p></div>
+          <div class="limit reveal"><span class="limit__num">05</span><h3>One defensive-contribution era</h3><p>Only 2025/26 is directly comparable. The five-defender construction is an evidence-led hypothesis, not established doctrine.</p></div>
+          <div class="limit reveal" data-delay="1"><span class="limit__num">06</span><h3>The component match is approximate</h3><p>Uniform goal times, simplified assists, incomplete BPS tie logic and empirical defensive contributions are transparent simplifications.</p></div>
+          <div class="limit reveal"><span class="limit__num">07</span><h3>The horizon omits strategic state</h3><p>Hits, chips, sale value, price scenarios, postponements and terminal value beyond GW8 are not yet represented.</p></div>
+          <div class="limit reveal" data-delay="1"><span class="limit__num">08</span><h3>Public does not mean licensed</h3><p>Undocumented endpoints can change and public retrieval does not automatically permit redistribution inside a paid product.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="chapter chapter--red" id="next" aria-labelledby="next-title">
+      <div class="container">
+        <header class="chapter-head reveal">
+          <div class="chapter-head__index"><strong>07</strong>The improvement programme</div>
+          <div class="chapter-head__copy"><span class="eyebrow">Next, attack the unknowns</span><h2 id="next-title">Improve the ways the picker can be confidently wrong.</h2><p class="body-large">The immediate answer is not a larger neural network. It is fresher evidence, stronger cold starts and a truly sequential policy test.</p></div>
+        </header>
+        <div class="roadmap">
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P0</span><h3>Immutable live snapshots</h3><div><p>Store every official response by timestamp and content hash. Diff status, price, ownership, club, fixtures, rules and selectable state; bind every recommendation to one source bundle.</p><span class="roadmap-item__gate">Gate · byte-for-byte replay from an immutable receipt</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P0</span><h3>Preseason minutes and roles</h3><div><p>Capture friendly lineups, substitutions, injuries, suspensions and reliable role evidence with timestamp, expiry and source quality. Combine it with the historical prior rather than silently overwriting it.</p><span class="roadmap-item__gate">Gate · better held-out play Brier/log loss and squad replay</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P0</span><h3>Cold-start hierarchy</h3><div><p>Translate prior-league player performance with explicit uncertainty and shrink promoted-club attack/defence toward historical promoted-team distributions.</p><span class="roadmap-item__gate">Gate · beat current new-to-league baselines out of season</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P0</span><h3>Prospective shadow runs</h3><div><p>Regenerate at material changes and T−72h, T−24h, T−6h, T−60m and T−10m. Every changed answer must explain the source and forecast deltas that caused it.</p><span class="roadmap-item__gate">Gate · no unaudited recommendation change</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P1</span><h3>Sequential season replay</h3><div><p>Start from a generated GW1 squad and replay each historical deadline with only then-available information. Choose roll, transfers, XI, bench and captain; debit hits; preserve transfer and value state.</p><span class="roadmap-item__gate">Gate · beat frozen form, champion, template and roll policies</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P2</span><h3>Football fidelity</h3><div><p>Reconstruct official BPS and ties, model shots on target faced, penalties, lineup covariance, schedule uncertainty and chip opportunity cost. Promote each only on season-forward decision value.</p><span class="roadmap-item__gate">Gate · decision lift, not simulation spectacle</span></div></div>
+          <div class="roadmap-item reveal"><span class="roadmap-item__dot">P3</span><h3>The product layer</h3><div><p>Expose one versioned answer for transfers, roll, XI, captain, vice, bench and chips. Use screenshot OCR to recover team state, then let the numeric engine work with the LLM switched off.</p><span class="roadmap-item__gate">Gate · fast, legible and trustworthy before the deadline</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="appendix" id="appendix" aria-labelledby="appendix-title">
+      <div class="container">
+        <header class="chapter-head reveal" style="margin-bottom:62px">
+          <div class="chapter-head__index"><strong>A</strong>Technical notes</div>
+          <div class="chapter-head__copy"><span class="eyebrow">Reproducible by design</span><h2 id="appendix-title">Methods, sources and receipts.</h2><p class="body-large">The narrative above is designed to be read. The notes below are designed to be challenged.</p></div>
+        </header>
+
+        <details class="reveal" open>
+          <summary><span>A.1</span><span>Sources and provenance</span></summary>
+          <div class="appendix__content">
+            <p>The live 2026/27 bundle was fetched from FPL's public no-login endpoints. The frozen bootstrap was collected at <code>2026-08-02 10:02:54 UTC</code>, contains 564 raw players, 20 teams and 38 events, and hashes to <code>41eb63c7…8a50f</code>. The current modelling grid retains 559 selectable players over GW1–GW8.</p>
+            <div class="source-links">
+              <a href="https://fantasy.premierleague.com/api/bootstrap-static/">Official FPL bootstrap-static</a>
+              <a href="https://fantasy.premierleague.com/api/fixtures/">Official FPL fixtures</a>
+              <a href="https://github.com/vaastav/Fantasy-Premier-League">Vaastav historical archive</a>
+              <a href="https://github.com/vaastav/Fantasy-Premier-League/blob/master/DATA_DICTIONARY.md">Vaastav data dictionary</a>
+              <a href="https://eos.solioanalytics.com/">Solio EOS outcome index</a>
+              <a href="https://fplgeni.us/">FPL Genius public application</a>
+            </div>
+            <p>Manager datasets are descriptive and survivorship-selected. They form hypotheses about transfers, captaincy, bench allocation and variance; they never become labels that say “copy the winner.” FPL Genius is isolated and is not a production dependency. Public retrieval remains distinct from commercial redistribution rights.</p>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.2</span><span>The 41-feature contract</span></summary>
+          <div class="appendix__content">
+            <p>Features cover fixture count and context; player history length and recency; lagged points and minutes over 1/3/5/10/38-event windows; appearance and start rates; five-event goals, assists, xG, xA, BPS, clean sheets and defensive contributions; price and ownership percentile; official availability; penalties and set-piece order; lagged team/opponent attack and defence over five and ten matches; match history and rest; cold-start status; and deadline-proxy availability.</p>
+            <p>SQL windows end with <code>1 PRECEDING</code>. A historical double gameweek is one decision row with aggregated target points plus fixture count and average context. Expected-stat eras remain null before collection began. Raw historical <code>xP</code>/<code>ep_this</code> is forbidden.</p>
+            <table><thead><tr><th>Quality class</th><th>Observed result</th></tr></thead><tbody>
+              <tr><td>Identity and keys</td><td>0 null player codes; 0 duplicate player/event keys</td></tr>
+              <tr><td>Lag reconstruction</td><td>0 last-points or form-five mismatches</td></tr>
+              <tr><td>Timing</td><td>0 observations after inferred deadline</td></tr>
+              <tr><td>Era honesty</td><td>0 synthetic pre-era xG values</td></tr>
+              <tr><td>Target isolation</td><td>0 forbidden fields in the production allowlist</td></tr>
+              <tr><td>Current pool</td><td>61 GK · 185 DEF · 247 MID · 66 FWD</td></tr>
+            </tbody></table>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.3</span><span>Forecast model specification</span></summary>
+          <div class="appendix__content">
+            <p>There are four position-specific hurdle ensembles. Two minute classifiers predict <code>DNP</code>, <code>1–59</code>, <code>60–89</code> and <code>90+</code>; two point regressors fit only played rows. Seeds 17 and 43 are averaged.</p>
+            <table><thead><tr><th>Parameter</th><th>Conditional points</th><th>Minutes class</th></tr></thead><tbody>
+              <tr><td>Objective</td><td>Squared error</td><td>Multi-class soft probability</td></tr>
+              <tr><td>Final estimators</td><td>250</td><td>242</td></tr>
+              <tr><td>Learning rate</td><td>0.035</td><td>0.040</td></tr>
+              <tr><td>Maximum depth</td><td>5</td><td>4</td></tr>
+              <tr><td>Minimum child weight</td><td>8</td><td>8</td></tr>
+              <tr><td>Row / column sample</td><td>0.82 / 0.82</td><td>0.85 / 0.85</td></tr>
+              <tr><td>L1 / L2</td><td>0.15 / 6.0</td><td>0.10 / 6.0</td></tr>
+              <tr><td>Tree method / device</td><td>Histogram / CUDA:0</td><td>Histogram / CUDA:0</td></tr>
+            </tbody></table>
+            <p>Training fails closed if a real GPU fit cannot remain on CUDA. Ensemble disagreement is augmented by 0.65 for cold starts and 0.20 for fewer than five historical events. The audit field <code>robust_points = xP − 0.15 × uncertainty</code> is recorded; the current optimiser uses the mean xP while uncertainty is attacked through perturbation and simulation.</p>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.4</span><span>Optimisation objective and legal state</span></summary>
+          <div class="appendix__content">
+            <p>HiGHS solves exact binary variables for squad, starter, captain and transfer decisions plus the integer free-transfer bank. The objective over event <em>g</em> is:</p>
+            <pre>Σg 0.88^(g−1) × [ Σi xP(i,g)·start(i,g)
+                   + Σi xP(i,g)·captain(i,g)
+                   + 0.08 Σi xP(i,g)·(squad(i,g)−start(i,g)) ]</pre>
+            <p>The captain term creates the double score. A <code>10^-6</code> transfer penalty breaks point-equivalent routes toward less activity. Hard constraints enforce £100m, 2/5/5/3, a legal XI, no more than three per club, exactly one starting captain, balanced ins/outs and free-transfer carry from one to five. Hits, chips, sale value and price changes are not yet in this optimiser.</p>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.5</span><span>Residual and component simulations</span></summary>
+          <div class="appendix__content">
+            <p>The residual engine decomposes played-player error into position/gameweek, shrunk team/fixture and player-strength-conditioned idiosyncratic shocks. Gaussian-copula latent terms carry adjacent-event appearance and return persistence: <code>play_rho=0.0586</code>, <code>points_rho=0.0162</code>. Residual scales—GK 0.65, DEF 0.40, MID 0.40, FWD 0.45—were selected on 2024/25 coverage and frozen for 2025/26.</p>
+            <p>The component engine uses a CUDA XGBoost Poisson team-goal model trained on 5,643 fixture-side rows from 2018/19–2025/26. Separate 450-tree player Poisson models challenge lagged baselines for goals, assists, bonus and saves. Goals, assists and bonus pass both forward seasons; saves is rejected for losing too much event-level ranking correlation.</p>
+            <p>Every match path samples minute class and on-pitch interval, correlated scorelines, uniform goal times, on-pitch scorers and assists, goals conceded, saves, cards, penalties, defensive contributions and 3/2/1 bonus. Exact formation-valid autosubs and captain-to-vice fallback are applied after scoring.</p>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.6</span><span>Current transfer path and caveat</span></summary>
+          <div class="appendix__content">
+            <table><thead><tr><th>Event</th><th>Current eight-week receipt</th><th>Status</th></tr></thead><tbody>
+              <tr><td>GW2</td><td>Mukiele → Hill</td><td>Provisional</td></tr>
+              <tr><td>GW3</td><td>Mbeumo → Semenyo</td><td>Provisional</td></tr>
+              <tr><td>GW4</td><td>Igor Thiago → Watkins</td><td>Provisional</td></tr>
+              <tr><td>GW5</td><td>Roll</td><td>Horizon-sensitive</td></tr>
+            </tbody></table>
+            <p>The five-week finalist instead uses Truffert → Justin in GW5. That disagreement is information: terminal value and horizon matter. Only the initial squad is the current recommendation. Every future move must be re-solved after new matches, prices and availability.</p>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.7</span><span>Principal artifact hashes</span></summary>
+          <div class="appendix__content">
+            <table><thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead><tbody>
+              <tr><td>Live bootstrap</td><td><code>41eb63c76cb6…e348a50f</code></td></tr>
+              <tr><td>Live fixtures</td><td><code>9e7484118381…2d73bd3e</code></td></tr>
+              <tr><td>Current rules</td><td><code>0bfb624a730e…5af0244b</code></td></tr>
+              <tr><td>Deadline feature table</td><td><code>eab3a9e1adbd…f20010877</code></td></tr>
+              <tr><td>forecast_v2 model</td><td><code>dcfbd27c27ce…b59cd95f</code></td></tr>
+              <tr><td>Current xP forecast</td><td><code>44eef5e5ec08…adec6b261</code></td></tr>
+              <tr><td>Initial squad receipt</td><td><code>378f8c32f425…bd19f127</code></td></tr>
+              <tr><td>128 candidate field</td><td><code>fb10e1cde355…f98f029</code></td></tr>
+              <tr><td>Residual tournament</td><td><code>072e8716d87b…6ed0913c</code></td></tr>
+              <tr><td>Goal model</td><td><code>ee5a3b81cb2c…4dff9424</code></td></tr>
+              <tr><td>Player event models</td><td><code>c297e11ffd77…e0ddbf9</code></td></tr>
+              <tr><td>Component blend test</td><td><code>0d8d3f64f5f5…449d0d8a</code></td></tr>
+              <tr><td>Component candidates</td><td><code>6046ccc2915e…f03397ab35</code></td></tr>
+              <tr><td>Component tournament</td><td><code>c3cbbaf0d675…0fec4300e2</code></td></tr>
+            </tbody></table>
+          </div>
+        </details>
+
+        <details class="reveal">
+          <summary><span>A.8</span><span>Reproduce the evidence</span></summary>
+          <div class="appendix__content">
+            <pre>uv run fpl-data validate
+uv run fplagent prepare --horizon 8
+uv run fplagent gpu-check
+uv run fplagent train
+uv run fplagent backtest-picker
+uv run fplagent forecast
+uv run fplagent squad --stability-samples 20
+uv run fplagent tournament --candidates 128 \
+  --selection-simulations 5000 --holdout-simulations 25000
+uv run fplagent train-components
+uv run fplagent train-component-events --force-targets
+uv run fplagent forecast-components
+uv run fplagent backtest-components
+uv run fplagent component-tournament --simulations 25000 --seed 20260804
+uv run ruff check .
+uv run pytest -q</pre>
+            <p>At publication, the data validator returns <code>status: ok</code>, lint is clean and the suite reports <code>28 passed</code>. Read the <a href="./gw1-picker-technical-report.md">full technical report</a> for every table, supporting report and implementation link.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <footer class="closing">
+      <div class="container">
+        <p class="closing__statement reveal">The picker is credible because it is difficult for its own machinery to say <em>yes.</em></p>
+        <div class="footer-row"><span>FPLAgent · Field Notes 01</span><span>Provisional 2026/27 GW1 decision</span><span>Refresh before 21 August, 17:30 UTC</span></div>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    (() => {
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const revealItems = document.querySelectorAll('.reveal');
+      if (reduced || !('IntersectionObserver' in window)) {
+        revealItems.forEach((item) => item.classList.add('is-visible'));
+      } else {
+        const revealObserver = new IntersectionObserver((entries, observer) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              observer.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+        revealItems.forEach((item) => revealObserver.observe(item));
+      }
+
+      const swarm = document.querySelector('#candidate-swarm');
+      if (swarm) {
+        const count = Number(swarm.dataset.count || 0);
+        const fragment = document.createDocumentFragment();
+        for (let i = 0; i < count; i += 1) {
+          const dot = document.createElement('i');
+          dot.style.setProperty('--s', String(0.72 + ((i * 17) % 31) / 100));
+          dot.style.setProperty('--d', `${-((i * 13) % 47) / 10}s`);
+          fragment.appendChild(dot);
+        }
+        swarm.appendChild(fragment);
+      }
+
+      const menuButton = document.querySelector('.menu-button');
+      const navLinks = document.querySelectorAll('.nav-links a');
+      const closeMenu = () => {
+        document.body.classList.remove('mobile-menu-open');
+        menuButton?.setAttribute('aria-expanded', 'false');
+      };
+      menuButton?.addEventListener('click', () => {
+        const open = !document.body.classList.contains('mobile-menu-open');
+        document.body.classList.toggle('mobile-menu-open', open);
+        menuButton.setAttribute('aria-expanded', String(open));
+      });
+      navLinks.forEach((link) => link.addEventListener('click', closeMenu));
+
+      const sections = [...document.querySelectorAll('section[id]')];
+      if ('IntersectionObserver' in window) {
+        const sectionObserver = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            navLinks.forEach((link) => link.classList.toggle('is-active', link.getAttribute('href') === `#${entry.target.id}`));
+          });
+        }, { rootMargin: '-25% 0px -65% 0px' });
+        sections.forEach((section) => sectionObserver.observe(section));
+      }
+
+      if (window.location.hash) {
+        const directTarget = document.querySelector(window.location.hash);
+        if (directTarget) {
+          document.documentElement.style.scrollBehavior = 'auto';
+          directTarget.scrollIntoView();
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

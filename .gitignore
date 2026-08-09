@@ -1,0 +1,40 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+*.log
+
+# Local credentials and provider keys must never enter version control.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Frontend dependencies and reproducible build output.
+web/node_modules/
+web/dist/
+
+# Framework-generated compilation output.
+unsloth_compiled_cache/
+
+# LLM environments, weights, adapters, checkpoints and evaluation output.
+llm/.venv/
+llm/outputs/
+llm/evaluations/
+
+# Downloaded and generated data are reproducible and can be large.
+data/raw/
+data/processed/
+data/model/
+data/decisions/
+data/web/
+data/manifests/
+data/fpl_history.duckdb*
+data/analysis/
+data/llm/

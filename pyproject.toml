@@ -1,0 +1,48 @@
+[project]
+name = "fplagent-data"
+version = "0.1.0"
+description = "Reproducible historical and live data pipeline for FPLAgent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "duckdb>=1.3.0",
+  "fastapi>=0.116.0",
+  "highspy>=1.11.0",
+  "httpx>=0.28.0",
+  "mcp>=1.22.0,<2.0.0",
+  "joblib>=1.5.0",
+  "numpy>=2.2.0",
+  "openpyxl>=3.1.5",
+  "pyarrow>=19.0.0",
+  "python-multipart>=0.0.20",
+  "scipy>=1.15.0",
+  "scikit-learn>=1.7.0",
+  "uvicorn>=0.35.0",
+  "xgboost>=3.0.0",
+]
+
+[project.scripts]
+fpl-data = "fplagent_data.cli:main"
+fplagent = "fplagent_engine.cli:main"
+fplagent-llm = "fplagent_llm.cli:main"
+fplagent-web = "fplagent_web.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.12.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fplagent_data", "src/fplagent_engine", "src/fplagent_llm", "src/fplagent_web"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

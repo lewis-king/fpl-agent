@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How FPLAgent combines Qwen3.5, a locally trained LoRA adapter, system prompting, tools, RAG and deterministic decision code.">
+  <title>Inside FPLAgent — Fine-tuning and runtime architecture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18201d;
+      --ink-soft: #56615c;
+      --paper: #f4f4ef;
+      --paper-strong: #fbfbf8;
+      --night: #17201c;
+      --night-soft: #202b26;
+      --line: #d7dbd7;
+      --line-dark: rgba(255, 255, 255, 0.14);
+      --accent: #3f8a65;
+      --accent-dark: #286246;
+      --accent-wash: #dcebe2;
+      --warning: #9c6b2c;
+      --danger: #9b4b42;
+      --radius-sm: 12px;
+      --radius-md: 22px;
+      --radius-lg: 34px;
+      --shadow: 0 26px 70px -48px rgba(21, 33, 27, 0.55);
+      --max: 1240px;
+      --mono: "Geist Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Geist, "Avenir Next", Avenir, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 82% 8%, rgba(63, 138, 101, 0.09), transparent 25rem),
+        var(--paper);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.62;
+      text-rendering: optimizeLegibility;
+    }
+
+    a { color: inherit; }
+    button { font: inherit; }
+    code, .mono { font-family: var(--mono); }
+    code {
+      padding: 0.16rem 0.38rem;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.65);
+      font-size: 0.86em;
+      overflow-wrap: anywhere;
+    }
+
+    .skip-link {
+      position: fixed;
+      left: 1rem;
+      top: 1rem;
+      z-index: 20;
+      padding: 0.7rem 1rem;
+      border-radius: 999px;
+      background: var(--paper-strong);
+      color: var(--ink);
+      transform: translateY(-180%);
+      transition: transform 180ms ease;
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .progress {
+      position: fixed;
+      inset: 0 auto auto 0;
+      z-index: 15;
+      width: 100%;
+      height: 3px;
+      background: var(--accent);
+      transform: scaleX(0);
+      transform-origin: left;
+      animation: scroll-progress linear both;
+      animation-timeline: scroll(root block);
+      pointer-events: none;
+    }
+
+    .shell {
+      width: min(calc(100% - 3rem), var(--max));
+      margin-inline: auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid rgba(215, 219, 215, 0.78);
+      background: rgba(244, 244, 239, 0.88);
+      backdrop-filter: blur(18px) saturate(125%);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    }
+    .topbar-inner {
+      min-height: 68px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 2rem;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.72rem;
+      text-decoration: none;
+      font-weight: 720;
+      letter-spacing: -0.03em;
+    }
+    .brand-mark {
+      width: 30px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border-radius: 9px 9px 9px 3px;
+      background: var(--night);
+      color: var(--paper-strong);
+      font: 700 0.72rem/1 var(--mono);
+    }
+    .nav {
+      justify-self: center;
+      display: flex;
+      gap: 0.25rem;
+    }
+    .nav a {
+      padding: 0.48rem 0.7rem;
+      border-radius: 8px;
+      color: var(--ink-soft);
+      font-size: 0.82rem;
+      text-decoration: none;
+      transition: background 220ms cubic-bezier(.16, 1, .3, 1), color 220ms ease;
+    }
+    .nav a:hover, .nav a.active {
+      background: rgba(63, 138, 101, 0.11);
+      color: var(--accent-dark);
+    }
+    .print-button, .copy-button {
+      border: 1px solid var(--line);
+      background: var(--paper-strong);
+      color: var(--ink);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform 220ms cubic-bezier(.16, 1, .3, 1), border-color 220ms ease, background 220ms ease;
+    }
+    .print-button { padding: 0.55rem 0.78rem; font-size: 0.8rem; }
+    .print-button:hover, .copy-button:hover { border-color: var(--accent); background: #fff; }
+    .print-button:active, .copy-button:active { transform: translateY(1px) scale(0.98); }
+
+    .hero {
+      min-height: min(820px, calc(100dvh - 68px));
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
+      align-items: center;
+      gap: clamp(3rem, 8vw, 8rem);
+      padding-block: clamp(5rem, 11vw, 9rem);
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.62rem;
+      color: var(--accent-dark);
+      font: 650 0.76rem/1.2 var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 28px;
+      height: 1px;
+      background: currentColor;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 780px;
+      margin: 1.35rem 0 1.65rem;
+      font-size: clamp(3.1rem, 6.5vw, 6.8rem);
+      line-height: 0.92;
+      letter-spacing: -0.07em;
+      font-weight: 660;
+    }
+    .hero-copy > p {
+      max-width: 64ch;
+      margin-bottom: 2rem;
+      color: var(--ink-soft);
+      font-size: clamp(1.05rem, 1.55vw, 1.28rem);
+    }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 0.72rem 1.08rem;
+      border: 1px solid var(--night);
+      border-radius: 12px;
+      background: var(--night);
+      color: var(--paper-strong);
+      text-decoration: none;
+      font-weight: 680;
+      transition: transform 240ms cubic-bezier(.16, 1, .3, 1), background 240ms ease;
+    }
+    .button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+    .button:hover { transform: translateY(-2px); background: var(--accent-dark); }
+    .button.secondary:hover { background: var(--paper-strong); color: var(--accent-dark); }
+    .button:active { transform: translateY(1px) scale(0.98); }
+
+    .hero-board {
+      position: relative;
+      min-height: 560px;
+      padding: 2rem;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) 9px;
+      background: var(--night);
+      color: #eef4ef;
+      box-shadow: 0 38px 80px -46px rgba(23, 32, 28, 0.78), inset 0 1px 0 rgba(255,255,255,0.1);
+    }
+    .hero-board::after {
+      content: "";
+      position: absolute;
+      inset: auto -18% -30% 24%;
+      height: 64%;
+      border-radius: 50%;
+      background: rgba(63, 138, 101, 0.18);
+      filter: blur(42px);
+      pointer-events: none;
+    }
+    .board-head {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 1.4rem;
+      border-bottom: 1px solid var(--line-dark);
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.48rem;
+      font: 600 0.72rem/1 var(--mono);
+      color: #b8d8c4;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #77b48f;
+      animation: breathe 2.8s ease-in-out infinite;
+    }
+    .board-code { color: rgba(238,244,239,0.46); font: 0.7rem/1 var(--mono); }
+    .pipeline {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 0.68rem;
+      margin-top: 2rem;
+    }
+    .pipe-node {
+      display: grid;
+      grid-template-columns: 38px 1fr auto;
+      align-items: center;
+      gap: 0.9rem;
+      padding: 0.96rem 1rem;
+      border: 1px solid var(--line-dark);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.045);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+      opacity: 0;
+      transform: translateY(12px);
+      animation: rise 580ms cubic-bezier(.16, 1, .3, 1) forwards;
+      animation-delay: calc(var(--i) * 110ms + 160ms);
+    }
+    .pipe-index {
+      width: 38px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      background: rgba(119, 180, 143, 0.12);
+      color: #a8d1b8;
+      font: 650 0.73rem/1 var(--mono);
+    }
+    .pipe-node strong { display: block; font-size: 0.92rem; }
+    .pipe-node small { display: block; margin-top: 0.18rem; color: rgba(238,244,239,0.53); }
+    .pipe-mode { color: #90bfa3; font: 0.66rem/1 var(--mono); text-transform: uppercase; letter-spacing: .07em; }
+    .board-result {
+      position: relative;
+      z-index: 1;
+      margin-top: 1.8rem;
+      padding-top: 1.2rem;
+      border-top: 1px solid var(--line-dark);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 1rem;
+      align-items: end;
+    }
+    .board-result strong { display: block; max-width: 22ch; font-size: 1.15rem; line-height: 1.25; }
+    .board-result span { color: #9dc8ae; font: 650 2.6rem/0.9 var(--mono); letter-spacing: -0.08em; }
+
+    .section {
+      padding-block: clamp(5.5rem, 10vw, 9rem);
+      border-top: 1px solid var(--line);
+      scroll-margin-top: 80px;
+    }
+    .section.dark {
+      width: 100%;
+      border-top: 0;
+      background: var(--night);
+      color: #eef2ef;
+    }
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+      gap: clamp(2rem, 8vw, 8rem);
+      margin-bottom: clamp(3rem, 7vw, 6rem);
+    }
+    .section-no { color: var(--accent-dark); font: 600 0.75rem/1 var(--mono); letter-spacing: 0.09em; }
+    .dark .section-no { color: #82b697; }
+    h2 {
+      margin-bottom: 1.2rem;
+      max-width: 15ch;
+      font-size: clamp(2.45rem, 4.8vw, 4.9rem);
+      line-height: 0.98;
+      letter-spacing: -0.058em;
+      font-weight: 650;
+    }
+    .section-intro { max-width: 67ch; color: var(--ink-soft); font-size: 1.08rem; }
+    .dark .section-intro { color: rgba(238,242,239,0.62); }
+
+    .decision-strip {
+      display: grid;
+      grid-template-columns: 1.35fr 0.65fr;
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--line);
+      box-shadow: var(--shadow);
+    }
+    .decision-main, .decision-side { background: var(--paper-strong); padding: clamp(1.5rem, 4vw, 3.3rem); }
+    .decision-main h3 { max-width: 21ch; margin-bottom: 1rem; font-size: clamp(1.75rem, 3vw, 2.8rem); line-height: 1.05; letter-spacing: -0.045em; }
+    .decision-main p { max-width: 62ch; color: var(--ink-soft); }
+    .decision-side { display: flex; flex-direction: column; justify-content: space-between; }
+    .decision-side .label { color: var(--ink-soft); font: 600 0.7rem/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .decision-side strong { margin-top: 2rem; color: var(--accent-dark); font-size: 1.2rem; line-height: 1.3; }
+
+    .principles {
+      display: grid;
+      grid-template-columns: 0.8fr 1.2fr;
+      gap: clamp(2.5rem, 7vw, 7rem);
+      margin-top: 5rem;
+      align-items: start;
+    }
+    .principles h3 { position: sticky; top: 104px; max-width: 12ch; font-size: 1.9rem; line-height: 1.05; letter-spacing: -0.04em; }
+    .principle-list { border-top: 1px solid var(--line); }
+    .principle {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 1rem;
+      padding: 1.55rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .principle b { color: var(--accent-dark); font: 650 0.75rem/1.5 var(--mono); }
+    .principle strong { display: block; margin-bottom: 0.3rem; }
+    .principle p { margin: 0; color: var(--ink-soft); }
+
+    .truth-note {
+      margin-top: 2.2rem;
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: clamp(1.5rem, 4vw, 3rem);
+      padding: clamp(1.4rem, 3vw, 2.2rem);
+      border: 1px solid #bfd8c9;
+      border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 7px;
+      background: var(--accent-wash);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.72);
+    }
+    .truth-note .label { color: var(--accent-dark); font: 650 0.68rem/1.5 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .truth-note strong { display: block; margin-bottom: 0.6rem; font-size: 1.2rem; letter-spacing: -0.025em; }
+    .truth-note p { margin: 0; color: #466354; }
+
+    .runtime-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+      gap: clamp(2.5rem, 7vw, 7rem);
+      align-items: start;
+    }
+    .runtime-flow { border-top: 1px solid var(--line); }
+    .runtime-step {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr) auto;
+      gap: 1rem;
+      align-items: start;
+      padding: 1.45rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .runtime-step > b { color: var(--accent-dark); font: 650 0.72rem/1.7 var(--mono); }
+    .runtime-step strong { display: block; margin-bottom: 0.3rem; }
+    .runtime-step p { max-width: 64ch; margin: 0; color: var(--ink-soft); }
+    .runtime-step .owner { padding-top: 0.15rem; color: var(--ink-soft); font: 600 0.62rem/1.2 var(--mono); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
+    .prompt-panel {
+      position: sticky;
+      top: 104px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: var(--radius-md);
+      background: var(--night);
+      color: #eef2ef;
+      box-shadow: 0 28px 60px -44px rgba(21,33,27,.72), inset 0 1px 0 rgba(255,255,255,.09);
+    }
+    .prompt-head { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem 1.2rem; border-bottom: 1px solid var(--line-dark); color: rgba(238,242,239,.5); font: 0.68rem/1 var(--mono); }
+    .prompt-code { margin: 0; padding: 1.4rem; overflow-x: auto; color: #dbe9df; font: 0.77rem/1.75 var(--mono); white-space: pre-wrap; }
+    .prompt-code .accent { color: #9ecaae; }
+    .prompt-foot { padding: 1rem 1.2rem; border-top: 1px solid var(--line-dark); color: rgba(238,242,239,.56); font-size: .82rem; }
+
+    .command-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 4rem; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--line); }
+    .command-card { min-width: 0; padding: clamp(1.4rem, 3vw, 2.3rem); background: var(--paper-strong); }
+    .command-card.adapter { background: var(--accent-wash); }
+    .command-card .label { color: var(--accent-dark); font: 650 0.67rem/1 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .command-card h3 { margin: 1rem 0 0.65rem; font-size: 1.45rem; letter-spacing: -.035em; }
+    .command-card p { color: var(--ink-soft); }
+    .command-line { position: relative; margin: 1.4rem 0 0; padding: 1.1rem 1.2rem; overflow-x: auto; border-radius: 12px; background: var(--night); color: #dbe9df; font: 0.74rem/1.65 var(--mono); white-space: pre-wrap; }
+    .command-result { display: grid; grid-template-columns: auto 1fr; gap: .7rem; margin-top: 1.2rem; color: var(--ink-soft); font-size: .83rem; }
+    .command-result b { color: var(--accent-dark); font-family: var(--mono); }
+
+    .mechanics {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(2rem, 5vw, 5rem);
+      align-items: start;
+    }
+    .mechanic-steps { counter-reset: step; border-top: 1px solid var(--line-dark); }
+    .mechanic-step {
+      counter-increment: step;
+      display: grid;
+      grid-template-columns: 54px 1fr;
+      gap: 1rem;
+      padding: 1.65rem 0;
+      border-bottom: 1px solid var(--line-dark);
+    }
+    .mechanic-step::before {
+      content: "0" counter(step);
+      color: #83b798;
+      font: 650 0.72rem/1.7 var(--mono);
+    }
+    .mechanic-step strong { display: block; margin-bottom: 0.32rem; }
+    .mechanic-step p { margin: 0; color: rgba(238,242,239,0.6); }
+    .config-panel {
+      position: sticky;
+      top: 104px;
+      overflow: hidden;
+      border: 1px solid var(--line-dark);
+      border-radius: var(--radius-md);
+      background: var(--night-soft);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+    .config-head { padding: 1rem 1.25rem; border-bottom: 1px solid var(--line-dark); color: rgba(238,242,239,0.5); font: 0.7rem/1 var(--mono); }
+    .config-grid { display: grid; grid-template-columns: 1fr 1fr; }
+    .config-item { padding: 1.2rem 1.25rem; border-bottom: 1px solid var(--line-dark); }
+    .config-item:nth-child(odd) { border-right: 1px solid var(--line-dark); }
+    .config-item small { display: block; margin-bottom: 0.35rem; color: rgba(238,242,239,0.45); font: 0.66rem/1.2 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .config-item strong { font-family: var(--mono); font-size: 1rem; font-weight: 550; }
+    .config-note { padding: 1.2rem 1.25rem; color: rgba(238,242,239,0.6); font-size: 0.86rem; }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: 1fr 64px 1fr 64px 1fr;
+      gap: 0;
+      align-items: stretch;
+    }
+    .arch-column {
+      min-height: 310px;
+      padding: clamp(1.4rem, 3vw, 2.25rem);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--paper-strong);
+    }
+    .arch-column.highlight { background: var(--accent-wash); border-color: #bfd8c9; }
+    .arch-column .tag { display: inline-block; margin-bottom: 2rem; color: var(--accent-dark); font: 650 0.7rem/1 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .arch-column h3 { margin-bottom: 0.8rem; font-size: 1.45rem; letter-spacing: -0.035em; }
+    .arch-column p { color: var(--ink-soft); font-size: 0.93rem; }
+    .arch-column ul { margin: 1.4rem 0 0; padding: 1rem 0 0; border-top: 1px solid rgba(24,32,29,0.12); list-style: none; }
+    .arch-column li { padding: 0.35rem 0; color: var(--ink-soft); font-size: 0.86rem; }
+    .arch-arrow { display: grid; place-items: center; color: var(--accent-dark); font: 650 1rem/1 var(--mono); }
+    .arch-arrow::before { content: "→"; }
+    .guardrail {
+      margin-top: 2rem;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      padding: 1.4rem;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: rgba(255,255,255,0.38);
+    }
+    .guardrail b { color: var(--accent-dark); font: 650 0.72rem/1.6 var(--mono); }
+    .guardrail p { margin: 0; color: var(--ink-soft); }
+
+    .tradeoff-intro {
+      display: grid;
+      grid-template-columns: .75fr 1.25fr;
+      gap: clamp(2.5rem, 7vw, 7rem);
+      margin-bottom: 4rem;
+      align-items: start;
+    }
+    .tradeoff-intro h3 { max-width: 12ch; margin: 0; font-size: clamp(1.9rem, 3vw, 3rem); line-height: 1.02; letter-spacing: -.05em; }
+    .tradeoff-intro p { max-width: 68ch; margin: 0; color: var(--ink-soft); font-size: 1.05rem; }
+    .strategy-matrix { border-top: 1px solid var(--line); }
+    .strategy-row {
+      display: grid;
+      grid-template-columns: minmax(135px,.55fr) minmax(210px,1.1fr) minmax(210px,1.1fr) minmax(150px,.75fr);
+      gap: 1.5rem;
+      padding: 1.35rem 0;
+      border-bottom: 1px solid var(--line);
+      align-items: start;
+    }
+    .strategy-row.header { padding-block: .8rem; color: var(--ink-soft); font: 600 .65rem/1.2 var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+    .strategy-row > strong { letter-spacing: -.02em; }
+    .strategy-row p { margin: 0; color: var(--ink-soft); font-size: .88rem; }
+    .strategy-row .cadence { color: var(--accent-dark); font: 600 .72rem/1.5 var(--mono); }
+    .context-cost {
+      margin-top: 3.5rem;
+      display: grid;
+      grid-template-columns: minmax(0,1.15fr) minmax(280px,.85fr);
+      gap: clamp(2rem, 6vw, 6rem);
+      align-items: start;
+    }
+    .context-cost h3 { margin-bottom: 1rem; font-size: clamp(1.8rem,3vw,2.8rem); line-height: 1.06; letter-spacing: -.045em; }
+    .context-cost p { color: var(--ink-soft); }
+    .context-ledger { border-top: 1px solid var(--line); }
+    .ledger-row { display: grid; grid-template-columns: 120px 1fr; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+    .ledger-row b { color: var(--accent-dark); font: 650 .68rem/1.5 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .ledger-row span { color: var(--ink-soft); font-size: .88rem; }
+
+    .corpus-layout { display: grid; grid-template-columns: 0.78fr 1.22fr; gap: clamp(2.5rem, 7vw, 7rem); }
+    .corpus-total { position: sticky; top: 104px; }
+    .big-number { display: block; margin: 0.5rem 0 0.8rem; font: 620 clamp(4rem, 9vw, 8rem)/0.88 var(--mono); letter-spacing: -0.09em; }
+    .corpus-total p { max-width: 34ch; color: var(--ink-soft); }
+    .distribution { border-top: 1px solid var(--line); }
+    .dist-row {
+      display: grid;
+      grid-template-columns: minmax(170px, 1fr) minmax(180px, 1.2fr) 76px;
+      gap: 1.2rem;
+      align-items: center;
+      padding: 1.18rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .dist-row strong { font-size: 0.9rem; }
+    .bar { height: 7px; overflow: hidden; border-radius: 99px; background: #dde1dd; }
+    .bar span { display: block; width: var(--w); height: 100%; border-radius: inherit; background: var(--accent); transform-origin: left; animation: scale-in 900ms cubic-bezier(.16, 1, .3, 1) both; animation-delay: calc(var(--i) * 80ms); }
+    .dist-row em { color: var(--ink-soft); font: normal 0.77rem/1 var(--mono); text-align: right; }
+    .quality-line { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 2.5rem; border-block: 1px solid var(--line); }
+    .quality-item { padding: 1.25rem; border-right: 1px solid var(--line); }
+    .quality-item:last-child { border-right: 0; }
+    .quality-item strong { display: block; font: 650 1.25rem/1 var(--mono); }
+    .quality-item small { display: block; margin-top: 0.5rem; color: var(--ink-soft); }
+
+    .results-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+      gap: clamp(2rem, 5vw, 5rem);
+      align-items: start;
+    }
+    .table-wrap { overflow-x: auto; border-block: 1px solid var(--line-dark); }
+    table { width: 100%; min-width: 620px; border-collapse: collapse; }
+    th, td { padding: 1rem 0.9rem; border-bottom: 1px solid var(--line-dark); text-align: right; }
+    th:first-child, td:first-child { padding-left: 0; text-align: left; }
+    th { color: rgba(238,242,239,0.5); font: 600 0.68rem/1.2 var(--mono); text-transform: uppercase; letter-spacing: .07em; }
+    td { font-family: var(--mono); font-size: 0.88rem; }
+    td:first-child { font-family: var(--sans); color: rgba(238,242,239,0.74); }
+    .best { color: #a6d0b6; font-weight: 700; }
+    .result-callout {
+      padding: 1.6rem;
+      border: 1px solid var(--line-dark);
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,0.035);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+    .result-callout .label { color: #88ba9a; font: 650 0.68rem/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .result-callout h3 { margin: 0.9rem 0 0.75rem; font-size: 1.5rem; line-height: 1.12; letter-spacing: -0.035em; }
+    .result-callout p { color: rgba(238,242,239,0.58); }
+    .result-callout hr { margin: 1.4rem 0; border: 0; border-top: 1px solid var(--line-dark); }
+    .result-callout dl { display: grid; grid-template-columns: 1fr auto; gap: 0.75rem 1rem; margin: 0; }
+    .result-callout dt { color: rgba(238,242,239,0.55); }
+    .result-callout dd { margin: 0; font: 650 0.82rem/1.5 var(--mono); }
+    .screenshot-compare { margin-top: 4.5rem; }
+    .screenshot-compare h3 { margin-bottom: 1.6rem; font-size: 1.65rem; letter-spacing: -0.04em; }
+    .candidate-row {
+      display: grid;
+      grid-template-columns: 110px 1fr 1fr;
+      gap: 1px;
+      margin-bottom: 1px;
+      background: var(--line-dark);
+    }
+    .candidate-row > div { padding: 1rem 1.2rem; background: var(--night); }
+    .candidate-row.header > div { color: rgba(238,242,239,0.42); font: 600 0.66rem/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .candidate-name { font-family: var(--mono); font-weight: 650; }
+    .pass { color: #9ecaae; }
+    .fail { color: #d89a91; }
+    .warn { color: #d9b478; }
+
+    .produced-list { border-top: 1px solid var(--line); }
+    .artifact {
+      display: grid;
+      grid-template-columns: 58px minmax(180px, 0.7fr) minmax(0, 1.3fr) auto;
+      gap: 1.2rem;
+      align-items: center;
+      padding: 1.25rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .artifact-index { color: var(--accent-dark); font: 650 0.7rem/1 var(--mono); }
+    .artifact strong { font-size: 0.95rem; }
+    .artifact-path { color: var(--ink-soft); font: 0.74rem/1.45 var(--mono); overflow-wrap: anywhere; }
+    .copy-button { padding: 0.45rem 0.7rem; font-size: 0.72rem; }
+
+    .roadmap {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: clamp(3rem, 8vw, 8rem);
+      align-items: start;
+    }
+    .roadmap-list { border-top: 1px solid var(--line); }
+    .roadmap-step {
+      display: grid;
+      grid-template-columns: 70px 1fr auto;
+      gap: 1rem;
+      align-items: start;
+      padding: 1.7rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .roadmap-step .num { color: var(--accent-dark); font: 650 0.76rem/1.5 var(--mono); }
+    .roadmap-step strong { display: block; margin-bottom: 0.35rem; font-size: 1.04rem; }
+    .roadmap-step p { margin: 0; color: var(--ink-soft); }
+    .phase { padding: 0.3rem 0.5rem; border-radius: 6px; background: var(--accent-wash); color: var(--accent-dark); font: 650 0.63rem/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+    .next-card {
+      position: sticky;
+      top: 104px;
+      padding: 2rem;
+      border-radius: var(--radius-md);
+      background: var(--accent-wash);
+      border: 1px solid #bfd8c9;
+    }
+    .next-card .label { color: var(--accent-dark); font: 650 0.68rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .next-card h3 { margin: 1rem 0 0.75rem; font-size: 1.8rem; line-height: 1.05; letter-spacing: -0.045em; }
+    .next-card p { color: #466354; }
+    .next-card ul { margin: 1.3rem 0 0; padding: 1.2rem 0 0; border-top: 1px solid rgba(40,98,70,0.18); list-style: none; }
+    .next-card li { position: relative; padding: 0.42rem 0 0.42rem 1.2rem; color: #385847; font-size: 0.9rem; }
+    .next-card li::before { content: ""; position: absolute; left: 0; top: 0.95rem; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+    footer {
+      padding-block: 3rem;
+      border-top: 1px solid var(--line);
+      color: var(--ink-soft);
+      font-size: 0.8rem;
+    }
+    .footer-inner { display: flex; justify-content: space-between; gap: 2rem; }
+
+    .reveal { opacity: 1; transform: none; }
+    .js .reveal { opacity: 0; transform: translateY(18px); transition: opacity 700ms cubic-bezier(.16, 1, .3, 1), transform 700ms cubic-bezier(.16, 1, .3, 1); }
+    .js .reveal.visible, .js .section:target .reveal { opacity: 1; transform: translateY(0); }
+
+    @keyframes breathe { 0%, 100% { opacity: .45; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
+    @keyframes rise { to { opacity: 1; transform: translateY(0); } }
+    @keyframes scale-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+    @keyframes scroll-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+    @media (max-width: 980px) {
+      .nav { display: none; }
+      .topbar-inner { grid-template-columns: 1fr auto; }
+      .hero { grid-template-columns: 1fr; min-height: auto; gap: 3.5rem; }
+      .hero-copy { max-width: 760px; }
+      .hero-board { min-height: auto; }
+      .section-head, .principles, .runtime-grid, .mechanics, .corpus-layout, .results-grid, .roadmap, .tradeoff-intro, .context-cost { grid-template-columns: 1fr; }
+      .principles h3, .prompt-panel, .config-panel, .corpus-total, .next-card { position: static; }
+      .command-grid { grid-template-columns: 1fr; }
+      .architecture { grid-template-columns: 1fr; gap: 0.75rem; }
+      .arch-arrow { height: 36px; }
+      .arch-arrow::before { content: "↓"; }
+      .quality-line { grid-template-columns: 1fr 1fr; }
+      .quality-item:nth-child(2) { border-right: 0; }
+      .quality-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .artifact { grid-template-columns: 42px 1fr auto; }
+      .artifact-path { grid-column: 2 / -1; }
+    }
+
+    @media (max-width: 680px) {
+      .shell { width: min(calc(100% - 2rem), var(--max)); }
+      .topbar-inner { min-height: 60px; }
+      .print-button { display: none; }
+      h1 { font-size: clamp(3rem, 16vw, 4.8rem); }
+      .hero { padding-block: 4.2rem 5rem; }
+      .hero-board { padding: 1.25rem; border-radius: 24px 24px 24px 7px; }
+      .pipe-node { grid-template-columns: 34px 1fr; }
+      .pipe-mode { display: none; }
+      .decision-strip { grid-template-columns: 1fr; }
+      .truth-note { grid-template-columns: 1fr; }
+      .runtime-step { grid-template-columns: 42px minmax(0,1fr); }
+      .runtime-step .owner { grid-column: 2; }
+      .config-grid { grid-template-columns: 1fr; }
+      .config-item:nth-child(odd) { border-right: 0; }
+      .dist-row { grid-template-columns: 1fr 60px; gap: 0.8rem; }
+      .dist-row .bar { grid-column: 1 / -1; grid-row: 2; }
+      .candidate-row { grid-template-columns: 78px 1fr 1fr; font-size: 0.78rem; }
+      .candidate-row > div { padding: 0.8rem 0.65rem; }
+      .artifact { grid-template-columns: 34px 1fr; }
+      .artifact .copy-button { grid-column: 2; justify-self: start; }
+      .artifact-path { grid-column: 2; }
+      .roadmap-step { grid-template-columns: 46px 1fr; }
+      .phase { grid-column: 2; justify-self: start; }
+      .strategy-row { grid-template-columns: 1fr; gap: .45rem; padding-block: 1.4rem; }
+      .strategy-row.header { display: none; }
+      .ledger-row { grid-template-columns: 1fr; gap: .35rem; }
+      .footer-inner { flex-direction: column; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+      .reveal { opacity: 1; transform: none; }
+    }
+
+    @media print {
+      :root { --paper: #fff; --paper-strong: #fff; }
+      .topbar, .progress, .hero-actions, .copy-button { display: none !important; }
+      body { background: #fff; color: #151a17; font-size: 10pt; }
+      .hero { min-height: auto; grid-template-columns: 1fr 1fr; padding-block: 2rem; }
+      .section { padding-block: 2.4rem; break-inside: avoid; }
+      .section.dark { background: #fff; color: #151a17; }
+      .dark .section-intro, .mechanic-step p, .result-callout p, td:first-child { color: #4b554f; }
+      .hero-board, .config-panel, .result-callout { background: #f1f4f1; color: #151a17; box-shadow: none; }
+      .pipe-node, .config-panel, .result-callout, .table-wrap, th, td, .mechanic-step, .mechanic-steps { border-color: #cfd5d0; }
+      .pipe-node small, .config-item small, .config-note, th { color: #59645d; }
+      .reveal { opacity: 1; transform: none; }
+    }
+  </style>
+  <script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to report</a>
+  <div class="progress" id="progress" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#top" aria-label="FPLAgent technical summary home">
+        <span class="brand-mark" aria-hidden="true">FA</span>
+        <span>FPLAgent / Model lab</span>
+      </a>
+      <nav class="nav" aria-label="Report sections">
+        <a href="#decision">Decision</a>
+        <a href="#runtime">Your command</a>
+        <a href="#mechanics">Mechanics</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#tradeoffs">Trade-offs</a>
+        <a href="#results">Results</a>
+      </nav>
+      <button class="print-button" type="button" onclick="window.print()">Print report</button>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="shell hero" id="top">
+      <div class="hero-copy">
+        <span class="eyebrow">Technical status / 06 August 2026</span>
+        <h1>Teaching a small model how FPL works.</h1>
+        <p>
+          We built a local multimodal fine-tuning system around Qwen3.5-4B—and the grounded runtime
+          that makes it useful. The complete assistant is not one prompt or one checkpoint. It is
+          base intelligence, optional learned FPL behaviour, a live system policy, current evidence
+          and deterministic decision code working together.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#runtime">Trace your command</a>
+          <a class="button secondary" href="#tradeoffs">Fine-tune vs context</a>
+        </div>
+      </div>
+
+      <aside class="hero-board" aria-label="Current FPLAgent model pipeline">
+        <div class="board-head">
+          <span class="status"><span class="status-dot"></span> Pipeline proven locally</span>
+          <span class="board-code">RTX 5090 / BF16</span>
+        </div>
+        <div class="pipeline">
+          <div class="pipe-node" style="--i:0">
+            <span class="pipe-index">01</span>
+            <div><strong>Question or screenshot</strong><small>Natural language or team image</small></div>
+            <span class="pipe-mode">input</span>
+          </div>
+          <div class="pipe-node" style="--i:1">
+            <span class="pipe-index">02</span>
+            <div><strong>Qwen3.5-4B</strong><small>Base model plus optional FPL LoRA</small></div>
+            <span class="pipe-mode">reason</span>
+          </div>
+          <div class="pipe-node" style="--i:2">
+            <span class="pipe-index">03</span>
+            <div><strong>Tools and evidence</strong><small>Current state, forecasts and receipts</small></div>
+            <span class="pipe-mode">ground</span>
+          </div>
+          <div class="pipe-node" style="--i:3">
+            <span class="pipe-index">04</span>
+            <div><strong>Deterministic validation</strong><small>IDs, formation, budget and legality</small></div>
+            <span class="pipe-mode">verify</span>
+          </div>
+        </div>
+        <div class="board-result">
+          <strong>Useful intelligence with hard boundaries.</strong>
+          <span>4B</span>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section" id="decision">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">01 / Where we are</span>
+          <div>
+            <h2>The pipeline works. Model promotion remains evidence-led.</h2>
+            <p class="section-intro">
+              Multiple LoRA candidates through v9 were trained and compared with the untouched base
+              model. The final result is deliberately nuanced: v9 learned the four application tool
+              routes and improved screenshot extraction, but the base model with the same system
+              policy and typed tools remains the safer chat backbone. Further LoRA work is parked.
+            </p>
+          </div>
+        </div>
+
+        <div class="decision-strip reveal">
+          <div class="decision-main">
+            <h3>Use specialised learning where it helps; retain deterministic authority where mistakes matter.</h3>
+            <p>
+              Fine-tuning improved FPL-specific behaviours, but no adapter improved every text
+              contract at once. That is not a failed experiment. It gives us measured deployment
+              boundaries instead of assuming a lower training loss means a better product.
+            </p>
+          </div>
+          <div class="decision-side">
+            <span class="label">Current recommendation</span>
+            <strong>Base for chat.<br>V3 for guarded vision.<br>V9 retained as rejected research.</strong>
+          </div>
+        </div>
+
+        <div class="truth-note reveal">
+          <span class="label">Your pasted command</span>
+          <div>
+            <strong>That specific “What do you do?” answer used base Qwen, the system prompt and tool schemas—not the LoRA adapter.</strong>
+            <p>
+              The command omitted <code>--adapter</code>. The fine-tune is real and stored locally,
+              but adapters are opt-in while they remain candidates. The model introduced itself as
+              FPLAgent because every session begins with <code>You are FPLAgent…</code>. This is the
+              healthy architecture: learned behaviour and runtime instructions are separate and
+              independently testable. Unsloth's startup line about “switching to 16bit LoRA” describes
+              its selected model mode; it is not proof that an FPL adapter path was attached. In this
+              runtime, only <code>--adapter</code> triggers PEFT's adapter loader.
+            </p>
+          </div>
+        </div>
+
+        <div class="principles reveal">
+          <h3>Why this is a good idea</h3>
+          <div class="principle-list">
+            <div class="principle">
+              <b>01</b>
+              <div><strong>Small, local and controllable</strong><p>A 4B model runs and fine-tunes on one RTX 5090. Iterations take tens of minutes, not days, and private app data does not need to leave the machine.</p></div>
+            </div>
+            <div class="principle">
+              <b>02</b>
+              <div><strong>Stable behaviour is separated from changing facts</strong><p>The adapter learns FPL vocabulary, dialogue patterns and when to use tools. Live prices, injuries, ownership and fixtures are fetched at answer time instead of fossilised into weights.</p></div>
+            </div>
+            <div class="principle">
+              <b>03</b>
+              <div><strong>Multimodality is preserved</strong><p>Qwen remains able to read team screenshots directly. OCR can supply supporting evidence, but pitch structure, badges and bench semantics are handled by the vision-language model.</p></div>
+            </div>
+            <div class="principle">
+              <b>04</b>
+              <div><strong>The model never becomes the rules engine</strong><p>Entity IDs, squad legality, formation, budget constraints and optimisation remain deterministic. The model interprets, routes and explains; code validates and decides.</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="runtime">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">02 / Your command, internally</span>
+          <div>
+            <h2>Yes, there is always a system prompt.</h2>
+            <p class="section-intro">
+              <code>chat_qwen35.py</code> is a launcher around a bounded chat runtime. Your terminal
+              prompt becomes one user message inside a larger structured conversation. The system
+              message establishes identity and policy; tool definitions advertise capabilities;
+              the optional LoRA changes the model's learned tendencies.
+            </p>
+          </div>
+        </div>
+
+        <div class="runtime-grid reveal">
+          <div class="runtime-flow" aria-label="Runtime request sequence">
+            <div class="runtime-step"><b>01</b><div><strong>Parse the command</strong><p>The launcher reads the model, optional adapter path, manager ID, season, event, output limit and artifact paths.</p></div><span class="owner">Python CLI</span></div>
+            <div class="runtime-step"><b>02</b><div><strong>Build the tool registry</strong><p>Typed, read-only functions are connected to current manager state, forecasts, player search and deterministic optimisation.</p></div><span class="owner">Application</span></div>
+            <div class="runtime-step"><b>03</b><div><strong>Load the model stack</strong><p>Unsloth patches the supported Transformers path and loads <code>unsloth/Qwen3.5-4B</code> in BF16. PEFT attaches a LoRA only when <code>--adapter</code> is supplied.</p></div><span class="owner">Unsloth + PEFT</span></div>
+            <div class="runtime-step"><b>04</b><div><strong>Create the session policy</strong><p>The runtime inserts season, gameweek, manager ID and current time into a system message that defines evidence, safety and tool-use rules.</p></div><span class="owner">System prompt</span></div>
+            <div class="runtime-step"><b>05</b><div><strong>Render Qwen's chat template</strong><p>System, user and prior tool messages plus JSON tool schemas are converted into Qwen tokens. Thinking is disabled and decoding is deterministic.</p></div><span class="owner">Processor</span></div>
+            <div class="runtime-step"><b>06</b><div><strong>Generate or call a tool</strong><p>Open conversation is generated by Qwen. High-value squad and captain intents take an application fast path so the numeric engine cannot be contradicted.</p></div><span class="owner">Model + tools</span></div>
+            <div class="runtime-step"><b>07</b><div><strong>Guard and return</strong><p>Schemas, tool-round limits, receipt checks, stale-data warnings and generation-boundary checks run before prose reaches the terminal or web app.</p></div><span class="owner">Runtime guard</span></div>
+          </div>
+
+          <aside class="prompt-panel" aria-label="System prompt excerpt">
+            <div class="prompt-head"><span>chat_runtime.py</span><span>system / excerpt</span></div>
+            <pre class="prompt-code"><span class="accent">You are FPLAgent</span>, a grounded
+Fantasy Premier League assistant.
+
+Active context:
+  season = 2026-27
+  event = 1
+  manager_id = 1
+  now = request time
+
+Use authoritative tool results for every
+current fact and numeric decision.
+
+Never invent player IDs, prices,
+availability, forecasts or manager state.
+
+The numeric engine remains authoritative.</pre>
+            <div class="prompt-foot">For “What do you do?”, no current fact or numeric decision was needed. Base Qwen answered from this identity plus the advertised tool capabilities.</div>
+          </aside>
+        </div>
+
+        <div class="command-grid reveal">
+          <article class="command-card">
+            <span class="label">Mode A / current chat default</span>
+            <h3>Base Qwen + policy + tools</h3>
+            <p>This is the exact mode in your pasted command. It is the promoted chat baseline because it currently has the strongest aggregate safety around tool arguments.</p>
+            <pre class="command-line">llm/.venv/bin/python llm/chat_qwen35.py \
+  --manager-id 1 --event 1 \
+  --prompt "What do you do?"</pre>
+            <div class="command-result"><b>=</b><span>Qwen3.5-4B base weights + system prompt + tool schemas + runtime guards</span></div>
+          </article>
+          <article class="command-card adapter">
+            <span class="label">Mode B / fine-tuned candidate</span>
+            <h3>Base Qwen + FPL LoRA + same runtime</h3>
+            <p>This explicitly runs the locally learned v3 adapter. It is the best current guarded screenshot candidate, but has not yet cleared every text-chat promotion gate.</p>
+            <pre class="command-line">llm/.venv/bin/python llm/chat_qwen35.py \
+  --adapter llm/outputs/qwen35-4b-fpl-lora-v3/adapter \
+  --manager-id 1 --event 1 \
+  --prompt "What do you do?"</pre>
+            <div class="command-result"><b>=</b><span>Same 4B base + 144 MiB learned LoRA + system prompt + tools + runtime guards</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section dark" id="mechanics">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">03 / Training mechanics</span>
+          <div>
+            <h2>LoRA changes a small set of learned directions.</h2>
+            <p class="section-intro">
+              This is a Python training pipeline built with Unsloth, TRL, PEFT and Transformers—not
+              a desktop application. The original Qwen weights stay frozen while compact low-rank
+              matrices learn the FPL-specific adjustment.
+            </p>
+          </div>
+        </div>
+
+        <div class="mechanics reveal">
+          <div class="mechanic-steps">
+            <div class="mechanic-step"><div><strong>Load the multimodal base</strong><p><code>unsloth/Qwen3.5-4B</code> is loaded in BF16. We deliberately avoided 4-bit QLoRA for this model family.</p></div></div>
+            <div class="mechanic-step"><div><strong>Attach rank-16 LoRA adapters</strong><p>Trainable low-rank matrices are added to language attention and MLP modules. The large base weights stay frozen.</p></div></div>
+            <div class="mechanic-step"><div><strong>Freeze the vision encoder</strong><p>Existing visual capability is retained. Screenshot examples train the language side to interpret visual embeddings into our extraction contract.</p></div></div>
+            <div class="mechanic-step"><div><strong>Mask prompts and tool evidence</strong><p>Loss is applied only to assistant responses and tool calls. System prompts, user text and tool results are context, not targets to memorise.</p></div></div>
+            <div class="mechanic-step"><div><strong>Train one controlled epoch</strong><p>Batch 2 with eight-step gradient accumulation gives an effective batch of 16. A four-hour wall-clock callback protects the local run.</p></div></div>
+            <div class="mechanic-step"><div><strong>Apply the learned delta</strong><p>At inference, each targeted weight behaves as <code>W′ = W + (α/r)BA</code>. With rank 16 and alpha 16, the LoRA scale is 1.0; <code>W</code> stays frozen while the learned A and B matrices alter the forward pass.</p></div></div>
+            <div class="mechanic-step"><div><strong>Select by locked evaluation</strong><p>Adapters are compared against the same prompts, tool schemas and screenshots. Training loss is recorded, never used as the promotion decision.</p></div></div>
+          </div>
+
+          <aside class="config-panel" aria-label="V4 training configuration">
+            <div class="config-head">qwen35_4b_fpl_v4_lora.json</div>
+            <div class="config-grid">
+              <div class="config-item"><small>Precision</small><strong>BF16</strong></div>
+              <div class="config-item"><small>LoRA rank / alpha</small><strong>16 / 16</strong></div>
+              <div class="config-item"><small>Learning rate</small><strong>2e-5</strong></div>
+              <div class="config-item"><small>Context ceiling</small><strong>2,048</strong></div>
+              <div class="config-item"><small>Effective batch</small><strong>16</strong></div>
+              <div class="config-item"><small>Optimizer steps</small><strong>850</strong></div>
+              <div class="config-item"><small>Learned parameters</small><strong>32.46M</strong></div>
+              <div class="config-item"><small>Nominal base share</small><strong>≈0.8%</strong></div>
+              <div class="config-item"><small>Wall time</small><strong>31m 37s</strong></div>
+              <div class="config-item"><small>Peak VRAM</small><strong>20.71 GiB</strong></div>
+            </div>
+            <div class="config-note">The learned safetensors contain 496 A/B tensors and 32,464,896 parameters, saved as approximately 124 MiB of FP32 weights. The complete adapter folder is approximately 144 MiB. V4 was trained from the clean base model, not stacked on v3.</div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">04 / Runtime architecture</span>
+          <div>
+            <h2>Weights, evidence and code each have one job.</h2>
+            <p class="section-intro">
+              The core design avoids asking a language model to be a database or optimiser. It
+              combines natural interaction with current evidence and exact application logic.
+            </p>
+          </div>
+        </div>
+
+        <div class="architecture reveal" aria-label="Three layer FPLAgent architecture">
+          <article class="arch-column highlight">
+            <span class="tag">Model weights</span>
+            <h3>Stable FPL behaviour</h3>
+            <p>The base supplies general intelligence. An attached adapter can bias language, clarification, tool selection and screenshot output toward our examples.</p>
+            <ul><li>Base language and vision capability</li><li>Optional FPL vocabulary adaptation</li><li>Learned tool-call habits</li><li>Visual extraction behaviour</li></ul>
+          </article>
+          <span class="arch-arrow" aria-hidden="true"></span>
+          <article class="arch-column">
+            <span class="tag">Tools now / RAG next</span>
+            <h3>Current evidence</h3>
+            <p>Time-sensitive facts arrive at inference time with provenance and observation dates.</p>
+            <ul><li>Prices, fixtures and availability</li><li>Manager state and transfers</li><li>Versioned rules and research</li><li>Decision-engine receipts</li></ul>
+          </article>
+          <span class="arch-arrow" aria-hidden="true"></span>
+          <article class="arch-column">
+            <span class="tag">Deterministic code</span>
+            <h3>Hard correctness</h3>
+            <p>Anything with a strict invariant stays in schemas, resolvers, validators and optimisers.</p>
+            <ul><li>Player entity IDs</li><li>Budget and club limits</li><li>Formation and slot uniqueness</li><li>Captain and transfer optimisation</li></ul>
+          </article>
+        </div>
+
+        <div class="guardrail reveal">
+          <b>KEY BOUNDARY</b>
+          <p>The model may propose and explain. It may not silently repair an illegal team, invent a player ID, treat old screenshot metadata as live state, or override the numeric decision engine.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="tradeoffs">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">05 / Fine-tune, prompt, RAG or tools?</span>
+          <div>
+            <h2>These techniques solve different problems.</h2>
+            <p class="section-intro">
+              The strongest design is layered. Fine-tuning creates a reusable behavioural prior;
+              the system prompt defines this session's contract; RAG supplies relevant documents;
+              tools obtain exact changing state; deterministic code owns rules and maths.
+            </p>
+          </div>
+        </div>
+
+        <div class="tradeoff-intro reveal">
+          <h3>Why not just make the prompt enormous?</h3>
+          <p>
+            A large context window is capacity, not free intelligence. Repeating dozens of examples
+            on every request consumes input tokens, increases prefill latency, competes with the
+            user's actual evidence and can make a small model less consistent as instructions pile
+            up. Fine-tuning compresses recurring patterns into weights once. The prompt can then stay
+            focused on current policy and the retrieved context can stay focused on the current question.
+          </p>
+        </div>
+
+        <div class="strategy-matrix reveal" role="table" aria-label="Comparison of model adaptation and grounding techniques">
+          <div class="strategy-row header" role="row"><span>Layer</span><span>Best use</span><span>Trade-off</span><span>Change cadence</span></div>
+          <div class="strategy-row" role="row"><strong>System prompt</strong><p>Identity, allowed actions, current manager/gameweek context and non-negotiable operating policy.</p><p>Paid in context on every call; instructions can still be misunderstood by a small model.</p><span class="cadence">Every session</span></div>
+          <div class="strategy-row" role="row"><strong>Few-shot context</strong><p>A handful of examples for a rare output shape or behaviour that is still changing quickly.</p><p>Fast to edit, but repeated tokens add latency and too many demonstrations dilute attention.</p><span class="cadence">As needed</span></div>
+          <div class="strategy-row" role="row"><strong>LoRA fine-tune</strong><p>Recurring FPL language, response patterns, screenshot extraction and tool-routing tendencies.</p><p>Cheap at inference, but needs curated data and regression evaluation; it can overfit or make other skills worse.</p><span class="cadence">Evidence-led releases</span></div>
+          <div class="strategy-row" role="row"><strong>RAG</strong><p>Rules, glossary, methodology and research passages that should be cited and updated independently.</p><p>Retrieval can miss or rank the wrong passage. It is inappropriate for rapidly changing exact account state.</p><span class="cadence">Index on change</span></div>
+          <div class="strategy-row" role="row"><strong>Typed tools</strong><p>Live squad, fixtures, prices, injuries, forecasts, provenance and manager-specific state.</p><p>Requires maintained APIs and schemas, but returns compact, inspectable evidence instead of prose memory.</p><span class="cadence">Every decision</span></div>
+          <div class="strategy-row" role="row"><strong>Deterministic code</strong><p>Budget, club limits, formation legality, optimisation, score calculation and decision receipts.</p><p>Less conversational and must be explicitly engineered, but it is testable and authoritative.</p><span class="cadence">Versioned logic</span></div>
+        </div>
+
+        <div class="context-cost reveal">
+          <div>
+            <h3>Fine-tuning changes the prior—not the truth.</h3>
+            <p>
+              The LoRA makes certain outputs more likely before the current question is even seen.
+              It does not guarantee correctness, create a database inside the model or remove the
+              need for instructions. Facts learned into weights are difficult to date, cite or
+              delete, so we deliberately avoid training current prices, injuries and weekly picks
+              as permanent knowledge.
+            </p>
+            <p>
+              The practical win is behavioural compression: instead of carrying the same library of
+              FPL examples in every prompt, the adapter stores a compact learned adjustment. That can
+              reduce repeated context and teach patterns that prompting alone does not elicit reliably.
+              Whether it actually improves this product is decided by locked evaluation, not enthusiasm
+              or training loss.
+            </p>
+          </div>
+          <div class="context-ledger">
+            <div class="ledger-row"><b>Keep in weights</b><span>Terminology, conversational style, tool habits, extraction contracts.</span></div>
+            <div class="ledger-row"><b>Keep in prompt</b><span>Identity, permissions, safety, active event and response policy.</span></div>
+            <div class="ledger-row"><b>Keep in RAG</b><span>Rules, methods and documents with dates and provenance.</span></div>
+            <div class="ledger-row"><b>Keep in tools</b><span>Live facts, manager state and versioned model outputs.</span></div>
+            <div class="ledger-row"><b>Keep in code</b><span>Constraints, validation, optimisation and final authority.</span></div>
+          </div>
+        </div>
+
+        <div class="guardrail reveal">
+          <b>DESIGN RULE</b>
+          <p>Fine-tuning is not a substitute for a system prompt. The adapter supplies learned instincts; the system prompt supplies today's job, boundaries and context.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="data">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">06 / What we trained on</span>
+          <div>
+            <h2>A reproducible correction and replay mixture.</h2>
+            <p class="section-intro">
+              V4 combined the complete 9,600-row v3 training replay with 4,000 targeted corrections.
+              This was designed to repair measured failures without erasing broad capabilities.
+            </p>
+          </div>
+        </div>
+
+        <div class="corpus-layout reveal">
+          <div class="corpus-total">
+            <span class="eyebrow">V4 training rows</span>
+            <span class="big-number">13,600</span>
+            <p>Every row belongs to the training split, is schema checked, and is pinned by a SHA-256 corpus hash.</p>
+          </div>
+          <div>
+            <div class="distribution">
+              <div class="dist-row"><strong>Broad v3 replay</strong><div class="bar"><span style="--w:70.6%;--i:0"></span></div><em>9,600</em></div>
+              <div class="dist-row"><strong>FPL language corrections</strong><div class="bar"><span style="--w:8.8%;--i:1"></span></div><em>1,200</em></div>
+              <div class="dist-row"><strong>Tool-route corrections</strong><div class="bar"><span style="--w:7.4%;--i:2"></span></div><em>1,000</em></div>
+              <div class="dist-row"><strong>Decision-route corrections</strong><div class="bar"><span style="--w:5.9%;--i:3"></span></div><em>800</em></div>
+              <div class="dist-row"><strong>Safety corrections</strong><div class="bar"><span style="--w:2.9%;--i:4"></span></div><em>400</em></div>
+              <div class="dist-row"><strong>Formation screenshots</strong><div class="bar"><span style="--w:2.9%;--i:5"></span></div><em>400</em></div>
+              <div class="dist-row"><strong>Multilingual replay</strong><div class="bar"><span style="--w:1.5%;--i:6"></span></div><em>200</em></div>
+            </div>
+            <div class="quality-line">
+              <div class="quality-item"><strong>7,240</strong><small>typed-tool rows</small></div>
+              <div class="quality-item"><strong>1,360</strong><small>image rows</small></div>
+              <div class="quality-item"><strong>70.6%</strong><small>broad replay</small></div>
+              <div class="quality-item"><strong>0</strong><small>exact benchmark leaks</small></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section dark" id="results">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">07 / Measured results</span>
+          <div>
+            <h2>V9 fixed routing, but did not become a better product.</h2>
+            <p class="section-intro">
+              The final bounded run used the exact production system policy and tool schemas, fixed
+              tool results, two supplied screenshots, ten unseen synthetic layouts and a blind A/B
+              review. Training loss was recorded, never used as the release decision.
+            </p>
+          </div>
+        </div>
+
+        <div class="results-grid reveal">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Application contract</th><th>Base 4B</th><th>V9</th><th>Release gate</th></tr></thead>
+              <tbody>
+                <tr><td>Strict full contract</td><td>16 / 58</td><td>16 / 58</td><td>≥ 40 and +20</td></tr>
+                <tr><td>Exact route</td><td>54 / 58</td><td class="best">58 / 58</td><td>Supporting</td></tr>
+                <tr><td>Direct prompts stay tool-free</td><td class="best">50 / 50</td><td class="best">50 / 50</td><td>50 / 50</td></tr>
+                <tr><td>Grounded decision route</td><td>4 / 8</td><td class="best">8 / 8</td><td>≥ 7 / 8</td></tr>
+                <tr><td>Valid arguments / boundaries</td><td class="best">58 / 58</td><td class="best">58 / 58</td><td>All</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <aside class="result-callout">
+            <span class="label">Selection</span>
+            <h3>No chat adapter is promoted yet.</h3>
+            <p>Perfect application routing does not compensate for tying base on strict answers,
+              regressing the legacy suite, missing safety wording and passing only half of the unseen
+              screenshot cases.</p>
+            <hr>
+            <dl><dt>V9 fine-tune</dt><dd>97m 56s</dd><dt>Blind preference</dt><dd>7–6, one tie</dd><dt>Held-out vision</dt><dd>5 / 10</dd><dt>Verdict</dt><dd>REJECT</dd></dl>
+          </aside>
+        </div>
+
+        <div class="screenshot-compare reveal">
+          <h3>Real screenshot import</h3>
+          <div class="candidate-row header"><div>Candidate</div><div>Mobile screenshot</div><div>Desktop screenshot</div></div>
+          <div class="candidate-row"><div class="candidate-name">Base</div><div class="pass">Exact valid squad</div><div class="fail">Missed vice-captain; invalid</div></div>
+          <div class="candidate-row"><div class="candidate-name">V3</div><div class="pass">Exact valid squad</div><div class="warn">Valid team; one hidden chip hallucinated</div></div>
+          <div class="candidate-row"><div class="candidate-name">V4</div><div class="pass">Exact valid squad</div><div class="fail">Duplicate starter slots; invalid</div></div>
+          <div class="candidate-row"><div class="candidate-name">V9</div><div class="pass">Exact valid squad</div><div class="pass">Exact valid squad</div></div>
+          <p>V9 still passed only 5/10 unseen synthetic layouts, so real-image success does not make it safe for automatic import.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="produced">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">08 / What we produced</span>
+          <div>
+            <h2>A working model laboratory, not just adapter files.</h2>
+            <p class="section-intro">The useful output is the repeatable system around the models: corpus builders, source policy, training manifests, locked evaluations and deterministic screenshot validation.</p>
+          </div>
+        </div>
+
+        <div class="produced-list reveal">
+          <div class="artifact"><span class="artifact-index">01</span><strong>V3 guarded vision candidate</strong><span class="artifact-path">llm/outputs/qwen35-4b-fpl-lora-v3/adapter</span><button class="copy-button" data-copy="llm/outputs/qwen35-4b-fpl-lora-v3/adapter">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">02</span><strong>V9 rejected research adapter</strong><span class="artifact-path">llm/outputs/qwen35-4b-fpl-lora-v9/adapter</span><button class="copy-button" data-copy="llm/outputs/qwen35-4b-fpl-lora-v9/adapter">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">03</span><strong>V9 precision corpus</strong><span class="artifact-path">data/llm/generated/fpl_app_precision_v9/combined_train.jsonl</span><button class="copy-button" data-copy="data/llm/generated/fpl_app_precision_v9/combined_train.jsonl">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">04</span><strong>V9 training manifest</strong><span class="artifact-path">llm/outputs/qwen35-4b-fpl-lora-v9/training_manifest.json</span><button class="copy-button" data-copy="llm/outputs/qwen35-4b-fpl-lora-v9/training_manifest.json">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">05</span><strong>V9 promotion receipt</strong><span class="artifact-path">llm/evaluations/qwen35-4b-fpl-lora-v9/promotion.json</span><button class="copy-button" data-copy="llm/evaluations/qwen35-4b-fpl-lora-v9/promotion.json">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">06</span><strong>Screenshot importer</strong><span class="artifact-path">src/fplagent_llm/screenshot_import.py</span><button class="copy-button" data-copy="src/fplagent_llm/screenshot_import.py">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">07</span><strong>Grounded chat runtime</strong><span class="artifact-path">src/fplagent_llm/chat_runtime.py · llm/chat_qwen35.py</span><button class="copy-button" data-copy="llm/chat_qwen35.py">Copy path</button></div>
+          <div class="artifact"><span class="artifact-index">08</span><strong>Technical reports</strong><span class="artifact-path">reports/fpl-llm-foundation.md · reports/fpl-llm-training-v4.md</span><button class="copy-button" data-copy="reports/fpl-llm-training-v4.md">Copy path</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="next">
+      <div class="shell">
+        <div class="section-head reveal">
+          <span class="section-no">09 / What's next</span>
+          <div>
+            <h2>The model sprint is frozen. Points decide the next build.</h2>
+            <p class="section-intro">
+              The local web app now syncs authenticated manager state through the MCP, refreshes
+              official FPL inputs, computes a legal best XI from all 15 players and keeps chat answers
+              aligned with deterministic receipts. Engineering now returns to app-open freshness,
+              the final GW1 tournament and exact weekly transfer, chip and fixture decisions.
+            </p>
+          </div>
+        </div>
+
+        <div class="roadmap reveal">
+          <div class="roadmap-list">
+            <div class="roadmap-step"><span class="num">01</span><div><strong>Implement the chat orchestration loop</strong><p>Base Qwen3.5-4B now runs behind a system policy, typed tool registry, tool-result replay, grounding guard and privacy-safe event log.</p></div><span class="phase">Built</span></div>
+            <div class="roadmap-step"><span class="num">02</span><div><strong>Connect confirmed manager state</strong><p>The app syncs the authenticated 15-player squad through the local MCP and stores a current manager snapshot without exposing credentials to the React client.</p></div><span class="phase">Built</span></div>
+            <div class="roadmap-step"><span class="num">03</span><div><strong>Ground whole-squad decisions</strong><p>Captaincy and XI selection evaluate starters and bench together, render all 15 players and refuse incomplete generations.</p></div><span class="phase">Built</span></div>
+            <div class="roadmap-step"><span class="num">04</span><div><strong>Run on every app open</strong><p>Refresh official and authenticated evidence, diff content hashes, rerun only affected stages and atomically publish one coherent decision receipt.</p></div><span class="phase">Next</span></div>
+            <div class="roadmap-step"><span class="num">05</span><div><strong>Finish the GW1 tournament</strong><p>Rebuild all legal candidates near the deadline, optimise XI, bench and captain jointly, and select the low-regret squad on independent worlds.</p></div><span class="phase">Next</span></div>
+            <div class="roadmap-step"><span class="num">06</span><div><strong>Build the season engine</strong><p>Compare roll, transfers, hits and every eligible chip under exact prices, blanks, doubles, expiry and future option value.</p></div><span class="phase">Points-first</span></div>
+          </div>
+
+          <aside class="next-card">
+            <span class="label">Recommended next engineering sprint</span>
+            <h3>Fresh decision receipts on every app open.</h3>
+            <p>Serve the last valid recommendation instantly, refresh in the background, and publish
+              only when official inputs, forecasts and all squad decisions share one lineage.</p>
+            <ul><li>Freshness and completeness gates</li><li>Content-addressed stage reuse</li><li>All-15 lineup optimisation</li><li>Price and transfer scenarios</li><li>Chip and blank/double branches</li></ul>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell footer-inner">
+      <span>FPLAgent model lab — local research build</span>
+      <span class="mono">Qwen3.5-4B · Unsloth · BF16 LoRA · RTX 5090</span>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const navLinks = [...document.querySelectorAll('.nav a')];
+      const sections = navLinks.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      const setActiveNavigation = (current) => {
+        navLinks.forEach((link) => {
+          const active = link.getAttribute('href') === `#${current}`;
+          link.classList.toggle('active', active);
+          if (active) link.setAttribute('aria-current', 'true');
+          else link.removeAttribute('aria-current');
+        });
+      };
+
+      const navigationObserver = new IntersectionObserver((entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) setActiveNavigation(visible.target.id);
+      }, { rootMargin: '-18% 0px -62% 0px', threshold: [0, 0.2, 0.6] });
+      sections.forEach((section) => navigationObserver.observe(section));
+
+      const revealObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            revealObserver.unobserve(entry.target);
+          }
+        });
+      }, { threshold: reducedMotion ? 0 : 0.12 });
+
+      document.querySelectorAll('.reveal').forEach((element) => revealObserver.observe(element));
+
+      document.querySelectorAll('[data-copy]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          const original = button.textContent;
+          try {
+            await navigator.clipboard.writeText(button.dataset.copy);
+            button.textContent = 'Copied';
+          } catch {
+            button.textContent = 'Copy unavailable';
+          }
+          window.setTimeout(() => { button.textContent = original; }, 1500);
+        });
+      });
+
+      setActiveNavigation(sections[0]?.id);
+    })();
+  </script>
+</body>
+</html>
