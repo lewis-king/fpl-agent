@@ -1,8 +1,44 @@
 # FPLAgent project status
 
-**Status date:** 8 August 2026  
+**Status date:** 15 August 2026
 **Active objective:** maximise season points through reliable forecasts and legal, robust FPL
 decisions.
+
+## Current GW1 deadline recommendation
+
+The complete transactional GW1 pipeline was regenerated from official evidence observed on
+15 August 2026. The deadline pack is `DEADLINE_READY` and selects `R-083607ec8c`: a £100.0m
+3-4-3 projected for 57.05 central GW1 points, with Bruno Fernandes captain and Tarkowski
+vice-captain.
+
+- XI: Donnarumma; Tarkowski, Maguire, Truffert; Bruno Fernandes, Mbeumo, Semenyo,
+  Szoboszlai; Igor Thiago, Watkins, Calvert-Lewin.
+- Bench order: N. Williams, Hill, Groß; Verbruggen as reserve goalkeeper.
+- The search considered 554,062 legal local/global candidates, took 64 through the deep
+  five-week family and 48 through the eight-week family.
+- `R-0aec115e14` is the independent GW1 structure-stress leader, beating the selected team by
+  1.386 points in the central scoring-rule holdout (95% CI +1.254 to +1.518). It ranks fifth in
+  the combined multiweek synthesis and adds 0.258 synthesis regret, so the discrepancy is recorded
+  rather than allowed to bypass the declared season-opening objective.
+- `R-1ca68907f5` is the 4-4-2 long-horizon leader, gaining 1.027 central weighted points over eight
+  weeks. It ranks third in the synthesis and adds 0.154 synthesis regret. A separate 25,000-world
+  bench/allocation selector ranked it first, but only 0.054 composite points ahead of the active
+  squad. The active squad won the original selector and has lower worst-family regret (0.974 versus
+  1.238), so the result is classified as a practical tie resolved toward the less brittle team.
+- All 22 data-quality checks and all ten production-readiness gates pass. The full finalist
+  participation frontier is covered, all ten GW1 Betfair fixtures are present, the bounded
+  defender-only market feature is active at 20%, and the bench audit supports this allocation as a
+  rotation squad—not as a general rule to overspend on substitutes. Watkins, Calvert-Lewin and
+  Bruno Fernandes remain live role-verification items before submission.
+- FPL-authored `ep_this`, `ep_next` and `xP` are runtime-denied model inputs. The forecast is the
+  project's own position-specific point/appearance hurdle model. Understat is collected and
+  replayed as an independent challenger, but its selected production weight is 0% because it did
+  not improve the legal time-forward policy test; FBref remains an uncounted HTTP-403 research gap.
+
+The exact receipt and final manual instruction are in the
+[GW1 deadline pack](../reports/gw1-deadline-pack.md). This recommendation is not a permanent lock:
+rerun the complete pipeline after the final press conferences and before the deadline if any
+official availability, price, fixture or forecast checksum changes.
 
 ## LLM work frozen after the final bounded cycle
 
@@ -32,6 +68,21 @@ in the [points-first product roadmap](points-first-roadmap.md).
 
 ## What is already built on the points-first path
 
+- The current-player contract now hard-fails if any officially selectable player is absent from
+  the model grid. The 15 August refresh contains 568 selectable players over eight events, including
+  all ten newly listed FPL elements since the prior generation.
+- The final selector is historically gated end to end. A 48-path legal horizon replay retained
+  GW1–8/0.88, and a separate leave-one-season-out selector replay retained the equal family weight
+  and 20% worst-family surcharge. Both decisions were challenged on untouched 2025/26 rather than
+  inferred from the current squad.
+- Participation coverage now spans the entire synthesis frontier, with exposure-weighted player,
+  starter and captain diagnostics. Missing official, forecast or role evidence for any jointly
+  tested finalist is a publication error; third-party predicted XIs remain a visible zero-weight
+  shadow.
+- A new final scoring-structure audit challenges all synthesis finalists and five bench-proxy
+  settings using exact legal autosubs/captain fallback while removing and doubling bonus and
+  defensive-contribution layers. A supported reversal blocks the deadline-ready receipt.
+
 - Leakage-safe historical/current features and promoted direct and component forecasts.
 - Legal full-squad optimisation with budget, position and club constraints.
 - Robust GW1 candidate search, shared scenario simulations and decision receipts.
@@ -58,6 +109,11 @@ in the [points-first product roadmap](points-first-roadmap.md).
   semantic probe detects material public FPL status/news, price, rule and fixture changes between
   windows on a deadline-sensitive cadence; ordinary transfer-counter movement is deliberately left
   for the cheaper price telemetry stream.
+- That probe now also archives and compares the current Betfair goal-rate generation. Coverage or
+  provider changes, a 0.10 inferred team-goal move, or a 0.025 clean-sheet-probability move triggers
+  the full decision pipeline; smaller price noise does not. The first live comparison saw only
+  0.0493 goals / 0.0131 clean-sheet probability of movement and correctly retained the decision.
+  Scheduled deadline windows still run regardless of the materiality threshold.
 - A separate daemon now archives the public FPL market fields every 15 minutes without invoking the
   decision engine. Each immutable player observation includes current price, official
   `price_change_percent`, ownership, event/total transfers, net flow and availability with raw,
@@ -89,6 +145,35 @@ in the [points-first product roadmap](points-first-roadmap.md).
   GW1 the submitted context remains event 1 while the deadline scheduler targets GW2 and invokes
   the weekly pipeline for event 2; once GW1 is data-checked the product becomes the GW2 decision
   desk. Regression tests cover both transitions.
+- The presentation layer now completes that handoff too: event-specific forecasts and fixtures feed
+  the pitch, and a matching weekly receipt supplies the actual post-transfer 15, legal XI, ordered
+  bench, captain, vice-captain, projected points and forward lineups. The captain card, pitch and
+  weekly action therefore share one authority instead of independently reconstructing answers.
+  Stale receipts for a different gameweek are ignored.
+- Weekly receipts now expose the operational chip and execution calls alongside the move. WC, FH,
+  BB and TC shadows remain visible as evidence but resolve to `Save the chips` until their retained-
+  value gates pass. Price pressure can flag that a route may become unaffordable, while the action
+  remains `Wait` until prospective price calibration and lost-information replay justify moving
+  early.
+- The first full post-GW1 rehearsal now converts the published GW1 squad into an explicitly
+  synthetic, zero-authority manager snapshot and runs the real weekly optimiser across GW2–GW6.
+  The exercised route legally rolled its transfer, selected its XI from all 15 and kept the chip
+  shadows non-operational. This rehearsal exposed and fixed string-to-`Path` checksum handling in
+  both chip-retention loaders before a genuine weekly receipt can depend on them. Run it with
+  `fplagent rehearse-weekly-decision`; it writes only under the rehearsal namespace and cannot
+  replace the active decision.
+- Double-gameweek fixture identity now survives all the way to the player card and player-focus
+  view. The web workspace stores every fixture for a club/event in kickoff order instead of
+  silently overwriting one match, while the compatibility `fixture` field remains the first match.
+  A regression fixture covers a home-plus-away double.
+- Participation Confidence v2 is now a first-class web contract. Every player carries explicit
+  DNP, 1–59, 60–89 and 90+ probabilities plus separately labelled official/lineup evidence. The
+  squad view reports evidence coverage and only shows legal scenario reversals as counterfactual
+  stress tests; it never presents them as availability probabilities.
+- Long app-open work is safer operationally: post-synthesis GW1 stages resume from their staged
+  artifacts, orphaned in-process refresh state is failed closed by a liveness watchdog, and browser
+  opens within six hours reuse the latest terminal check unless a manual, scheduled or material-
+  change run is requested.
 - Exact Bench Boost and Triple Captain shadow scoring paired to every ordinary weekly route. It
   subtracts a visible retained-chip proxy, requires cross-model paired evidence and automatically
   returns `no_chip` when the remaining chip half extends beyond the forecast horizon or fixture
@@ -151,37 +236,38 @@ in the [points-first product roadmap](points-first-roadmap.md).
   receipt covers 52 confirmed events and 352 current FPL players across 18 clubs. Source minute
   coverage is only 33.5%, Brentford and Brighton have no confirmed feed, and all missing minutes
   remain null, so the layer is scenario-only.
-- The first checksum-bound preseason role sensitivity audit now exhaustively reoptimizes all 550
-  legal XIs for the published 15 and screens all 37 cross-family synthesis finalists on 5,000
-  selection and 25,000 independent holdout worlds per model family. Baseline and moderate stress
-  retain the published squad and configuration. Severe stress first screens `R-5043bb75d6`, then
-  confirms it after both squads receive the same exhaustive configuration search: +0.079 residual
-  points (95% CI +0.042 to +0.116) and +0.162 component points (+0.079 to +0.245). The deliberately
-  extreme repeated-absence DNP boundary also confirms the challenger and changes the within-15
-  configuration. These are verification triggers, not promotions, and production remains
-  unchanged.
-- A fresh-seed threshold audit now narrows that severe result. Along the declared coupled path,
-  `R-5043bb75d6` remains supported only through 51.0% conditional appearance retention for
-  three-plus-lineup absences (75.6% for role-watch players); at 51.5%/75.9%, the component-family
-  interval crosses zero. At the supported edge the paired gain is +0.066 residual points (95% CI
-  +0.028 to +0.103) and +0.086 component points (+0.002 to +0.169). This is an extreme, knife-edge
-  verification trigger, not an inferred availability probability or a reason to change the squad.
+- The checksum-bound preseason role sensitivity audit exhaustively reoptimizes all 550 legal XIs
+  for the published 15 and screens the full synthesis frontier on selection and independent holdout
+  worlds per model family. In the current generation, baseline deep replay prefers
+  `R-1ca68907f5` by +0.952 residual and +1.184 component points; moderate, severe and repeated-
+  absence scenarios prefer `R-0aec115e14`. These are material verification triggers derived from
+  zero-authority role evidence, not automatic promotions, and are exposed in the deadline pack.
+- The fresh-seed threshold audit supports `R-0aec115e14` through the top of the tested coupled path
+  (75% general conditional retention / 90% role-watch retention). That means the alert cannot be
+  dismissed as a knife-edge result; the three current role-watch players must be verified close to
+  the deadline before treating the active squad as a submission lock.
 - The threshold run also exposed and fixed an unordered historical residual-bootstrap query. The
   pool is now explicitly ordered by season, event and player, making identical seeded simulations
   byte-reproducible across separate processes.
 - A checksum-bound availability watch now joins the current 15 to official FPL status/news, aligned
   GW1 `p_play`, preseason role evidence and the supported stress boundary. The current receipt finds
-  zero official doubts, four role-verification players (Watkins, Bruno Fernandes, Truffert and
-  Calvert-Lewin) and four explicit uncovered-feed players (Collins, Igor Thiago, Verbruggen and
-  Groß).
+  zero official doubts, three role-verification players (Watkins, Calvert-Lewin and Bruno
+  Fernandes) and zero uncovered-feed players.
   Its action is `retain_decision_and_verify_flagged_players`; advisory evidence is structurally
   unable to authorize a production change. A compact view is included in `deadline-status`.
+- A timestamped predicted-lineup subsystem now captures FFScout and RotoWire, archives raw bodies,
+  aligns only complete XIs to the exact official event/fixture/player generation and exposes its
+  votes through the same availability watch. On 10 August both providers were captured, but
+  FFScout's advertised 20 July modification time failed the seven-day freshness gate; RotoWire is
+  therefore the only eligible source and includes all 15 published players. Production weight is
+  zero. The immutable prospective scoreboard requires six two-source events with positive,
+  non-negative-downside lineup-hit lift before it can even request an exact legal replay. Ambiguous
+  team-only predictions are excluded for double-gameweek teams.
 - The GW1 publisher now creates the squad-specific role scenario, stress threshold and availability
   watch inside the same fingerprinted staging transaction as synthesis. Publication requires a
   current aligned watch, final checksums are revalidated after the atomic switch, and any failure
   restores the complete previous artifact set. The live lineup source was refreshed on 9 August:
-  it currently has 66 confirmed lineup events and coverage for 19 of 20 clubs; Brentford remains
-  the only explicit unknown.
+  it currently has 71 confirmed lineup events and coverage for all 20 clubs.
 - A full-pool one-swap audit now enumerates all 2,259 legal same-position replacements around the
   published squad. It found a genuine horizon-membership omission, Mukiele to Senesi. Equal
   full-field replay ranks the challenger second of 49 over the eight-week horizon (+0.316 central
@@ -191,18 +277,36 @@ in the [points-first product roadmap](points-first-roadmap.md).
   now protects 32 deterministic legal neighbours drawn across the top eight robust seeds; a live
   generation check includes the exact Senesi squad. This closes the membership gap for the next
   complete deadline run without allowing a fixed-squad winner to bypass synthesis.
+- Planning horizon and future discounting now have a deadline-safe rolling calibration rather than
+  judgment alone. Sixteen 1/3/5/8-week policies were replayed through GW1–8 of 2023/24–2025/26,
+  with a new decision at every deadline, historically legal free-transfer banks, no future player
+  outcomes, and realised autosub/captain scoring. The two-season selector chose 5 weeks/0.88, but
+  the candidate tied rather than beat 8 weeks/0.88 on the sealed 2025/26 path and its selection
+  advantage reduced to one different opening goalkeeper. It failed the local-stability and frozen
+  test gates, so production correctly remains at 8 weeks/0.88 pending broader point-in-time data.
 - A provenance-bound pre-closing market goal-rate challenger now maps 2,660 historical Premier
   League fixtures to FPL IDs and uses only de-vigged non-closing 1X2 and over/under prices. On the
   frozen 2023/24–2025/26 set it improves Poisson deviance from 1.0892 to 1.0514, goal MAE from
   0.9331 to 0.9179 and clean-sheet Brier from 0.1702 to 0.1678. A blend selected on 2024/25 gains
   5.00 realised points/GW on the untouched 2025/26 independent-gameweek legal selection replay
   (95% interval +1.34 to +8.66), including +2.18/GW versus the internal component signal at the
-  same weight. It remains shadow-only: the live feed currently covers zero of ten GW1 fixtures,
-  and an independent-gameweek rebuild is not a sequential transfer-policy result. The completed
-  continuous replay then selected a conservative 25% market weight on 2024/25 (+145 net points)
+  same weight. A public delayed Betfair Exchange fallback now discovers the exact Match Odds and
+  O/U 2.5 market IDs and provides complete, timestamp-safe coverage for all 10/10 GW1 fixtures;
+  its raw JSON books are archived immutably and explicit aliases bridge four provider team names.
+  The English Premier League competition ID is now itself discovered from Betfair's exact-name
+  competition facet rather than hard-coded from a changeable URL suffix.
+  It nevertheless remains shadow-only because an independent-gameweek rebuild is not a sequential
+  transfer-policy result. The completed continuous replay selected a conservative 25% market
+  weight on 2024/25 (+145 net points)
   but lost the untouched 2025/26 path by two points (`2005` versus `2007`), with a four-GW block
   interval of -3.18 to +2.87 points/GW. Market odds are therefore rejected for weekly transfer
   authority and retained only as a GW1 shadow candidate.
+  A separate Betfair-only reconstruction reaches 99.2% historical fixture coverage in 2024/25 and
+  94.7% in 2025/26. It beats the internal fixture model on untouched Poisson deviance (`1.0501`
+  versus `1.0848`) but trails the broad market average (`1.0472`). Its independently selected 20%
+  player-component weight again finishes two points behind on the untouched continuous legal path,
+  so the provider-specific gate also rejects production authority. Runtime support for a bounded
+  provider-specific blend exists but fails closed to 0% under this receipt.
 - A distribution-aware player-return challenger now targets the largest measured decision gap:
   ordering the already-good players competing for the XI, captaincy and transfers. Its three
   season-forward bands are under five points, 5–9 and 10+. Validation chose a 25% blend, improving
@@ -210,10 +314,18 @@ in the [points-first product roadmap](points-first-roadmap.md).
   frozen blend improved independent legal selection by 41, 94 and 60 points across the three OOF
   seasons. It remains `HOLD_SHADOW`, because the frozen four-GW interval (-0.211 to +5.132/GW)
   missed the predeclared -0.10 downside floor. Production forecasts and decisions are unchanged.
+- The same return signal has now been isolated to captain/vice selection while holding the legal
+  squad, XI and bench fixed. It gained 21 points on untouched 2025/26 (+0.553/GW), but its four-GW
+  interval was -0.421 to +1.526/GW and the separate 2023/24 replication gained only one point.
+  The captain-only policy is therefore also `HOLD_SHADOW`; direct xP remains armband authority.
 
 ## Immediate delivery order
 
-### Current handoff
+### Historical implementation chronology (superseded)
+
+The chronology below records earlier generations and the defects or policy questions they exposed.
+Candidate IDs, squads, role-watch counts and test totals in this subsection are historical; the
+15 August recommendation at the top of this document is the only current handoff.
 
 The first four-class appearance challenger was evaluated without changing production. No position
 passed the full statistical and policy gate. A separate 76-gameweek legal-squad replay then showed
@@ -233,7 +345,7 @@ so unchanged logical rows received different physical Parquet and forecast hashe
 The grid is now ordered by event and player, component inference requires exact key order rather
 than equal row counts, and two complete feature builds produce byte-identical output.
 
-The latest complete live runner now publishes `R-e80223d1fc`: 5-3-2, Bruno Fernandes captain,
+An earlier complete live runner published `R-e80223d1fc`: 5-3-2, Bruno Fernandes captain,
 Tarkowski vice-captain, £100.0m spent and £0.0m bank, with 58.557 projected GW1 points. It is bound
 to direct forecast `955b8082…`, component forecast `e860770e…`, decision `37dd264b…` and pipeline
 fingerprint `219e232a…`. The evidence gate has zero issues. The XI is Donnarumma; Tarkowski,
@@ -243,18 +355,49 @@ input invocation completed in approximately 4.5 seconds with `reused: true` and 
 optimisation stage. The decision remains provisional and must be refreshed as material news or the
 deadline window changes.
 
-The live role audit finds no supported alternative on its tested stress path. The availability
+That generation's role audit found no supported alternative on its tested stress path. The availability
 watch is current and cannot authorize a decision change: all 15 players are officially available,
 while Watkins, Truffert, Calvert-Lewin and Bruno require attributable role verification and the
 four Brentford/Brighton selections have no confirmed structured preseason feed. These are explicit
 deadline checks rather than hidden assumptions.
 
-The published 15 has also passed a checksum-bound, read-only local-decision audit. Its exact XI,
+That published 15 also passed a checksum-bound, read-only local-decision audit. Its exact XI,
 bench order, Bruno captaincy and Tarkowski vice-captaincy were independently recovered as the top
 robust holdout configuration. A numerically tiny baseline squad-screen alternative was not
 supported by either model-family holdout, so it cannot mutate the published decision.
 
-GW1 is also ready for prospective evaluation. The current contract freezes `R-e80223d1fc`, its
+A later controlled 9 August run exercised the expanded global, five-week and eight-week funnel on
+fresh aligned inputs. It completed every expensive stage and selected staged synthesis candidate
+`R-d8cf2f79ad` (4-3-3, Bruno captain, £21.5m bench), but the then-current final gate retained the
+last valid published receipt because independent role replay preferred Hill/McAteer to be replaced
+by Sadiki/Senesi in its baseline and moderate counterfactuals. That run exposed a classification
+bug rather than stale evidence: the role artifacts themselves declare those alternatives read-only
+verification triggers. The availability gate now returns `scenario_attention`, `current: true` and
+`decision_change_authorized: false` for this case; only missing, stale or checksum-mismatched
+evidence returns `refresh_required`. Replaying the fixed gate against the exact staged artifacts
+produces no issues and preserves all four counterfactual impacts for inspection. The failed run did
+not replace the previously validated production decision.
+
+The then-current validated generation superseded those earlier chronology points. A fresh official run
+followed by a post-match role refresh now publishes `R-dc7de17def`: 4-3-3, Bruno Fernandes captain,
+Tarkowski vice-captain, £100.0m spent, £0.0m bank and 57.449 projected GW1 points. The XI is
+Donnarumma; Tarkowski, Maguire, Senesi and Truffert; Bruno Fernandes, Mbeumo and Gibbs-White; Igor
+Thiago, Watkins and Calvert-Lewin. Its bench order is Szoboszlai, Hill, Tanaka and Verbruggen.
+An independent current-squad holdout exactly reproduced the formation, XI, bench order and both
+armbands in the residual and component families.
+
+The refreshed advisory lineup feed now covers 20/20 clubs, 71 confirmed lineup events and 76
+confirmed club-event rows. Brentford is no longer an unknown and Igor Thiago carries no observed-role
+flag. Watkins, Senesi, Bruno Fernandes and Tanaka remain verification items, but friendly evidence
+has zero direct weight in production xP and cannot change the squad. This is particularly important
+after the 2026 World Cup: phased returns and experimental friendly teams are not injury or
+loss-of-place claims. Supported alternatives remain read-only. Under the unperturbed role world,
+the leading alternative replaces Gibbs-White, Hill and Tanaka with Collins, McAteer and Semenyo;
+it is 11th in synthesis and carries 0.739 more regret. Under moderate counterfactual stress the
+alternative is fourth but still carries 0.199 more synthesis regret. The UI presents these costs
+alongside the scenario-only gain.
+
+GW1 is also ready for prospective evaluation. The latest contract freezes `R-dc7de17def`, its
 serious alternatives, relevant player forecasts, decision/shortlist/forecast/bootstrap hashes and
 the official 21 August deadline. It is stored under `data/decisions/weekly/event-1/` without
 mutating the live decision. Future changed generations create this contract inside
@@ -266,9 +409,16 @@ difference, the 0.91 projected-point gap and the captaincy difference instead of
 assessment to a single player card. The post-GW1 sync action now runs authenticated MCP squad sync
 and then the correct next-decision-event pipeline rather than opening a dead control.
 
-Static checks and the explicitly selected non-LLM engine, data and web suite pass: 303 tests, with
-one upstream Starlette TestClient deprecation warning. Parked LLM and chat test modules are excluded
-from this points-first regression command.
+The refreshed GW2–GW6 synthetic rehearsal against this exact published squad passed again at full
+10,000/25,000 residual/component simulation sizes. It selected a legal roll route, carried two free
+transfers forward, chose a 4-3-3 from all 15 and kept Bruno captain. A separate phase-boundary test
+proves the promoted 20% preseason defender-market feature becomes a zero-weight weekly feature as
+soon as the official GW1 deadline passes.
+
+The full repository regression suite now passes all 447 collected tests, with one upstream
+Starlette TestClient deprecation warning. Python lint, frontend lint and the production frontend
+build also pass. The web API launcher was exercised separately and returns to the shell after one
+`Ctrl+C` without a lingering worker.
 
 Current-season feature parity is now enforced. The app-open weekly refresh automatically archives
 each newly final/data-checked official event-live payload and rolls its xG, xA, minutes, points, BPS
@@ -286,6 +436,29 @@ untouched 2025/26 exact policy replay by 23 net points with less churn, but its 
 downside interval still crossed zero. It therefore runs as a zero-authority shadow world; direct xP
 remains production champion. See the
 [form-reversion policy replay](../reports/form-reversion-policy-replay.md).
+
+The first attacking chance-quality challenger is complete and rejected. It added strictly lagged
+10- and 38-event goals, assists, xG, xA and minutes; derived shrunk per-90 rates, team attacking
+shares and finishing/assist surplus; and reused the champion appearance probabilities so minutes
+could not confound the comparison. A 10% blend lost 50 continuous-path points in 2023/24 while
+gaining 34 in 2024/25; a 20% blend gained 67 in 2023/24 while losing 41 in 2024/25. The preregistered
+multi-season maximin rule therefore selected zero. The raw challenger also reduced top-player
+capture for both MID and FWD in the untouched 2025/26 season. It has zero decision authority and
+cannot alter or invalidate the current forecast cache. See the
+[attacking chance-quality report](../reports/attacking-chance-quality-challenger.md).
+
+Three further forecast/decision attacks are now complete. A role-aware appearance residual
+calibrator improved selected probability metrics but lost 23 points in its selection policy season
+and eight in the untouched season, so production participation remains unchanged. A separate
+lead-specific GW+1–GW+7 XGBoost model gained ten exact-policy points in both forward seasons and is
+recorded as `PASS_HISTORICAL_HOLD_SHADOW`; it cannot serve production xP without prospective
+replication. Its current-season 10,000-world adaptive tournament nominated a Collins/Semenyo/Yates
+variant of the published squad. That variant passed the bounded request gate, was injected as a
+forecast-scoped protected seed, and received the complete robust, horizon and synthesis tests. It
+then recorded 3.617 regret in the independent robust family and 0.488 in the horizon family;
+synthesis retained `R-dc7de17def`. The adaptive receipt is therefore closed as
+`FULL_PIPELINE_RETAIN_INCUMBENT`, and stale challengers automatically lose seed protection when the
+forecast checksum changes.
 
 ### Delivery order
 
@@ -311,28 +484,32 @@ remains production champion. See the
    and cannot receive a real 2026/27 outcome before GW1 has been played.
 4. Continue evaluating every weekly action against all 15 players and the same forecast worlds so
    transfers, formation, bench order and captaincy cannot contradict one another.
-   The first sequential market-signal gate is complete and rejected: validation-selected shrinkage
-   did not improve the untouched season. Direct xP remains the weekly champion; do not expose the
-   market signal to transfer generation. The first player-return challenger has now produced
+   The blunt sequential market-rate replacement remains rejected after losing two points on its
+   untouched season. A second policy that learns Betfair scoring and clean-sheet prices as player
+   features improved defender MAE/top-k points in all three forward seasons and legal season totals
+   by +64, +76 and +90. Its bounded 20% blend now has preseason squad/XI authority on fully covered
+   events. Direct xP remains the weekly transfer champion because the pooled downside interval
+   narrowly missed the declared gate; do not expose the market feature signal to weekly transfer
+   generation yet. The first player-return challenger has now produced
    positive validation, untouched sequential and three-season independent results, but remains a
    25% shadow blend because its block downside gate missed narrowly. Freeze its current-season
    scores prospectively at each deadline; production direct xP remains the authority until that
    receipt stream demonstrates stable value.
 5. Improve participation and minutes forecasts under frozen forward tests, then improve team and
-   player event rates only when challengers beat the current champions in decision replay.
+   player event rates only when challengers beat the current champions in decision replay. The
+   broad attacking chance-quality expansion has now failed that standard, so the next player-rate
+   experiment is narrower role-aware empirical shrinkage rather than another larger black-box
+   attack model.
    The first historical role-feature challenger has now been rejected: only GK passed its
    statistical screen, then lost 0.013 points/GW in the exact policy replay with a confidence
-   interval crossing zero and a negative season floor. The current preseason lineup layer is now
-   collected with provenance, but remains scenario-only because its minute coverage is 35.3% and
-   two clubs are missing. The first explicit late-return/uncertain-role audit is complete: baseline
-   and moderate stress are stable. Equal exhaustive configuration replay confirms
-   `R-5043bb75d6` under severe and DNP-boundary assumptions, but public context indicates Watkins
-   and Bruno Fernandes are late World Cup returners rather than confirmed injury absences. The
-   refined curve shows that the challenger needs approximately half of their already-modelled
-   appearances to be removed alongside the coupled role-watch stress before both families support
-   it. Next, refresh their remaining friendlies and attributable press-conference evidence. Only if
-   those observations justify an explicit forecast change should it enter a staged forecast and
-   complete deadline-funnel rebuild.
+   interval crossing zero and a negative season floor. The current preseason lineup layer is
+   collected with provenance and covers 20/20 clubs, but remains scenario-only because complete-
+   minute coverage is only 36.6% and post-World-Cup friendlies are unusually noisy. The current
+   published squad remains the production champion; its leading role-stress alternative is only
+   ninth in the multi-gameweek synthesis and carries more aggregate regret. Next, prioritise
+   attributable official availability, manager comments and competitive-role evidence. A friendly
+   observation may trigger verification, but only an explicit, corroborated participation change
+   should enter a staged forecast and complete deadline-funnel rebuild.
 6. Accumulate prospective rearrangement and chip receipts, improve the rejected retained-timing
    policies, and replay WC, FH, BB and TC jointly. The exact searches, point-in-time schedule model
    and separate continuous replays are present; neither historical downside gate passed. Every chip

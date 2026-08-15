@@ -45,7 +45,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 
 def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
     direct, component, contract, schedule = _artifacts(tmp_path)
-    calls = {"decisions": 0, "audits": 0}
+    calls = {"decisions": 0, "audits": 0, "participation": 0}
 
     def refresh_runner(**_: Any) -> dict[str, Any]:
         return {"official": {"snapshot_id": "snapshot-1", "publishable": True}}
@@ -77,6 +77,10 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
             Path(output).write_text(json.dumps(result) + "\n", encoding="utf-8")
         return result
 
+    def participation_refresher(**_: Any) -> dict[str, Any]:
+        calls["participation"] += 1
+        return {"status": "shadow_consensus_ready", "production_weight": 0.0}
+
     return (
         {
             "manager_entry_id": 7,
@@ -91,6 +95,8 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
             "decision_archive_root": tmp_path / "archive",
             "pipeline_receipt_path": tmp_path / "pipeline.json",
             "deadline_status_path": tmp_path / "deadline-status.json",
+            "participation_receipt_path": tmp_path / "participation-receipt.json",
+            "participation_consensus_path": tmp_path / "participation-consensus.parquet",
             "refresh_runner": refresh_runner,
             "event_resolver": lambda: 2,
             "state_deriver": lambda _entry, _event: {
@@ -100,6 +106,7 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], dict[str, int]]:
             },
             "decision_runner": decision_runner,
             "evidence_auditor": evidence_auditor,
+            "participation_refresher": participation_refresher,
             "rules_loader": _rules,
         },
         calls,
@@ -122,6 +129,7 @@ def test_weekly_pipeline_publishes_only_after_gate_and_reuses_same_generation(
     assert Path(first["archived_decision"]).read_bytes() == published_bytes
     assert second["reused"] is True
     assert calls["decisions"] == 1
+    assert calls["participation"] == 2
     assert Path(kwargs["published_decision_path"]).read_bytes() == published_bytes
     assert Path(kwargs["pipeline_receipt_path"]).read_bytes() == receipt_bytes
 

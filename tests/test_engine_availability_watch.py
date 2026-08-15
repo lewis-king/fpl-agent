@@ -7,9 +7,14 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from fplagent_data.http import sha256_file
-from fplagent_engine.availability_watch import audit_availability_watch
+from fplagent_engine.availability_watch import (
+    _decision_frontier,
+    _decision_impacts,
+    audit_availability_watch,
+)
 from fplagent_engine.cli import parser
 
 
@@ -196,6 +201,60 @@ def test_current_watch_retains_decision_and_names_verification_gaps(
         "mechanically_retained_p_play": 0.459,
     }
     assert Path(kwargs["output_path"]).is_file()
+    assert result["decision_frontier"]["candidate_count"] == 1
+    assert result["decision_frontier"]["player_count"] == 15
+
+
+def test_frontier_covers_every_ranked_candidate_and_weights_exposure() -> None:
+    decision = {
+        "ranking": [{"candidate_id": "A"}, {"candidate_id": "B"}],
+        "decision": {
+            "candidate": {
+                "candidate_id": "A",
+                "selected": [1, 2],
+                "lineups": {"1": {"starters": [1], "captain": 1}},
+            }
+        },
+    }
+    # With no external shortlist, candidate B is deliberately a hard lineage issue.
+    issues: list[str] = []
+    players = {
+        element: {
+            "id": element,
+            "web_name": f"P{element}",
+            "status": "a",
+            "can_select": True,
+            "removed": False,
+            "news": "",
+        }
+        for element in (1, 2)
+    }
+    forecasts = {
+        element: {
+            "element": element,
+            "player_name": f"P{element}",
+            "team_name": "Club",
+            "position": "MID",
+            "p_play": 0.9,
+            "expected_points": 4.0,
+        }
+        for element in (1, 2)
+    }
+    roles = {element: _role_row(element) for element in (1, 2)}
+
+    result = _decision_frontier(
+        decision,
+        player_by_id=players,
+        forecast_by_id=forecasts,
+        role_by_id=roles,
+        participation_by_id={},
+        issues=issues,
+    )
+
+    assert result["requested_candidate_count"] == 2
+    assert result["candidate_count"] == 1
+    assert result["players"][0]["squad_exposure"] == 1.0
+    assert any("candidate" in issue and "B" in issue for issue in issues)
 
 
 def test_official_doubt_is_surfaced_but_not_an_automatic_squad_change(
@@ -210,6 +269,106 @@ def test_official_doubt_is_surfaced_but_not_an_automatic_squad_change(
     assert result["decision_change_authorized"] is False
     assert result["players"][0]["official"]["chance"] == 50
     assert "official_doubt_or_news" in result["players"][0]["attention"]
+
+
+def test_aligned_predicted_lineups_are_exposed_with_zero_authority(
+    tmp_path: Path,
+) -> None:
+    kwargs = _artifacts(tmp_path)
+    receipt_path = tmp_path / "participation-receipt.json"
+    consensus_path = tmp_path / "participation.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event": 1,
+                    "element": element,
+                    "consensus": "single_source_start",
+                    "predicted_start_sources": ["rotowire"],
+                    "predicted_not_start_sources": [],
+                    "complete_source_count": 1,
+                    "attention": [],
+                }
+                for element in range(1, 16)
+            ]
+        ),
+        consensus_path,
+    )
+    _write_json(
+        receipt_path,
+        {
+            "event": 1,
+            "observed_at": kwargs["as_of"].isoformat(),
+            "status": "shadow_consensus_partial",
+            "inputs": {
+                "official_players_sha256": sha256_file(Path(kwargs["players_path"])),
+                "forecast_sha256": sha256_file(Path(kwargs["forecast_path"])),
+            },
+            "outputs": {"consensus_sha256": sha256_file(consensus_path)},
+            "sources": {
+                "rotowire": {"status": "captured", "decision_eligible": True},
+                "stale_source": {"status": "captured", "decision_eligible": False},
+            },
+            "summary": {"predicted_start_consensus": 0},
+            "promotion_gate": {"passed": False},
+        },
+    )
+    kwargs["participation_receipt_path"] = receipt_path
+    kwargs["participation_consensus_path"] = consensus_path
+
+    result = audit_availability_watch(**kwargs)
+
+    predicted = result["predicted_lineup_consensus"]
+    assert predicted["current"] is True
+    assert predicted["eligible_source_count"] == 1
+    assert predicted["captured_source_count"] == 2
+    assert predicted["production_adjustment_authorized"] is False
+    assert result["players"][0]["predicted_lineups"]["consensus"] == (
+        "single_source_start"
+    )
+
+
+def test_supported_role_alternative_is_current_attention_not_stale_evidence(
+    tmp_path: Path,
+) -> None:
+    kwargs = _artifacts(tmp_path)
+    scenario_path = Path(kwargs["scenario_results_path"])
+    scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+    scenario["scenarios"]["moderate_role_stress"]["deep_squad_replay"] = {
+        "cross_family_holdout_support": True,
+        "challenger_squad_id": "R-safer",
+        "incumbent_configuration": {
+            "starters": ["Player 1"],
+            "bench_order": ["Player 2"],
+        },
+        "challenger_configuration": {
+            "starters": ["Player 2"],
+            "bench_order": ["Player 1"],
+            "formation": "4-4-2",
+            "captain": "Player 2",
+            "vice_captain": "Player 3",
+        },
+        "holdout_delta_challenger_to_incumbent": {
+            "residual": {"mean": 0.3},
+            "component": {"mean": 0.2},
+        },
+    }
+    scenario["supported_deep_squad_scenarios"] = ["moderate_role_stress"]
+    _write_json(scenario_path, scenario)
+    threshold_path = Path(kwargs["threshold_results_path"])
+    threshold = json.loads(threshold_path.read_text(encoding="utf-8"))
+    threshold["lineage"]["preseason_role_scenario_sha256"] = sha256_file(scenario_path)
+    _write_json(threshold_path, threshold)
+
+    result = audit_availability_watch(**kwargs)
+
+    assert result["current"] is True
+    assert result["status"] == "scenario_attention"
+    assert result["decision_change_authorized"] is False
+    assert result["decision_action"] == "retain_decision_and_review_supported_alternatives"
+    assert result["issues"] == []
+    assert result["decision_impacts"][0]["challenger_squad_id"] == "R-safer"
+    assert any("counterfactuals require review" in value for value in result["warnings"])
 
 
 def test_stale_advisory_receipt_requires_refresh(tmp_path: Path) -> None:
@@ -256,3 +415,101 @@ def test_cli_exposes_availability_status() -> None:
 
     assert args.command == "availability-status"
     assert args.as_of == "2026-08-07T15:00:00+00:00"
+
+
+def test_supported_scenario_reversal_is_projected_for_decision_consumers() -> None:
+    result = _decision_impacts(
+        {
+            "scenarios": {
+                "moderate_role_stress": {
+                    "description": "Retain fewer uncertain appearances.",
+                    "deep_squad_replay": {
+                        "cross_family_holdout_support": True,
+                        "challenger_squad_id": "R-safer",
+                        "incumbent_configuration": {
+                            "starters": ["Risky Starter", "Captain"],
+                            "bench_order": ["Bench Hold"],
+                        },
+                        "challenger_configuration": {
+                            "starters": ["Safer Starter", "Captain"],
+                            "bench_order": ["Bench Hold"],
+                            "formation": "4-4-2",
+                            "captain": "Captain",
+                            "vice_captain": "Safer Starter",
+                        },
+                        "holdout_delta_challenger_to_incumbent": {
+                            "residual": {"mean": 0.8},
+                            "component": {"mean": 0.6},
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    assert result == [
+        {
+            "scenario": "moderate_role_stress",
+            "description": "Retain fewer uncertain appearances.",
+            "challenger_squad_id": "R-safer",
+            "incoming": ["Safer Starter"],
+            "outgoing": ["Risky Starter"],
+            "formation": "4-4-2",
+            "captain": "Captain",
+            "vice_captain": "Safer Starter",
+            "minimum_family_gain": 0.6,
+            "counterfactual_not_probability": True,
+        }
+    ]
+
+
+def test_scenario_reversal_explains_why_synthesis_rejected_it() -> None:
+    scenario = {
+        "scenarios": {
+            "baseline": {
+                "description": "Production appearance worlds unchanged.",
+                "deep_squad_replay": {
+                    "cross_family_holdout_support": True,
+                    "challenger_squad_id": "R-challenger",
+                    "incumbent_configuration": {"starters": ["Current"]},
+                    "challenger_configuration": {
+                        "starters": ["Alternative"],
+                        "formation": "4-4-2",
+                        "captain": "Alternative",
+                        "vice_captain": "Current",
+                    },
+                    "holdout_delta_challenger_to_incumbent": {
+                        "residual": {"mean": 0.8},
+                        "component": {"mean": 0.6},
+                    },
+                },
+            }
+        }
+    }
+    decision = {
+        "decision": {"candidate_id": "R-selected"},
+        "ranking": [
+            {
+                "candidate_id": "R-selected",
+                "rank": 1,
+                "synthesis_regret": 1.0,
+                "robust_family_regret": 1.2,
+                "horizon_family_regret": 0.6,
+            },
+            {
+                "candidate_id": "R-challenger",
+                "rank": 9,
+                "synthesis_regret": 1.17,
+                "robust_family_regret": 1.8,
+                "horizon_family_regret": 0.2,
+            },
+        ],
+    }
+
+    result = _decision_impacts(scenario, decision)
+
+    assert result[0]["challenger_synthesis_rank"] == 9
+    assert result[0]["synthesis_regret_delta"] == pytest.approx(0.17)
+    assert result[0]["five_week_regret_delta"] == pytest.approx(0.6)
+    assert result[0]["eight_week_regret_delta"] == pytest.approx(-0.4)
+    assert "0.170 more synthesis regret" in result[0]["why_not_selected"]

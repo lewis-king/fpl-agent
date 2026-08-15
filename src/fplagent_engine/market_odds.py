@@ -20,7 +20,11 @@ from scipy.optimize import least_squares
 from scipy.stats import poisson, skellam
 from sklearn.metrics import mean_poisson_deviance
 
-from .paths import DATA, NORMALIZED, REPORTS, ensure_engine_layout
+from .betfair_exchange import (
+    BETFAIR_BOOTSTRAP_URL,
+    collect_betfair_exchange_snapshot,
+)
+from .paths import DATA, MODEL_DATA, NORMALIZED, REPORTS, ensure_engine_layout
 
 RAW_DIR = DATA / "raw" / "football-data"
 HISTORICAL_MARKET_RATES = NORMALIZED / "historical_market_goal_rates.parquet"
@@ -39,6 +43,10 @@ CURRENT_FIXTURES_PAGE = "https://www.football-data.co.uk/matches.php"
 CURRENT_FPL_FIXTURES = DATA / "processed" / "fpl" / "2026-27" / "preseason" / "fixtures.parquet"
 CURRENT_FPL_TEAMS = DATA / "processed" / "fpl" / "2026-27" / "preseason" / "teams.parquet"
 CURRENT_FPL_EVENTS = DATA / "processed" / "fpl" / "2026-27" / "preseason" / "events.parquet"
+BETFAIR_RAW_DIR = DATA / "raw" / "betfair" / "current"
+BETFAIR_CALIBRATION_RESULTS = MODEL_DATA / "betfair_exchange_policy_v1" / "results.json"
+MATERIAL_GOAL_RATE_DELTA = 0.10
+MATERIAL_CLEAN_SHEET_DELTA = 0.025
 SEASON_CODES = {
     "2019-20": "1920",
     "2020-21": "2021",
@@ -50,7 +58,11 @@ SEASON_CODES = {
 }
 FROZEN_TEST_SEASONS = ("2023-24", "2024-25", "2025-26")
 TEAM_NAME_ALIASES = {
+    "Coventry": "Coventry City",
+    "Hull": "Hull City",
+    "Ipswich": "Ipswich Town",
     "Man United": "Man Utd",
+    "Nottm Forest": "Nott'm Forest",
     "Sheffield United": "Sheffield Utd",
     "Tottenham": "Spurs",
 }
@@ -588,14 +600,112 @@ def _current_fpl_rows() -> tuple[
     )
 
 
+def _betfair_rows_payload(rows: list[dict[str, Any]]) -> bytes:
+    if not rows:
+        return b""
+    columns = sorted({str(key) for row in rows for key in row})
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer.writeheader()
+    writer.writerows(rows)
+    return buffer.getvalue().encode()
+
+
+def _assess_betfair_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    season: str,
+    event: int | None,
+    horizon: int,
+    fpl_fixtures: list[dict[str, Any]],
+    fpl_teams: list[dict[str, Any]],
+    fpl_events: list[dict[str, Any]],
+) -> tuple[bytes, dict[str, Any]]:
+    payload = _betfair_rows_payload(snapshot["rows"])
+    observed = datetime.fromisoformat(str(snapshot["observed_at"])).astimezone(
+        ZoneInfo("Europe/London")
+    )
+    timestamp_page = f"Latest fixtures uploaded: {observed:%d/%m/%y %H:%M} UK time"
+    availability = assess_current_market_source(
+        payload,
+        timestamp_page,
+        season=season,
+        event=event,
+        horizon=horizon,
+        fpl_fixtures=fpl_fixtures,
+        fpl_teams=fpl_teams,
+        fpl_events=fpl_events,
+    )
+    availability.update(
+        {
+            "provider": "betfair_exchange_public_delayed",
+            "url": snapshot.get("competition_url", BETFAIR_BOOTSTRAP_URL),
+            "source_page": snapshot.get("competition_url", BETFAIR_BOOTSTRAP_URL),
+            "source_timestamp_kind": "observed_at",
+            "source_observed_at": snapshot["observed_at"],
+            "source_uploaded_at": snapshot["observed_at"],
+            "sha256": snapshot["semantic_sha256"],
+            "delayed_prices": True,
+            "price_estimate": "probability midpoint of best exchange back and lay",
+        }
+    )
+    return payload, availability
+
+
+def _archive_betfair_snapshot(snapshot: dict[str, Any]) -> tuple[Path, str, list[dict[str, Any]]]:
+    BETFAIR_RAW_DIR.mkdir(parents=True, exist_ok=True)
+    documents = []
+    for document in snapshot["documents"]:
+        payload = bytes(document["payload"])
+        digest = hashlib.sha256(payload).hexdigest()
+        suffix = ".html" if document["name"] == "bootstrap" else ".json"
+        path = BETFAIR_RAW_DIR / f"{document['name']}-{digest[:16]}{suffix}"
+        if path.exists() and path.read_bytes() != payload:
+            raise ValueError(f"Content-addressed Betfair archive collision: {path}")
+        if not path.exists():
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_bytes(payload)
+            temporary.replace(path)
+        documents.append(
+            {
+                "name": document["name"],
+                "url": document["url"],
+                "path": str(path),
+                "sha256": digest,
+                "bytes": len(payload),
+            }
+        )
+    bundle = {
+        "provider": snapshot["provider"],
+        "competition_id": snapshot["competition_id"],
+        "observed_at": snapshot["observed_at"],
+        "semantic_sha256": snapshot["semantic_sha256"],
+        "event_ids": snapshot["event_ids"],
+        "market_ids": snapshot["market_ids"],
+        "rows": snapshot["rows"],
+        "documents": documents,
+    }
+    payload = json.dumps(bundle, indent=2, sort_keys=True).encode() + b"\n"
+    digest = hashlib.sha256(payload).hexdigest()
+    path = BETFAIR_RAW_DIR / f"snapshot-{digest[:16]}.json"
+    if path.exists() and path.read_bytes() != payload:
+        raise ValueError(f"Content-addressed Betfair snapshot collision: {path}")
+    if not path.exists():
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_bytes(payload)
+        temporary.replace(path)
+    return path, digest, documents
+
+
 def current_season_source_available(
     season: str = "2026-27", *, event: int | None = None, horizon: int = 5
 ) -> dict[str, Any]:
+    fpl_fixtures, fpl_teams, fpl_events = _current_fpl_rows()
+    football_error = None
     try:
         payload = _download(CURRENT_FIXTURES_URL)
         page = _download(CURRENT_FIXTURES_PAGE).decode("utf-8", errors="replace")
-        fpl_fixtures, fpl_teams, fpl_events = _current_fpl_rows()
-        return assess_current_market_source(
+        football_data = assess_current_market_source(
             payload,
             page,
             season=season,
@@ -605,15 +715,55 @@ def current_season_source_available(
             fpl_teams=fpl_teams,
             fpl_events=fpl_events,
         )
+        football_data["provider"] = "football_data_market_average"
+        if football_data["ready_for_event"]:
+            return football_data
     except (OSError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
-        return {
+        football_error = f"{type(error).__name__}: {error}"
+        football_data = {
             "season": season,
             "event": event,
             "available": False,
             "ready_for_event": False,
             "ready_events": [],
             "url": CURRENT_FIXTURES_URL,
-            "reason": str(error),
+            "provider": "football_data_market_average",
+            "reason": football_error,
+        }
+    try:
+        betfair = collect_betfair_exchange_snapshot()
+        _, exchange = _assess_betfair_snapshot(
+            betfair,
+            season=season,
+            event=event,
+            horizon=horizon,
+            fpl_fixtures=fpl_fixtures,
+            fpl_teams=fpl_teams,
+            fpl_events=fpl_events,
+        )
+        exchange["fallback_from"] = football_data
+        return exchange
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        json.JSONDecodeError,
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        TimeoutError,
+    ) as error:
+        return {
+            "season": season,
+            "event": event,
+            "available": False,
+            "ready_for_event": False,
+            "ready_events": [],
+            "providers": [football_data],
+            "reason": (
+                f"Football-Data: {football_error or 'incomplete'}; "
+                f"Betfair: {type(error).__name__}: {error}"
+            ),
         }
 
 
@@ -653,26 +803,81 @@ def build_current_market_goal_rates(
 ) -> dict[str, Any]:
     """Archive current prices and materialize every complete actionable fixture."""
     ensure_engine_layout()
-    payload = _download(CURRENT_FIXTURES_URL)
-    page = _download(CURRENT_FIXTURES_PAGE).decode("utf-8", errors="replace")
     fpl_fixtures, fpl_teams, fpl_events = _current_fpl_rows()
-    availability = assess_current_market_source(
-        payload,
-        page,
-        season=season,
-        event=event,
-        horizon=horizon,
-        fpl_fixtures=fpl_fixtures,
-        fpl_teams=fpl_teams,
-        fpl_events=fpl_events,
-    )
-    payload_sha256 = hashlib.sha256(payload).hexdigest()
-    raw_path = RAW_DIR / "current" / f"fixtures-{payload_sha256[:16]}.csv"
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
-    if raw_path.exists() and raw_path.read_bytes() != payload:
-        raise ValueError("Content-addressed market archive contains different bytes")
-    if not raw_path.exists():
-        raw_path.write_bytes(payload)
+    football_error = None
+    try:
+        payload = _download(CURRENT_FIXTURES_URL)
+        page = _download(CURRENT_FIXTURES_PAGE).decode("utf-8", errors="replace")
+        availability = assess_current_market_source(
+            payload,
+            page,
+            season=season,
+            event=event,
+            horizon=horizon,
+            fpl_fixtures=fpl_fixtures,
+            fpl_teams=fpl_teams,
+            fpl_events=fpl_events,
+        )
+    except (OSError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
+        football_error = error
+        payload = (
+            b"Div,HomeTeam,AwayTeam,AvgH,AvgD,AvgA,Avg>2.5,Avg<2.5\n"
+        )
+        availability = assess_current_market_source(
+            payload,
+            "",
+            season=season,
+            event=event,
+            horizon=horizon,
+            fpl_fixtures=fpl_fixtures,
+            fpl_teams=fpl_teams,
+            fpl_events=fpl_events,
+        )
+        availability["reason"] = f"{type(error).__name__}: {error}"
+    availability["provider"] = "football_data_market_average"
+    provider = "football_data_market_average"
+    source_documents: list[dict[str, Any]] = []
+    if not availability["ready_for_event"]:
+        try:
+            betfair = collect_betfair_exchange_snapshot()
+        except Exception as error:
+            if football_error is not None:
+                raise RuntimeError(
+                    "both current market providers failed: "
+                    f"Football-Data {type(football_error).__name__}: {football_error}; "
+                    f"Betfair {type(error).__name__}: {error}"
+                ) from error
+            availability["betfair_fallback_error"] = f"{type(error).__name__}: {error}"
+            betfair = None
+        if betfair is not None:
+            betfair_payload, betfair_availability = _assess_betfair_snapshot(
+                betfair,
+                season=season,
+                event=event,
+                horizon=horizon,
+                fpl_fixtures=fpl_fixtures,
+                fpl_teams=fpl_teams,
+                fpl_events=fpl_events,
+            )
+            football_complete = int(availability["complete_odds_fixtures"])
+            betfair_complete = int(betfair_availability["complete_odds_fixtures"])
+            if betfair_availability["ready_for_event"] or betfair_complete > football_complete:
+                payload = betfair_payload
+                availability = betfair_availability
+                provider = "betfair_exchange_public_delayed"
+                raw_path, payload_sha256, source_documents = _archive_betfair_snapshot(betfair)
+        if provider == "football_data_market_average":
+            payload_sha256 = hashlib.sha256(payload).hexdigest()
+            raw_path = RAW_DIR / "current" / f"fixtures-{payload_sha256[:16]}.csv"
+    else:
+        payload_sha256 = hashlib.sha256(payload).hexdigest()
+        raw_path = RAW_DIR / "current" / f"fixtures-{payload_sha256[:16]}.csv"
+    if provider == "football_data_market_average":
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        if raw_path.exists() and raw_path.read_bytes() != payload:
+            raise ValueError("Content-addressed market archive contains different bytes")
+        if not raw_path.exists():
+            raw_path.write_bytes(payload)
 
     source_rows = list(
         csv.DictReader(io.StringIO(payload.decode("utf-8-sig", errors="replace")))
@@ -707,6 +912,7 @@ def build_current_market_goal_rates(
                 "team_a": int(fixture["team_a"]),
                 "home_name": home_name,
                 "away_name": away_name,
+                "market_provider": provider,
                 "source_uploaded_at": availability["source_uploaded_at"],
                 "avg_home_odds": one_x_two[0],
                 "avg_draw_odds": one_x_two[1],
@@ -718,6 +924,11 @@ def build_current_market_goal_rates(
                 **_goal_distribution_diagnostics(home_rate, away_rate),
                 **probabilities,
                 **market_consensus_diagnostics(market),
+                **{
+                    key: value
+                    for key, value in market.items()
+                    if key.startswith("betfair_") or key == "source_observed_at"
+                },
             }
         )
 
@@ -745,15 +956,29 @@ def build_current_market_goal_rates(
             for event_id in availability["events"]
         },
         "source": availability,
+        "provider": provider,
+        "source_documents": source_documents,
         "raw_path": str(raw_path),
         "raw_sha256": payload_sha256,
         "rates_path": str(CURRENT_MARKET_RATES) if output_rows else None,
         "rates_sha256": rates_sha256,
         "information_policy": {
             "closing_columns_used": False,
-            "primary_estimate": "de-vigged market-average 1X2 and over/under 2.5",
+            "primary_estimate": (
+                "de-vigged probability midpoint of best exchange back and lay"
+                if provider == "betfair_exchange_public_delayed"
+                else "de-vigged market-average 1X2 and over/under 2.5"
+            ),
+            "provider": provider,
+            "betfair_exchange_price_method": (
+                "probability midpoint of best back and lay"
+                if provider == "betfair_exchange_public_delayed"
+                else None
+            ),
+            "betfair_prices_are_delayed": provider == "betfair_exchange_public_delayed",
             "complete_event_required_for_shadow": True,
             "source_upload_must_precede_fpl_deadline": True,
+            "source_observation_must_precede_fpl_deadline": True,
             "partial_rows_have_no_decision_authority": True,
         },
     }
@@ -799,6 +1024,100 @@ def _load_current_market_receipt(
     if len(rows) != int(receipt["fixture_count"]):
         raise ValueError("Current market row count no longer matches its receipt")
     return receipt, rows
+
+
+def assess_current_market_materiality(
+    previous_receipt: dict[str, Any] | None,
+    previous_rows: list[dict[str, Any]],
+    current_receipt: dict[str, Any],
+    current_rows: list[dict[str, Any]],
+    *,
+    event: int,
+    goal_rate_threshold: float = MATERIAL_GOAL_RATE_DELTA,
+    clean_sheet_threshold: float = MATERIAL_CLEAN_SHEET_DELTA,
+) -> dict[str, Any]:
+    """Compare two archived market generations using decision-facing thresholds.
+
+    Raw price movement is retained for provenance, but a 40+ minute policy search should not be
+    launched for exchange noise. Coverage changes fail closed; otherwise the maximum change in
+    inferred team goals or clean-sheet probability must cross a declared threshold.
+    """
+    if goal_rate_threshold <= 0 or clean_sheet_threshold <= 0:
+        raise ValueError("market materiality thresholds must be positive")
+
+    current_ready = event in {
+        int(value) for value in current_receipt.get("ready_events", [])
+    }
+    previous_ready = bool(
+        previous_receipt
+        and event
+        in {int(value) for value in previous_receipt.get("ready_events", [])}
+    )
+    reasons: list[str] = []
+    if current_ready != previous_ready:
+        reasons.append("decision_event_coverage_changed")
+
+    def fixture_rows(rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+        return {
+            int(row["fixture_id"]): row
+            for row in rows
+            if int(row.get("event") or -1) == event and row.get("fixture_id") is not None
+        }
+
+    previous_by_fixture = fixture_rows(previous_rows)
+    current_by_fixture = fixture_rows(current_rows)
+    if current_ready and previous_ready and set(previous_by_fixture) != set(current_by_fixture):
+        reasons.append("decision_event_fixture_set_changed")
+
+    goal_deltas: list[tuple[float, int, str]] = []
+    clean_sheet_deltas: list[tuple[float, int, str]] = []
+    for fixture_id in sorted(set(previous_by_fixture).intersection(current_by_fixture)):
+        old = previous_by_fixture[fixture_id]
+        new = current_by_fixture[fixture_id]
+        for venue, goal_field, clean_field in (
+            ("home", "market_home_goal_rate", "home_clean_sheet_probability"),
+            ("away", "market_away_goal_rate", "away_clean_sheet_probability"),
+        ):
+            goal_deltas.append(
+                (abs(float(new[goal_field]) - float(old[goal_field])), fixture_id, venue)
+            )
+            clean_sheet_deltas.append(
+                (abs(float(new[clean_field]) - float(old[clean_field])), fixture_id, venue)
+            )
+    maximum_goal = max(goal_deltas, default=(0.0, 0, ""))
+    maximum_clean_sheet = max(clean_sheet_deltas, default=(0.0, 0, ""))
+    if maximum_goal[0] >= goal_rate_threshold:
+        reasons.append("team_goal_expectation_moved")
+    if maximum_clean_sheet[0] >= clean_sheet_threshold:
+        reasons.append("clean_sheet_expectation_moved")
+
+    previous_provider = previous_receipt.get("provider") if previous_receipt else None
+    current_provider = current_receipt.get("provider")
+    if previous_ready and current_ready and previous_provider != current_provider:
+        reasons.append("market_provider_changed")
+
+    changed = bool(reasons)
+    return {
+        "event": event,
+        "changed": changed,
+        "reasons": reasons,
+        "previous_ready": previous_ready,
+        "current_ready": current_ready,
+        "previous_provider": previous_provider,
+        "current_provider": current_provider,
+        "goal_rate_threshold": goal_rate_threshold,
+        "clean_sheet_threshold": clean_sheet_threshold,
+        "maximum_goal_rate_delta": maximum_goal[0],
+        "maximum_goal_rate_fixture_id": maximum_goal[1] or None,
+        "maximum_goal_rate_venue": maximum_goal[2] or None,
+        "maximum_clean_sheet_delta": maximum_clean_sheet[0],
+        "maximum_clean_sheet_fixture_id": maximum_clean_sheet[1] or None,
+        "maximum_clean_sheet_venue": maximum_clean_sheet[2] or None,
+        "previous_fingerprint": (
+            previous_receipt.get("semantic_fingerprint") if previous_receipt else None
+        ),
+        "current_fingerprint": current_receipt.get("semantic_fingerprint"),
+    }
 
 
 def current_market_goal_rates(
@@ -878,6 +1197,7 @@ def apply_current_market_shadow_rates(
     return base, {
         "status": "ready_shadow",
         "decision_authority": False,
+        "provider": receipt.get("provider"),
         "requested_events": list(events),
         "overridden_events": ready_events,
         "internal_only_events": sorted(set(events) - set(ready_events)),
@@ -892,4 +1212,65 @@ def apply_current_market_shadow_rates(
             "Zero authority until sequential transfer replay and prospective receipts show "
             "a stable points gain; missing future events retain internal rates."
         ),
+    }
+
+
+def apply_current_market_decision_rates(
+    incumbent: dict[tuple[int, int, int], tuple[float, float]],
+    *,
+    events: tuple[int, ...],
+    receipt_path: Path = CURRENT_MARKET_RECEIPT,
+    rates_path: Path = CURRENT_MARKET_RATES,
+    calibration_path: Path = BETFAIR_CALIBRATION_RESULTS,
+) -> tuple[dict[tuple[int, int, int], tuple[float, float]], dict[str, Any]]:
+    """Apply only a historically promoted, fully covered market blend to decisions."""
+    market, diagnostics = apply_current_market_shadow_rates(
+        incumbent,
+        events=events,
+        receipt_path=receipt_path,
+        rates_path=rates_path,
+    )
+    if diagnostics.get("status") != "ready_shadow":
+        return dict(incumbent), {**diagnostics, "production_weight": 0.0}
+    if diagnostics.get("provider") != "betfair_exchange_public_delayed":
+        return dict(incumbent), {
+            **diagnostics,
+            "production_weight": 0.0,
+            "production_reason": "provider has no provider-specific promotion receipt",
+        }
+    try:
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return dict(incumbent), {
+            **diagnostics,
+            "production_weight": 0.0,
+            "production_reason": f"Betfair calibration is unavailable: {error}",
+        }
+    policy = calibration.get("production_policy") or {}
+    weight = float(policy.get("goal_rate_weight") or 0.0)
+    if not bool(policy.get("decision_authority")) or not 0.0 < weight <= 1.0:
+        return dict(incumbent), {
+            **diagnostics,
+            "production_weight": 0.0,
+            "production_reason": "Betfair held-out legal-policy gate has not promoted authority",
+            "calibration_verdict": calibration.get("verdict"),
+            "calibration_path": str(calibration_path),
+            "calibration_sha256": hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
+        }
+    blended = {
+        key: (
+            (1.0 - weight) * incumbent[key][0] + weight * market[key][0],
+            (1.0 - weight) * incumbent[key][1] + weight * market[key][1],
+        )
+        for key in incumbent
+    }
+    return blended, {
+        **diagnostics,
+        "status": "ready_production",
+        "decision_authority": True,
+        "production_weight": weight,
+        "calibration_verdict": calibration.get("verdict"),
+        "calibration_path": str(calibration_path),
+        "calibration_sha256": hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
+        "production_reason": "provider-specific held-out gate passed",
     }

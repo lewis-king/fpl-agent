@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fplagent_data.database import build_catalog
 
+from .adaptive_preseason import run_adaptive_preseason_stress
 from .appearance_audit import audit_appearance_reliability
 from .appearance_challenger import run_appearance_challenger
 from .appearance_policy_replay import (
@@ -16,11 +17,16 @@ from .appearance_role_challenger import (
     run_role_appearance_challenger,
     run_role_appearance_policy_replay,
 )
+from .attacking_chance_challenger import run_attacking_chance_challenger
 from .audit import audit_features
 from .availability_watch import audit_availability_watch
+from .bench_allocation_audit import run_bench_allocation_audit
 from .bench_audit import run_bench_audit
+from .bench_history import run_historical_bench_depth_audit
+from .betfair_calibration import run_betfair_exchange_calibration
 from .bps_external_validation import validate_external_bps_reconstruction
 from .bps_reconstruction import reconstruct_2026_27_bps
+from .captain_return_challenger import run_captain_return_replay
 from .challenger_registry import build_challenger_registry
 from .chip_schedule_history import build_historical_chip_schedule_opportunities
 from .component_backtest import run_component_player_backtest
@@ -29,12 +35,16 @@ from .component_models import forecast_components, train_component_models
 from .component_simulator import run_component_tournament, train_goal_model
 from .current_squad_audit import run_current_squad_audit
 from .deadline_evidence import audit_deadline_evidence
+from .deadline_pack import build_deadline_pack
 from .deadline_pipeline import run_weekly_deadline_pipeline
 from .decision_synthesis import run_decision_synthesis
 from .features import build as build_features
 from .fixture_ablation import run_fixture_ablation
 from .form_reversion import run_form_reversion_challenger
 from .horizon_audit import run_horizon_audit
+from .horizon_decay_replay import run_horizon_decay_replay
+from .lead_time_challenger import run_lead_time_challenger
+from .market_feature_challenger import run_market_feature_challenger
 from .market_odds import (
     build_current_market_goal_rates,
     build_historical_market_goal_rates,
@@ -46,6 +56,7 @@ from .mini_league import run_mini_league_shadow
 from .models import forecast, require_cuda, train
 from .one_swap_audit import run_one_swap_audit
 from .optimizer import select_initial_squad
+from .participation_scoreboard import build_participation_scoreboard
 from .picker_backtest import evaluate_picker
 from .preseason_pipeline import run_gw1_deadline_pipeline
 from .preseason_role_scenario import run_preseason_role_scenario_audit
@@ -56,13 +67,20 @@ from .prospective_dashboard import build_prospective_scoreboard
 from .prospective_scoring import score_weekly_event
 from .return_distribution import run_return_distribution_challenger
 from .robust_search import run_robust_search
+from .role_residual_challenger import run_role_residual_challenger
 from .rules_audit import audit_2026_27_rules
 from .schedule_rearrangement import build_rearrangement_model
 from .schedule_scenarios import build_schedule_receipt
+from .sota_readiness import build_sota_readiness_audit
 from .squad_chip_replay import run_squad_chip_retention_replay
+from .structure_stress import run_structure_stress
+from .synthesis_selector_replay import run_synthesis_selector_replay
 from .team_chip_replay import run_team_chip_retention_replay
 from .tournament import run_tournament
 from .transfer_value import run_transfer_value_calibration
+from .understat_challenger import run_understat_challenger
+from .weekly_rehearsal import run_weekly_rehearsal
+from .whitepaper import build_algorithm_whitepaper
 
 
 def parser() -> argparse.ArgumentParser:
@@ -84,8 +102,22 @@ def parser() -> argparse.ArgumentParser:
     current_market.add_argument("--horizon", type=int, default=5)
     commands.add_parser("replay-market-goals")
     commands.add_parser("replay-market-transfers")
+    commands.add_parser("calibrate-betfair-exchange")
+    commands.add_parser("backtest-market-features")
+    commands.add_parser("backtest-attacking-chance")
+    commands.add_parser("backtest-understat")
     commands.add_parser("backtest-return-distribution")
+    commands.add_parser("replay-captain-returns")
     commands.add_parser("replay-form-reversion")
+    commands.add_parser("calibrate-horizon-decay")
+    commands.add_parser("calibrate-synthesis-selector")
+    commands.add_parser("audit-structure-stress")
+    commands.add_parser("build-deadline-pack")
+    commands.add_parser("audit-sota-readiness")
+    commands.add_parser("build-algorithm-whitepaper")
+    commands.add_parser("backtest-role-residual")
+    commands.add_parser("backtest-lead-time")
+    commands.add_parser("stress-adaptive-preseason")
     squad = commands.add_parser("squad")
     squad.add_argument("--stability-samples", type=int, default=20)
     tournament = commands.add_parser("tournament")
@@ -110,6 +142,13 @@ def parser() -> argparse.ArgumentParser:
     bench_audit = commands.add_parser("bench-audit")
     bench_audit.add_argument("--simulations", type=int, default=25_000)
     bench_audit.add_argument("--seed", type=int, default=20260803)
+    bench_allocation = commands.add_parser("audit-bench-allocation")
+    bench_allocation.add_argument("--simulations", type=int, default=25_000)
+    bench_allocation.add_argument("--five-week-seed", type=int, default=20260818)
+    bench_allocation.add_argument("--eight-week-seed", type=int, default=20260820)
+    bench_allocation.add_argument("--top-historical-band", type=int, default=24)
+    bench_history = commands.add_parser("audit-bench-history")
+    bench_history.add_argument("--refresh-forecasts", action="store_true")
     current_squad_audit = commands.add_parser("audit-current-squad")
     current_squad_audit.add_argument("--selection-simulations", type=int, default=5_000)
     current_squad_audit.add_argument("--holdout-simulations", type=int, default=25_000)
@@ -210,6 +249,15 @@ def parser() -> argparse.ArgumentParser:
     deadline_run.add_argument("--max-paid-transfers", type=int, default=2)
     deadline_run.add_argument("--residual-simulations", type=int, default=10_000)
     deadline_run.add_argument("--component-simulations", type=int, default=25_000)
+    weekly_rehearsal = commands.add_parser("rehearse-weekly-decision")
+    weekly_rehearsal.add_argument("--event", type=int, default=2)
+    weekly_rehearsal.add_argument("--horizon", type=int, default=5)
+    weekly_rehearsal.add_argument("--observed-at")
+    weekly_rehearsal.add_argument("--alternatives-per-transfer-count", type=int, default=4)
+    weekly_rehearsal.add_argument("--max-total-transfers", type=int, default=5)
+    weekly_rehearsal.add_argument("--max-paid-transfers", type=int, default=2)
+    weekly_rehearsal.add_argument("--residual-simulations", type=int, default=10_000)
+    weekly_rehearsal.add_argument("--component-simulations", type=int, default=25_000)
     gw1_deadline_run = commands.add_parser("gw1-deadline-run")
     gw1_deadline_run.add_argument("--as-of")
     gw1_deadline_run.add_argument("--reuse-latest-official", action="store_true")
@@ -220,6 +268,7 @@ def parser() -> argparse.ArgumentParser:
     score_event.add_argument("--event", type=int, required=True)
     score_event.add_argument("--decision", type=Path)
     commands.add_parser("prospective-scoreboard")
+    commands.add_parser("participation-scoreboard")
     commands.add_parser("challenger-registry")
     mini_league = commands.add_parser("mini-league-shadow")
     mini_league.add_argument("--decision", type=Path, required=True)
@@ -317,6 +366,71 @@ def main() -> None:
                 },
             }
         )
+    elif args.command == "calibrate-betfair-exchange":
+        result = run_betfair_exchange_calibration()
+        _print(
+            {
+                "report": "reports/betfair-exchange-calibration.md",
+                "results": "data/model/betfair_exchange_policy_v1/results.json",
+                "verdict": result["verdict"],
+                "selected_weight": result["selected_weight"],
+                "production_weight": result["production_weight"],
+                "policy_gate": result["policy_gate"],
+            }
+        )
+    elif args.command == "backtest-market-features":
+        result = run_market_feature_challenger()
+        _print(
+            {
+                "report": "reports/market-feature-player-policy.md",
+                "results": "data/model/market_feature_v1/results.json",
+                "verdict": result["verdict"],
+                "production_policy": result["production_policy"],
+                "unbounded_independent_test_gate": result["independent_policy"][
+                    "test_gate"
+                ],
+                "bounded_deployment_independent": {
+                    key: result["deployment_independent"][key]
+                    for key in ("weight", "total_delta", "gate")
+                },
+                "sequential_gate": {
+                    key: result["sequential_policy"][key]
+                    for key in (
+                        "passed",
+                        "selected_weight",
+                        "checks",
+                        "validation_total_delta",
+                        "test_total_delta",
+                        "test_mean_delta",
+                        "interval",
+                    )
+                },
+            }
+        )
+    elif args.command == "backtest-attacking-chance":
+        result = run_attacking_chance_challenger()
+        _print(
+            {
+                "report": "reports/attacking-chance-quality-challenger.md",
+                "results": "data/model/attacking_chance_v1/results.json",
+                "verdict": result["verdict"],
+                "selected_weight": result["sequential_policy"]["selected_weight"],
+                "gate": result["gate"],
+                "production_policy": result["production_policy"],
+            }
+        )
+    elif args.command == "backtest-understat":
+        result = run_understat_challenger()
+        _print(
+            {
+                "report": "reports/understat-preseason-feature-challenger.md",
+                "results": "data/model/understat_preseason_v1/results.json",
+                "verdict": result["verdict"],
+                "selected_weight": result["sequential_policy"]["selected_weight"],
+                "gate": result["gate"],
+                "production_policy": result["production_policy"],
+            }
+        )
     elif args.command == "backtest-return-distribution":
         result = run_return_distribution_challenger()
         _print(
@@ -325,6 +439,17 @@ def main() -> None:
                 "results": "data/model/return_distribution_v1/results.json",
                 "verdict": result["verdict"],
                 "selected_challenger_weight": result["selected_challenger_weight"],
+                "gate": result["gate"],
+            }
+        )
+    elif args.command == "replay-captain-returns":
+        result = run_captain_return_replay()
+        _print(
+            {
+                "report": "reports/captain-return-policy-replay.md",
+                "results": "data/model/captain_return_policy_v1/results.json",
+                "verdict": result["verdict"],
+                "selected_weight": result["selected_weight"],
                 "gate": result["gate"],
             }
         )
@@ -345,6 +470,70 @@ def main() -> None:
                     "selected_correction_weight"
                 ],
                 "gate": replay["gate"],
+            }
+        )
+    elif args.command == "calibrate-horizon-decay":
+        result = run_horizon_decay_replay()
+        _print(
+            {
+                "report": "reports/horizon-decay-policy-replay.md",
+                "results": "data/model/horizon_decay_replay_v1/results.json",
+                "verdict": result["verdict"],
+                "selected_configuration": result["selected_configuration"],
+                "production_configuration": result["production_configuration"],
+                "promotion_gate": result["promotion_gate"],
+            }
+        )
+    elif args.command == "backtest-role-residual":
+        result = run_role_residual_challenger()
+        _print(
+            {
+                "report": "reports/role-residual-policy-replay.md",
+                "results": "data/model/role_residual_v1/results.json",
+                "verdict": result["verdict"],
+                "eligible_positions": result["eligible_positions"],
+                "policy_replay": {
+                    key: result["policy_replay"][key]
+                    for key in (
+                        "selection_total_delta",
+                        "frozen_test_total_delta",
+                        "passed",
+                    )
+                },
+            }
+        )
+    elif args.command == "backtest-lead-time":
+        result = run_lead_time_challenger()
+        _print(
+            {
+                "report": "reports/lead-time-forecast-policy-replay.md",
+                "results": "data/model/lead_time_v1/results.json",
+                "verdict": result["verdict"],
+                "eligible_positions": result["eligible_positions"],
+                "adaptive_replay": {
+                    key: result["adaptive_replay"][key]
+                    for key in (
+                        "selection_total_delta",
+                        "frozen_test_total_delta",
+                        "passed",
+                    )
+                },
+            }
+        )
+    elif args.command == "stress-adaptive-preseason":
+        result = run_adaptive_preseason_stress()
+        tournament = result["tournament"]
+        _print(
+            {
+                "report": "reports/adaptive-preseason-lead-stress.md",
+                "results": "data/model/adaptive_preseason_v1/results.json",
+                "verdict": result["verdict"],
+                "production_changed": result["production_changed"],
+                "leader": tournament["leader"]["candidate_id"],
+                "incumbent": tournament["incumbent"]["candidate_id"],
+                "full_pipeline_request_gate": tournament[
+                    "full_pipeline_request_gate"
+                ],
             }
         )
     elif args.command == "squad":
@@ -390,6 +579,48 @@ def main() -> None:
                 seed=args.seed,
             )
         )
+    elif args.command == "calibrate-synthesis-selector":
+        result = run_synthesis_selector_replay()
+        print(
+            json.dumps(
+                {
+                    "verdict": result["verdict"],
+                    "production_configuration": result["production_configuration"],
+                    "report": "reports/synthesis-selector-policy-replay.md",
+                },
+                indent=2,
+            )
+        )
+    elif args.command == "audit-structure-stress":
+        result = run_structure_stress()
+        print(
+            json.dumps(
+                {
+                    "verdict": result["verdict"],
+                    "published_candidate_id": result["published_candidate_id"],
+                    "stress_leader_id": result["stress_leader_id"],
+                    "report": "reports/gw1-scoring-formation-autosub-stress.md",
+                },
+                indent=2,
+            )
+        )
+    elif args.command == "build-deadline-pack":
+        result = build_deadline_pack()
+        print(
+            json.dumps(
+                {
+                    "verdict": result["verdict"],
+                    "candidate_id": result["decision"]["candidate_id"],
+                    "report": "reports/gw1-deadline-pack.md",
+                    "receipt": "data/manifests/gw1-deadline-pack.json",
+                },
+                indent=2,
+            )
+        )
+    elif args.command == "audit-sota-readiness":
+        _print(build_sota_readiness_audit())
+    elif args.command == "build-algorithm-whitepaper":
+        _print(build_algorithm_whitepaper())
     elif args.command == "forecast-components":
         _print(forecast_components())
     elif args.command == "component-candidates":
@@ -437,6 +668,42 @@ def main() -> None:
                 "report": "reports/bench-and-formation-adversarial-review.md",
                 "results": "data/model/bench_audit_v1/results.json",
                 "verdict": result["verdict"],
+            }
+        )
+    elif args.command == "audit-bench-allocation":
+        result = run_bench_allocation_audit(
+            simulations=args.simulations,
+            five_week_seed=args.five_week_seed,
+            eight_week_seed=args.eight_week_seed,
+            top_historical_band=args.top_historical_band,
+        )
+        _print(
+            {
+                "report": "reports/current-season-bench-allocation-audit.md",
+                "results": "data/model/bench_allocation_audit_v2/results.json",
+                "verdict": result["verdict"],
+                "active": result["current"]["candidate_id"],
+                "targeted_winner": result["targeted_winner"]["candidate_id"],
+                "best_historical_band": result["best_historical_band_challenger"][
+                    "candidate_id"
+                ],
+            }
+        )
+    elif args.command == "audit-bench-history":
+        result = run_historical_bench_depth_audit(
+            refresh_forecasts=args.refresh_forecasts
+        )
+        _print(
+            {
+                "report": "reports/historical-bench-depth-audit.md",
+                "results": "data/model/bench_history_v1/results.json",
+                "verdict": result["verdict"],
+                "opening_windows": {
+                    key: value
+                    for key, value in result["opening_windows"].items()
+                    if key != "by_season"
+                },
+                "paired_vs_lean": result["rolling_windows"]["paired_vs_lean"],
             }
         )
     elif args.command == "audit-current-squad":
@@ -788,6 +1055,19 @@ def main() -> None:
                 component_simulations=args.component_simulations,
             )
         )
+    elif args.command == "rehearse-weekly-decision":
+        _print(
+            run_weekly_rehearsal(
+                event=args.event,
+                horizon=args.horizon,
+                observed_at=args.observed_at,
+                alternatives_per_transfer_count=args.alternatives_per_transfer_count,
+                max_total_transfers=args.max_total_transfers,
+                max_paid_transfers=args.max_paid_transfers,
+                residual_simulations=args.residual_simulations,
+                component_simulations=args.component_simulations,
+            )
+        )
     elif args.command == "gw1-deadline-run":
         result = run_gw1_deadline_pipeline(
             as_of=args.as_of,
@@ -828,6 +1108,8 @@ def main() -> None:
                 "report": "reports/prospective-season-scoreboard.md",
             }
         )
+    elif args.command == "participation-scoreboard":
+        _print(build_participation_scoreboard())
     elif args.command == "challenger-registry":
         result = build_challenger_registry()
         _print(

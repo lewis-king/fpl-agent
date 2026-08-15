@@ -25,6 +25,23 @@ FEATURE_AVAILABILITY = NORMALIZED / "feature_availability.parquet"
 
 POSITIONS = ("GK", "DEF", "MID", "FWD")
 
+# These columns may exist in lossless official snapshots, but they must never
+# influence an FPLAgent forecast. Keep this denylist close to the production
+# feature allowlist so training and inference can enforce the same contract.
+FORBIDDEN_OFFICIAL_FORECAST_FEATURES = frozenset({"xP", "ep_this", "ep_next"})
+
+ATTACKING_HISTORY_FEATURES = (
+    "form10_goals",
+    "form10_assists",
+    "form10_xg",
+    "form10_xa",
+    "form38_goals",
+    "form38_assists",
+    "form38_xg",
+    "form38_xa",
+    "form38_minutes",
+)
+
 LEGACY_MODEL_FEATURES = (
     "fixture_count",
     "home_fraction",
@@ -116,6 +133,16 @@ MODEL_FEATURES = (
 )
 
 
+def assert_independent_forecast_features(feature_names: tuple[str, ...]) -> None:
+    forbidden = sorted(FORBIDDEN_OFFICIAL_FORECAST_FEATURES.intersection(feature_names))
+    if forbidden:
+        joined = ", ".join(forbidden)
+        raise RuntimeError(
+            "Official FPL expected-points fields are forbidden in FPLAgent models: "
+            f"{joined}"
+        )
+
+
 def _sql_path(path: Path) -> str:
     return str(path.resolve()).replace("'", "''")
 
@@ -149,6 +176,15 @@ def _feature_registry() -> int:
         "form5_assists",
         "form5_xg",
         "form5_xa",
+        "form10_goals",
+        "form10_assists",
+        "form10_xg",
+        "form10_xa",
+        "form38_goals",
+        "form38_assists",
+        "form38_xg",
+        "form38_xa",
+        "form38_minutes",
         "form5_bps",
         "form5_clean_sheets",
         "form5_defensive_contribution",
@@ -177,7 +213,11 @@ def _feature_registry() -> int:
         "deadline_proxy_available",
     }
     rows = []
-    registry_features = tuple(dict.fromkeys((*LEGACY_MODEL_FEATURES, *MODEL_FEATURES)))
+    registry_features = tuple(
+        dict.fromkeys(
+            (*LEGACY_MODEL_FEATURES, *MODEL_FEATURES, *ATTACKING_HISTORY_FEATURES)
+        )
+    )
     for name in registry_features:
         if name in lagged:
             source = "prior_finalized_match_outcomes"
@@ -202,8 +242,24 @@ def _feature_registry() -> int:
         [
             {
                 "feature": "xP",
-                "source": "historical_ep_this",
-                "availability_rule": "timing uncertain/post-match",
+                "source": "official_fpl_expected_points_alias",
+                "availability_rule": "forbidden as an input or fallback",
+                "production_allowed": False,
+                "same_gameweek_outcome_allowed": False,
+                "version": 1,
+            },
+            {
+                "feature": "ep_this",
+                "source": "official_fpl_expected_points",
+                "availability_rule": "forbidden as an input or fallback",
+                "production_allowed": False,
+                "same_gameweek_outcome_allowed": False,
+                "version": 1,
+            },
+            {
+                "feature": "ep_next",
+                "source": "official_fpl_expected_points",
+                "availability_rule": "forbidden as an input or fallback",
                 "production_allowed": False,
                 "same_gameweek_outcome_allowed": False,
                 "version": 1,
@@ -413,6 +469,15 @@ def _training_query() -> str:
                 avg(assists) OVER player_5 AS form5_assists,
                 avg(xg) OVER player_5 AS form5_xg,
                 avg(xa) OVER player_5 AS form5_xa,
+                avg(goals) OVER player_10 AS form10_goals,
+                avg(assists) OVER player_10 AS form10_assists,
+                avg(xg) OVER player_10 AS form10_xg,
+                avg(xa) OVER player_10 AS form10_xa,
+                avg(goals) OVER player_38 AS form38_goals,
+                avg(assists) OVER player_38 AS form38_assists,
+                avg(xg) OVER player_38 AS form38_xg,
+                avg(xa) OVER player_38 AS form38_xa,
+                avg(target_minutes) OVER player_38 AS form38_minutes,
                 avg(bps) OVER player_5 AS form5_bps,
                 avg(clean_sheets) OVER player_5 AS form5_clean_sheets,
                 avg(defensive_contribution) OVER player_5
@@ -494,6 +559,15 @@ def _training_query() -> str:
             h.form5_assists,
             h.form5_xg,
             h.form5_xa,
+            h.form10_goals,
+            h.form10_assists,
+            h.form10_xg,
+            h.form10_xa,
+            h.form38_goals,
+            h.form38_assists,
+            h.form38_xg,
+            h.form38_xa,
+            h.form38_minutes,
             h.form5_bps,
             h.form5_clean_sheets,
             h.form5_defensive_contribution,
@@ -660,6 +734,15 @@ def _current_query(horizon: int, *, start_event: int = 1) -> str:
                 avg(assists) FILTER (WHERE recency <= 5) AS form5_assists,
                 avg(xg) FILTER (WHERE recency <= 5) AS form5_xg,
                 avg(xa) FILTER (WHERE recency <= 5) AS form5_xa,
+                avg(goals) FILTER (WHERE recency <= 10) AS form10_goals,
+                avg(assists) FILTER (WHERE recency <= 10) AS form10_assists,
+                avg(xg) FILTER (WHERE recency <= 10) AS form10_xg,
+                avg(xa) FILTER (WHERE recency <= 10) AS form10_xa,
+                avg(goals) FILTER (WHERE recency <= 38) AS form38_goals,
+                avg(assists) FILTER (WHERE recency <= 38) AS form38_assists,
+                avg(xg) FILTER (WHERE recency <= 38) AS form38_xg,
+                avg(xa) FILTER (WHERE recency <= 38) AS form38_xa,
+                avg(minutes) FILTER (WHERE recency <= 38) AS form38_minutes,
                 avg(bps) FILTER (WHERE recency <= 5) AS form5_bps,
                 avg(clean_sheets) FILTER (WHERE recency <= 5) AS form5_clean_sheets,
                 avg(defensive_contribution) FILTER (WHERE recency <= 5)
@@ -801,6 +884,15 @@ def _current_query(horizon: int, *, start_event: int = 1) -> str:
             pp.form5_assists,
             pp.form5_xg,
             pp.form5_xa,
+            pp.form10_goals,
+            pp.form10_assists,
+            pp.form10_xg,
+            pp.form10_xa,
+            pp.form38_goals,
+            pp.form38_assists,
+            pp.form38_xg,
+            pp.form38_xa,
+            pp.form38_minutes,
             pp.form5_bps,
             pp.form5_clean_sheets,
             pp.form5_defensive_contribution,

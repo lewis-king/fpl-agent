@@ -384,8 +384,21 @@ class PreseasonSquadService:
         payload = self.current_payload()
         observed_at = str(snapshot.get("observed_at") or _utc_now())
         entry_id = int(snapshot["entry_id"])
+        squad_identity = [
+            {
+                "element": int(row["element"]),
+                "position": int(row["position"]),
+                "captain": bool(row.get("is_captain")),
+                "vice_captain": bool(row.get("is_vice_captain")),
+            }
+            for row in sorted(raw_picks, key=lambda item: int(item["position"]))
+        ]
         candidate_id = "M-" + hashlib.sha256(
-            f"{entry_id}:{observed_at}:{self._current_player_ids()}".encode()
+            json.dumps(
+                {"entry_id": entry_id, "picks": squad_identity},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
         ).hexdigest()[:10]
         payload["created_at"] = observed_at
         payload["decision_status"] = "synced-manager-state"

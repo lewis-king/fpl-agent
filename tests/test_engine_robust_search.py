@@ -158,3 +158,59 @@ def test_seed_candidate_lineage_is_forecast_scoped_not_calibration_scoped(
 
     assert order == [tuple(range(1, 16))]
     assert origins[tuple(range(1, 16))] == {"S001"}
+
+
+def test_adaptive_challenger_is_protected_only_for_matching_forecast(
+    tmp_path, monkeypatch
+) -> None:
+    residual = tmp_path / "residual.json"
+    component = tmp_path / "component.json"
+    adaptive = tmp_path / "adaptive.json"
+    residual.write_text(
+        json.dumps(
+            {
+                "forecast_sha256": "current",
+                "candidates": [{"candidate_id": "S001", "selected": list(range(1, 16))}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    component.write_text(
+        json.dumps({"forecast_sha256": "current", "candidates": []}),
+        encoding="utf-8",
+    )
+    adaptive.write_text(
+        json.dumps(
+            {
+                "verdict": "REQUEST_FULL_PIPELINE",
+                "lineage": {"current_forecast_sha256": "current"},
+                "tournament": {
+                    "full_pipeline_request_gate": {"passed": True},
+                    "leader": {
+                        "candidate_id": "AP-001",
+                        "candidate": {"selected": list(range(16, 31))},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("fplagent_engine.robust_search.CANDIDATES_JSON", residual)
+    monkeypatch.setattr(
+        "fplagent_engine.robust_search.COMPONENT_CANDIDATES_JSON", component
+    )
+    monkeypatch.setattr("fplagent_engine.robust_search.ADAPTIVE_RESULTS", adaptive)
+
+    origins, order = _load_seed_squads("current")
+
+    adaptive_squad = tuple(range(16, 31))
+    assert adaptive_squad in order
+    assert origins[adaptive_squad] == {"AP-001", "adaptive-lead-shadow"}
+
+    adaptive_payload = json.loads(adaptive.read_text(encoding="utf-8"))
+    adaptive_payload["lineage"]["current_forecast_sha256"] = "old-forecast"
+    adaptive.write_text(json.dumps(adaptive_payload), encoding="utf-8")
+    origins, order = _load_seed_squads("current")
+
+    assert adaptive_squad not in order
+    assert adaptive_squad not in origins

@@ -19,6 +19,7 @@ from fplagent_engine.manager_state_store import (
 
 from .chat_gateway import ChatGateway, ChatGatewayError, LocalQwenGateway
 from .deadline_scheduler import DeadlineRefreshScheduler
+from .decision_change_probe import DecisionChangeProbe
 from .decision_refresh import WorkspaceRefreshCoordinator
 from .market_telemetry_scheduler import MarketTelemetryScheduler
 from .mcp_gateway import FplMcpError, LocalFplMcpGateway
@@ -44,7 +45,6 @@ from .models import (
     WorkspaceRefreshView,
     WorkspaceView,
 )
-from .official_change_probe import OfficialChangeProbe
 from .preseason import PreseasonSquadError, PreseasonSquadService
 from .profile import ManagerProfileStore
 from .uploads import UploadStore, UploadStoreError
@@ -92,7 +92,9 @@ def deadline_refresh_scheduler() -> DeadlineRefreshScheduler:
         workspace_loader=lambda: workspace_builder().build(),
         profile_loader=lambda: manager_profile_store().get(),
         refresh_coordinator=workspace_refresh_coordinator(),
-        material_probe=OfficialChangeProbe().probe,
+        material_probe=DecisionChangeProbe(
+            event_resolver=current_actionable_event,
+        ).probe,
     )
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -282,7 +283,7 @@ def load_squad_chip_retention_results(path=RESULTS) -> dict[str, Any]:
         if name.endswith("_sha256"):
             continue
         expected = result["artifacts"].get(f"{name}_sha256")
-        if expected and sha256_file(artifact) != expected:
+        if expected and sha256_file(Path(str(artifact))) != expected:
             raise ValueError(f"squad-chip retention artifact changed: {name}")
     return {
         **result,

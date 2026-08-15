@@ -16,6 +16,9 @@ from fplagent_data.database import build_catalog
 from fplagent_data.event_outcomes import sync_finalized_event_outcomes
 from fplagent_data.http import sha256_file
 from fplagent_data.live_snapshots import latest_official_status
+from fplagent_data.participation_consensus import CONSENSUS as PARTICIPATION_CONSENSUS
+from fplagent_data.participation_consensus import RECEIPT as PARTICIPATION_RECEIPT
+from fplagent_data.participation_consensus import collect_participation_consensus
 from fplagent_data.paths import MANIFESTS
 
 from .audit import audit_features
@@ -217,11 +220,16 @@ def run_weekly_deadline_pipeline(
     decision_archive_root: Path = WEEKLY_DECISION_ARCHIVE_ROOT,
     pipeline_receipt_path: Path = WEEKLY_PIPELINE_RECEIPT,
     deadline_status_path: Path = DEADLINE_STATUS_RECEIPT,
+    participation_receipt_path: Path = PARTICIPATION_RECEIPT,
+    participation_consensus_path: Path = PARTICIPATION_CONSENSUS,
     refresh_runner: Callable[..., Mapping[str, Any]] = refresh_current_generation,
     event_resolver: Callable[[], int] = current_actionable_event,
     state_deriver: Callable[..., Mapping[str, Any]] | None = None,
     decision_runner: Callable[..., Mapping[str, Any]] = run_weekly_decision,
     evidence_auditor: Callable[..., Mapping[str, Any]] = audit_deadline_evidence,
+    participation_refresher: Callable[..., Mapping[str, Any]] = (
+        collect_participation_consensus
+    ),
     rules_loader: Callable[[], SquadRules] = load_rules,
 ) -> dict[str, Any]:
     checked = _aware(as_of)
@@ -236,6 +244,22 @@ def run_weekly_deadline_pipeline(
         )
     )
     event = event_resolver()
+    try:
+        participation_refresh = dict(
+            participation_refresher(
+                event=event,
+                observed_at=checked_text,
+                forecast_path=direct_forecast_path,
+                receipt_path=participation_receipt_path,
+                consensus_path=participation_consensus_path,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        participation_refresh = {
+            "status": "unavailable",
+            "production_weight": 0.0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     rules = rules_loader()
     derive = state_deriver or (
         lambda entry_id, decision_event: derive_latest_manager_state(
@@ -254,6 +278,7 @@ def run_weekly_deadline_pipeline(
             "manager_entry_id": manager_entry_id,
             "event": event,
             "manager_state": derived,
+            "participation_evidence": participation_refresh,
             "published": False,
             "message": str(derived.get("message") or "Exact manager state is unavailable."),
         }
@@ -400,6 +425,7 @@ def run_weekly_deadline_pipeline(
         "input_fingerprint": input_fingerprint,
         "input_identity": input_identity,
         "refresh": refresh,
+        "participation_evidence": participation_refresh,
         "manager_state": derived,
         "staged_decision": str(staged_path),
         "published_decision": str(published_decision_path),

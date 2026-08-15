@@ -33,6 +33,7 @@ from .market_odds import (
     CURRENT_FPL_EVENTS,
     CURRENT_MARKET_RATES,
     CURRENT_MARKET_RECEIPT,
+    apply_current_market_decision_rates,
     apply_current_market_shadow_rates,
 )
 from .mini_league import (
@@ -878,7 +879,11 @@ def simulate_production_weekly_scenarios(
     )
 
     train_goal_model(force=False, seed=component_seed)
-    goal_rates, goal_diagnostics = predict_current_goal_rates(by_player, events)
+    incumbent_goal_rates, goal_diagnostics = predict_current_goal_rates(by_player, events)
+    goal_rates, market_decision = apply_current_market_decision_rates(
+        incumbent_goal_rates,
+        events=events,
+    )
     empirical = calibrate_empirical_components()
     (
         component_player_ids,
@@ -915,9 +920,10 @@ def simulate_production_weekly_scenarios(
         horizon_decay=horizon_decay,
     )
     market_goal_rates, market_shadow = apply_current_market_shadow_rates(
-        goal_rates,
+        incumbent_goal_rates,
         events=events,
     )
+    market_shadow["production_application"] = market_decision
     if market_shadow["status"] == "ready_shadow":
         (
             market_player_ids,

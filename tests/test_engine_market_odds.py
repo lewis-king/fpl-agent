@@ -6,9 +6,13 @@ import json
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
+from fplagent_engine import market_odds
 from fplagent_engine.market_odds import (
+    apply_current_market_decision_rates,
     apply_current_market_shadow_rates,
+    assess_current_market_materiality,
     assess_current_market_source,
     infer_goal_rates,
     market_consensus_diagnostics,
@@ -161,6 +165,145 @@ def test_current_market_coverage_selects_next_event_and_reports_partial_horizon(
     assert result["event_coverage"][1]["ready"] is False
 
 
+def test_current_market_coverage_applies_explicit_provider_team_aliases() -> None:
+    payload = _current_source_payload(
+        [
+            {
+                "Div": "E0",
+                "HomeTeam": "Nottm Forest",
+                "AwayTeam": "Coventry",
+                "AvgH": "1.80",
+                "AvgD": "3.80",
+                "AvgA": "4.50",
+                "Avg>2.5": "1.85",
+                "Avg<2.5": "2.00",
+            }
+        ]
+    )
+    result = assess_current_market_source(
+        payload,
+        "Latest fixtures uploaded: 09/08/26 18:00 UK time",
+        season="2026-27",
+        event=1,
+        horizon=1,
+        fpl_fixtures=[{"event": 1, "team_h": 1, "team_a": 2}],
+        fpl_teams=[
+            {"id": 1, "name": "Nott'm Forest"},
+            {"id": 2, "name": "Coventry City"},
+        ],
+        fpl_events=[
+            {
+                "id": 1,
+                "is_next": True,
+                "finished": False,
+                "deadline_time": "2026-08-21T17:30:00+00:00",
+            }
+        ],
+    )
+    assert result["ready_for_event"] is True
+    assert result["missing_fixtures"] == []
+
+
+def _materiality_row(
+    *, home_rate: float = 1.5, away_rate: float = 1.0
+) -> dict[str, object]:
+    return {
+        "event": 1,
+        "fixture_id": 101,
+        "market_home_goal_rate": home_rate,
+        "market_away_goal_rate": away_rate,
+        "home_clean_sheet_probability": float(np.exp(-away_rate)),
+        "away_clean_sheet_probability": float(np.exp(-home_rate)),
+    }
+
+
+def test_market_materiality_ignores_price_noise_but_detects_decision_moves() -> None:
+    receipt = {
+        "ready_events": [1],
+        "provider": "betfair_exchange_public_delayed",
+        "semantic_fingerprint": "old",
+    }
+    quiet = assess_current_market_materiality(
+        receipt,
+        [_materiality_row()],
+        {**receipt, "semantic_fingerprint": "new-quiet"},
+        [_materiality_row(home_rate=1.54, away_rate=1.02)],
+        event=1,
+    )
+    material = assess_current_market_materiality(
+        receipt,
+        [_materiality_row()],
+        {**receipt, "semantic_fingerprint": "new-material"},
+        [_materiality_row(home_rate=1.62, away_rate=1.0)],
+        event=1,
+    )
+
+    assert quiet["changed"] is False
+    assert quiet["maximum_goal_rate_delta"] == pytest.approx(0.04)
+    assert material["changed"] is True
+    assert "team_goal_expectation_moved" in material["reasons"]
+
+
+def test_market_materiality_treats_new_complete_coverage_as_material() -> None:
+    result = assess_current_market_materiality(
+        {"ready_events": [], "semantic_fingerprint": "old"},
+        [],
+        {"ready_events": [1], "semantic_fingerprint": "new"},
+        [_materiality_row()],
+        event=1,
+    )
+
+    assert result["changed"] is True
+    assert result["reasons"] == ["decision_event_coverage_changed"]
+
+
+def test_source_probe_falls_back_to_betfair_when_football_data_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixtures = [{"event": 1, "team_h": 1, "team_a": 2}]
+    teams = [{"id": 1, "name": "Arsenal"}, {"id": 2, "name": "Coventry City"}]
+    events = [
+        {
+            "id": 1,
+            "is_next": True,
+            "finished": False,
+            "deadline_time": "2026-08-21T17:30:00+00:00",
+        }
+    ]
+    monkeypatch.setattr(market_odds, "_current_fpl_rows", lambda: (fixtures, teams, events))
+    monkeypatch.setattr(
+        market_odds,
+        "_download",
+        lambda _url: (_ for _ in ()).throw(OSError("provider down")),
+    )
+    monkeypatch.setattr(
+        market_odds,
+        "collect_betfair_exchange_snapshot",
+        lambda: {
+            "observed_at": "2026-08-09T18:00:00+00:00",
+            "semantic_sha256": "betfair-generation",
+            "rows": [
+                {
+                    "Div": "E0",
+                    "HomeTeam": "Arsenal",
+                    "AwayTeam": "Coventry",
+                    "AvgH": 1.8,
+                    "AvgD": 3.8,
+                    "AvgA": 4.5,
+                    "Avg>2.5": 1.85,
+                    "Avg<2.5": 2.0,
+                }
+            ],
+        },
+    )
+
+    result = market_odds.current_season_source_available(event=1, horizon=1)
+
+    assert result["provider"] == "betfair_exchange_public_delayed"
+    assert result["ready_for_event"] is True
+    assert result["fallback_from"]["reason"] == "OSError: provider down"
+
+
 def test_market_consensus_records_book_disagreement_and_never_needs_closing_prices() -> None:
     diagnostics = market_consensus_diagnostics(
         {
@@ -271,3 +414,79 @@ def test_market_shadow_fails_closed_when_fixture_keys_do_not_match(tmp_path) -> 
     assert shadow == incumbent
     assert diagnostics["status"] == "not_ready"
     assert "exactly match" in diagnostics["reason"]
+
+
+def test_market_decision_blend_requires_provider_specific_promotion(tmp_path) -> None:
+    rates_path = tmp_path / "rates.parquet"
+    receipt_path = tmp_path / "receipt.json"
+    calibration_path = tmp_path / "calibration.json"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event": 1,
+                    "team_h": 1,
+                    "team_a": 2,
+                    "market_home_goal_rate": 2.0,
+                    "market_away_goal_rate": 0.8,
+                }
+            ]
+        ),
+        rates_path,
+    )
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "provider": "betfair_exchange_public_delayed",
+                "status": "ready",
+                "ready_events": [1],
+                "fixture_count": 1,
+                "fixture_counts_by_event": {"1": 1},
+                "rates_path": str(rates_path),
+                "rates_sha256": hashlib.sha256(rates_path.read_bytes()).hexdigest(),
+            }
+        )
+    )
+    incumbent = {(1, 1, 2): (1.5, 1.1)}
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "verdict": "REJECT",
+                "production_policy": {
+                    "decision_authority": False,
+                    "goal_rate_weight": 0.0,
+                },
+            }
+        )
+    )
+    unchanged, rejected = apply_current_market_decision_rates(
+        incumbent,
+        events=(1,),
+        receipt_path=receipt_path,
+        rates_path=rates_path,
+        calibration_path=calibration_path,
+    )
+    assert unchanged == incumbent
+    assert rejected["production_weight"] == 0.0
+
+    calibration_path.write_text(
+        json.dumps(
+            {
+                "verdict": "PROMOTE_BOUNDED",
+                "production_policy": {
+                    "decision_authority": True,
+                    "goal_rate_weight": 0.25,
+                },
+            }
+        )
+    )
+    blended, promoted = apply_current_market_decision_rates(
+        incumbent,
+        events=(1,),
+        receipt_path=receipt_path,
+        rates_path=rates_path,
+        calibration_path=calibration_path,
+    )
+    assert blended[(1, 1, 2)] == pytest.approx((1.625, 1.025))
+    assert promoted["status"] == "ready_production"
+    assert promoted["decision_authority"] is True

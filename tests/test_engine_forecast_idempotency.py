@@ -8,7 +8,13 @@ import pyarrow.parquet as pq
 import pytest
 
 from fplagent_data.http import sha256_file
-from fplagent_engine import component_models, models
+from fplagent_engine import (
+    attacking_chance_challenger,
+    component_models,
+    market_feature_challenger,
+    models,
+    understat_challenger,
+)
 
 
 def _write_manifest(
@@ -63,6 +69,13 @@ def test_direct_forecast_reuses_exact_input_generation_without_cuda(
     monkeypatch.setattr(models, "CURRENT_FORECAST", output)
     monkeypatch.setattr(models, "CURRENT_FORECAST_MANIFEST", manifest)
     monkeypatch.setattr(
+        market_feature_challenger, "current_market_feature_inputs", dict
+    )
+    monkeypatch.setattr(
+        attacking_chance_challenger, "current_attacking_chance_inputs", dict
+    )
+    monkeypatch.setattr(understat_challenger, "current_understat_inputs", dict)
+    monkeypatch.setattr(
         models,
         "require_cuda",
         lambda: (_ for _ in ()).throw(AssertionError("CUDA inference should not run")),
@@ -102,6 +115,13 @@ def test_direct_forecast_refuses_reuse_after_output_tampering(
     monkeypatch.setattr(models, "CALIBRATION_FILE", tmp_path / "absent.json")
     monkeypatch.setattr(models, "CURRENT_FORECAST", output)
     monkeypatch.setattr(models, "CURRENT_FORECAST_MANIFEST", manifest)
+    monkeypatch.setattr(
+        market_feature_challenger, "current_market_feature_inputs", dict
+    )
+    monkeypatch.setattr(
+        attacking_chance_challenger, "current_attacking_chance_inputs", dict
+    )
+    monkeypatch.setattr(understat_challenger, "current_understat_inputs", dict)
     monkeypatch.setattr(
         models,
         "require_cuda",

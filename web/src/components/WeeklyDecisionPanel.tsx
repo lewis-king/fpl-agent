@@ -104,10 +104,40 @@ export function WeeklyDecisionPanel({ decision, phase }: WeeklyDecisionPanelProp
       </div>
 
       <div className="weekly-team-call">
+        {selected.projected_points !== null ? <span><small>Projected</small><strong>{selected.projected_points.toFixed(1)}</strong></span> : null}
         <span><small>Shape</small><strong>{selected.formation}</strong></span>
         <span><small>Captain</small><strong>{selected.captain_name}</strong></span>
         <span><small>Next FT</small><strong>{selected.next_free_transfers ?? '—'}</strong></span>
       </div>
+
+      {decision.chip_advice || decision.execution_timing ? (
+        <details className="weekly-guardrails">
+          <summary>
+            <span>Chip &amp; timing</span>
+            <strong>
+              {decision.chip_advice ? 'Save chips' : ''}
+              {decision.chip_advice && decision.execution_timing ? ' · ' : ''}
+              {decision.execution_timing?.recommendation === 'wait' ? 'Wait to execute' : ''}
+            </strong>
+          </summary>
+          <div className="weekly-guardrail-body">
+            {decision.chip_advice ? (
+              <div>
+                <small>Chip call</small>
+                <strong>{decision.chip_advice.headline}</strong>
+                <span>{decision.chip_advice.detail}</span>
+              </div>
+            ) : null}
+            {decision.execution_timing ? (
+              <div className={decision.execution_timing.affordability_at_risk ? 'is-attention' : ''}>
+                <small>Execution</small>
+                <strong>{decision.execution_timing.headline}</strong>
+                <span>{decision.execution_timing.detail}</span>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
 
       {alternative ? (
         <div className="weekly-alternative">

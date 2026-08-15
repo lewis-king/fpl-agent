@@ -27,13 +27,16 @@ export function PlayerCard({ player, selected, onSelect, compact = false, change
     '--kit-detail': detail,
   }
   const available = player.play_probability >= 0.85
+  const fixtureLabel = player.fixtures.length
+    ? player.fixtures.map((fixture) => fixture.label).join(' · ')
+    : 'No fixture'
 
   return (
     <button
       className={`player-card ${selected ? 'is-selected' : ''} ${compact ? 'is-compact' : ''}`}
       type="button"
       onClick={() => onSelect(player)}
-      aria-label={`${player.name}, ${player.team}, ${player.fixture?.label ?? 'fixture unavailable'}`}
+      aria-label={`${player.name}, ${player.team}, ${fixtureLabel}`}
       style={style}
     >
       <span className="player-kit" aria-hidden="true">
@@ -45,8 +48,12 @@ export function PlayerCard({ player, selected, onSelect, compact = false, change
           {player.captain ? <span className="role-badge captain-badge">C</span> : null}
           {player.vice_captain ? <span className="role-badge">V</span> : null}
         </span>
-        <span className="player-fixture">
-          {player.fixture?.label ?? 'No fixture'}
+        <span className={`player-fixture ${player.fixtures.length > 1 ? 'is-double' : ''}`}>
+          <span className="fixture-copy">
+            {player.fixtures.length
+              ? player.fixtures.map((fixture) => <span key={`${fixture.kickoff_time}-${fixture.label}`}>{fixture.label}</span>)
+              : <span>No fixture</span>}
+          </span>
           <span className={`availability-mark ${available ? 'is-ready' : 'is-risk'}`}>
             {available ? (
               <CheckCircleIcon size={10} weight="fill" aria-hidden="true" />

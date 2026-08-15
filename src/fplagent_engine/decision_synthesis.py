@@ -25,6 +25,8 @@ from .robust_search import (
 from .robust_search import _policy_variant
 from .tournament import _load_rows
 
+SYNTHESIS_SELECTOR_REPLAY = MODEL_DATA / "synthesis_selector_replay_v1" / "results.json"
+
 VERSION = "gw1_decision_synthesis_v1"
 RESULT_DIR = MODEL_DATA / VERSION
 RESULTS_JSON = RESULT_DIR / "results.json"
@@ -218,6 +220,22 @@ def run_decision_synthesis(
     )
     shortlist = load_json_artifact(ROBUST_SHORTLIST, "global robust-search shortlist")
     require_current_forecast(shortlist, CURRENT_FORECAST, "global robust-search shortlist")
+    selector_calibration = None
+    if SYNTHESIS_SELECTOR_REPLAY.is_file():
+        selector_calibration = load_json_artifact(
+            SYNTHESIS_SELECTOR_REPLAY, "historical synthesis-selector replay"
+        )
+        production = selector_calibration.get("production_configuration") or {}
+        calibrated_horizon = float(production.get("horizon_family_weight", -1.0))
+        calibrated_worst = float(production.get("family_worst_weight", -1.0))
+        if not (
+            abs(calibrated_horizon - horizon_family_weight) < 1e-12
+            and abs(calibrated_worst - family_worst_weight) < 1e-12
+        ):
+            raise ValueError(
+                "Requested synthesis weights differ from the historically gated production "
+                "configuration"
+            )
     rows = synthesis_rows(
         robust["finalist_metrics"],
         horizon["finalist_metrics"],
@@ -283,6 +301,19 @@ def run_decision_synthesis(
                 "The five-week audit owns scoring-environment and component-model stress; the "
                 "eight-week audit owns horizon, decay, late-fixture and transfer-timing stress. "
                 "They receive equal prior weight, with a minimax surcharge for family brittleness."
+            ),
+            "historical_selector_calibration": (
+                {
+                    "verdict": selector_calibration["verdict"],
+                    "production_changed": selector_calibration["production_changed"],
+                    "selection_seasons": selector_calibration["selection_seasons"],
+                    "untouched_test_season": selector_calibration["untouched_test_season"],
+                    "untouched_test_delta": selector_calibration["untouched_test_delta"],
+                    "path": str(SYNTHESIS_SELECTOR_REPLAY),
+                    "sha256": sha256_file(SYNTHESIS_SELECTOR_REPLAY),
+                }
+                if selector_calibration is not None
+                else None
             ),
         },
         "candidate_coverage": {
@@ -393,8 +424,8 @@ def _render_report(result: dict[str, Any]) -> str:
     lines = [
         "# GW1 decision synthesis: how far should we look ahead?",
         "",
-        f"**Built:** {result['created_at']}  ",
-        f"**Decision:** select **{decision['candidate_id']}** · {decision['display_name']}  ",
+        f"**Built:** {result['created_at']}<br>",
+        f"**Decision:** select **{decision['candidate_id']}** · {decision['display_name']}<br>",
         f"**Status:** {result['decision_status']}",
         "",
         "## Bottom line",

@@ -212,7 +212,8 @@ def test_live_gameweek_scheduler_targets_the_next_decision_event(
 def test_material_official_change_triggers_once_and_is_covered_after_publish(
     tmp_path: Path,
 ) -> None:
-    now = [datetime(2026, 8, 8, 10, tzinfo=UTC)]
+    # Keep the test clock after the repository's current evidence generation.
+    now = [datetime(2026, 8, 16, 20, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     builder = WorkspaceBuilder(
         active_decision_path=tmp_path / "missing-active.json",
@@ -282,7 +283,8 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
 def test_material_change_does_not_duplicate_a_blocked_app_open_attempt(
     tmp_path: Path,
 ) -> None:
-    now = [datetime(2026, 8, 8, 10, tzinfo=UTC)]
+    # Keep the test clock after the repository's current evidence generation.
+    now = [datetime(2026, 8, 16, 20, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     refresh.current = WorkspaceRefreshView(
         run_id="app-open-blocked",

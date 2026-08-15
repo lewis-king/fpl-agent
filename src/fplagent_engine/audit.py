@@ -6,7 +6,10 @@ from typing import Any
 
 import duckdb
 
+from fplagent_data.paths import PROCESSED
+
 from .features import (
+    ATTACKING_HISTORY_FEATURES,
     CURRENT_FEATURES,
     FEATURE_AVAILABILITY,
     MODEL_FEATURES,
@@ -17,6 +20,7 @@ from .team_strength import CURRENT_TEAM_STRENGTH, HISTORICAL_TEAM_STRENGTH
 
 QUALITY_JSON = NORMALIZED / "data_quality.json"
 QUALITY_REPORT = REPORTS / "data-quality.md"
+CURRENT_OFFICIAL_PLAYERS = PROCESSED / "fpl" / "2026-27" / "preseason" / "players.parquet"
 
 
 def _sql_path(path: object) -> str:
@@ -31,6 +35,7 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
     registry = _sql_path(FEATURE_AVAILABILITY.resolve())
     historical_strength = _sql_path(HISTORICAL_TEAM_STRENGTH.resolve())
     current_strength = _sql_path(CURRENT_TEAM_STRENGTH.resolve())
+    official_players = _sql_path(CURRENT_OFFICIAL_PLAYERS.resolve())
     deadlines = _sql_path(
         (
             TRAINING_FEATURES.parents[2]
@@ -119,8 +124,34 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
         false_historical_xg = scalar(
             f"""
             SELECT count(*) FROM read_parquet('{historical}')
-            WHERE season < '2022-23' AND form5_xg IS NOT NULL
+            WHERE season < '2022-23' AND (
+                form5_xg IS NOT NULL OR form10_xg IS NOT NULL OR form38_xg IS NOT NULL
+                OR form5_xa IS NOT NULL OR form10_xa IS NOT NULL OR form38_xa IS NOT NULL
+            )
             """
+        )
+
+        historical_columns = {
+            str(row[0])
+            for row in connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{historical}')"
+            ).fetchall()
+        }
+        current_columns = {
+            str(row[0])
+            for row in connection.execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{current}')"
+            ).fetchall()
+        }
+        missing_attacking_history = sorted(
+            (set(ATTACKING_HISTORY_FEATURES) - historical_columns)
+            | (set(ATTACKING_HISTORY_FEATURES) - current_columns)
+        )
+        check(
+            "attacking_history_live_parity",
+            not missing_attacking_history,
+            missing_attacking_history,
+            "all long-horizon attacking columns in historical and current matrices",
         )
         check(
             "unavailable_xg_remains_missing",
@@ -162,6 +193,84 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
             """
         )
         check("current_required_fields", required_missing == 0, required_missing, "0 missing")
+
+        official_selectable, modelled_players = connection.execute(
+            f"""
+            SELECT
+                (
+                    SELECT count(*)
+                    FROM read_parquet('{official_players}')
+                    WHERE element_type BETWEEN 1 AND 4
+                      AND coalesce(can_select, true)
+                      AND NOT coalesce(removed, false)
+                ),
+                (
+                    SELECT count(DISTINCT element)
+                    FROM read_parquet('{current}')
+                )
+            """
+        ).fetchone()
+        missing_selectable = [
+            int(row[0])
+            for row in connection.execute(
+                f"""
+                SELECT id
+                FROM read_parquet('{official_players}')
+                WHERE element_type BETWEEN 1 AND 4
+                  AND coalesce(can_select, true)
+                  AND NOT coalesce(removed, false)
+                EXCEPT
+                SELECT DISTINCT element FROM read_parquet('{current}')
+                ORDER BY id
+                """
+            ).fetchall()
+        ]
+        extra_modelled = [
+            int(row[0])
+            for row in connection.execute(
+                f"""
+                SELECT DISTINCT element FROM read_parquet('{current}')
+                EXCEPT
+                SELECT id
+                FROM read_parquet('{official_players}')
+                WHERE element_type BETWEEN 1 AND 4
+                  AND coalesce(can_select, true)
+                  AND NOT coalesce(removed, false)
+                ORDER BY element
+                """
+            ).fetchall()
+        ]
+        check(
+            "current_selectable_universe_exact",
+            official_selectable == modelled_players
+            and not missing_selectable
+            and not extra_modelled,
+            {
+                "official_selectable": official_selectable,
+                "modelled_players": modelled_players,
+                "missing_player_ids": missing_selectable,
+                "extra_player_ids": extra_modelled,
+            },
+            "every currently selectable official player appears exactly once per horizon",
+        )
+
+        cold_start_rows = connection.execute(
+            f"""
+            SELECT DISTINCT element, player_name, position, team_short_name
+            FROM read_parquet('{current}')
+            WHERE cold_start = 1
+            ORDER BY element
+            """
+        ).fetchall()
+        cold_start_players = [
+            {
+                "element": int(element),
+                "name": str(name),
+                "position": str(position),
+                "team": str(team),
+            }
+            for element, name, position, team in cold_start_rows
+        ]
 
         duplicate_ratings = scalar(
             f"""
@@ -343,6 +452,7 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
         "failed_checks": [item["name"] for item in failures],
         "observations": {
             "legacy_raw_form_gaps": promoted_or_stale,
+            "current_cold_start_players": cold_start_players,
             "deadline_proxy_events": [
                 {"season": season, "events": events}
                 for season, events in snapshot_coverage

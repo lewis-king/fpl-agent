@@ -26,7 +26,13 @@ from .appearance_calibration import (
     calibrate_minute_probabilities,
     load_appearance_calibration,
 )
-from .features import CURRENT_FEATURES, MODEL_FEATURES, POSITIONS, TRAINING_FEATURES
+from .features import (
+    CURRENT_FEATURES,
+    MODEL_FEATURES,
+    POSITIONS,
+    TRAINING_FEATURES,
+    assert_independent_forecast_features,
+)
 from .paths import ARTIFACTS, FORECASTS, ensure_engine_layout
 
 MODEL_DIR = ARTIFACTS / "forecast_v2"
@@ -53,6 +59,7 @@ def _strings(table: pa.Table, name: str) -> np.ndarray:
 
 
 def _matrix(table: pa.Table, feature_names: tuple[str, ...] = MODEL_FEATURES) -> np.ndarray:
+    assert_independent_forecast_features(feature_names)
     return np.column_stack([_numeric(table, name) for name in feature_names]).astype(
         np.float32, copy=False
     )
@@ -533,12 +540,19 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _current_forecast_inputs() -> dict[str, str | None]:
+    from .attacking_chance_challenger import current_attacking_chance_inputs
+    from .market_feature_challenger import current_market_feature_inputs
+    from .understat_challenger import current_understat_inputs
+
     return {
         "features_sha256": sha256_file(CURRENT_FEATURES),
         "model_sha256": sha256_file(MODEL_FILE),
         "appearance_calibration_sha256": (
             sha256_file(CALIBRATION_FILE) if CALIBRATION_FILE.is_file() else None
         ),
+        **current_attacking_chance_inputs(),
+        **current_market_feature_inputs(),
+        **current_understat_inputs(),
     }
 
 
@@ -652,6 +666,19 @@ def forecast(*, force: bool = False) -> dict[str, Any]:
                     "forecast_created_at": forecast_created_at,
                 }
             )
+    from .market_feature_challenger import apply_current_market_feature_policy
+
+    rows, market_feature_policy = apply_current_market_feature_policy(
+        table,
+        rows,
+        phase=str(inputs["market_feature_phase"]),
+    )
+    from .attacking_chance_challenger import apply_current_attacking_chance_policy
+
+    rows, attacking_chance_policy = apply_current_attacking_chance_policy(table, rows)
+    from .understat_challenger import apply_current_understat_policy
+
+    rows, understat_policy = apply_current_understat_policy(table, rows)
     output = pa.Table.from_pylist(rows)
     write_table(output, CURRENT_FORECAST)
     result = {
@@ -666,6 +693,9 @@ def forecast(*, force: bool = False) -> dict[str, Any]:
         "appearance_calibration": (load_appearance_calibration() or {"promoted_positions": []})[
             "promoted_positions"
         ],
+        "market_feature_policy": market_feature_policy,
+        "attacking_chance_policy": attacking_chance_policy,
+        "understat_policy": understat_policy,
         "reused": False,
     }
     _atomic_json(

@@ -1,6 +1,6 @@
 # FPLAgent points-first product roadmap
 
-**Updated:** 8 August 2026  
+**Updated:** 15 August 2026
 **North star:** maximise Lewis's season points with fresh evidence, calibrated forecasts and legal,
 reproducible decisions. Chat explains and interrogates those decisions; it does not create them.
 
@@ -9,7 +9,9 @@ This is the product-level plan. The detailed research record and completed exper
 
 ## The operating loop
 
-Every app open invokes the same deadline orchestrator:
+The app always renders the last validated receipt immediately. An app open then invokes the same
+deadline orchestrator only when the previous terminal check is at least six hours old; a manual
+sync, scheduled deadline window or material official/market change bypasses that cache:
 
 `serve last receipt -> collect current evidence -> validate -> diff hashes -> rebuild affected
 features -> forecast -> generate legal actions -> simulate -> synthesise -> atomically publish`
@@ -37,9 +39,9 @@ source and staleness contract is in the
 | --- | --- | --- | --- | --- |
 | 0 | Freeze the bounded V9 LLM experiment | Prevents an unreliable chat layer from contradicting the engine | **Complete: rejected; app defaults unchanged and further LoRA work parked** | Locked evaluation rejected V9 despite better routing and screenshot extraction |
 | 1 | App-open refresh and decision receipt | Makes every visible recommendation current and internally consistent | **Cached-first lifecycle, MCP sync, persisted single flight, deadline windows and semantic official-change triggers implemented** | Repeated-input byte identity, stale-source rejection, atomic UI switch |
-| 2 | Fresh GW1 evidence and final squad tournament | A wrong availability assumption or stale fixture can sink the opening squad for weeks | **Reproducible staged GW1 funnel, rollback gate and live scheduled runner implemented** | Live runs at T-72h, T-24h, T-6h, T-60m and T-10m; independent simulation seed |
-| 3 | Preseason minutes, role and availability | Participation error is the largest avoidable GW1 failure mode | **Live 18/20-club feed; squad-specific role scenario, threshold and watch now run inside the publication transaction** | Position-specific forward calibration plus legal squad/captain replay |
-| 4 | First real weekly manager-state run | Converts the picker into roll/transfer/XI/bench/captain decisions | **State machine, weekly optimiser and event-calendar/scheduler handoff implemented; awaiting complete post-GW1 FPL state** | Exact authenticated state, legal transitions and published roll comparator |
+| 2 | Fresh GW1 evidence and final squad tournament | A wrong availability assumption or stale fixture can sink the opening squad for weeks | **Reproducible staged GW1 funnel, rollback gate, live scheduled runner and complete 10/10 Betfair evidence implemented; defender-only feature authority is capped at 20%** | Live runs at T-72h, T-24h, T-6h, T-60m and T-10m; independent simulation seed |
+| 3 | Preseason minutes, role and availability | Participation error is the largest avoidable GW1 failure mode | **Official status/minute bands plus two attributable predicted-XI adapters, immutable pre-deadline capture and a zero-authority prospective scoreboard are operational** | Six live events, two-source lineup-hit lift and then exact legal squad/captain replay |
+| 4 | First real weekly manager-state run | Converts the picker into roll/transfer/XI/bench/captain decisions | **State machine, optimiser and event handoff implemented; a zero-authority GW2–GW6 rehearsal now runs the real path, awaiting actual post-GW1 FPL state** | Exact authenticated state, legal transitions and published roll comparator |
 | 5 | Price-change and early-transfer policy | Team value creates future feasible moves, but early transfers sacrifice information | **Official threshold/outcome calibration and exact affordability shadow implemented; operational advice remains wait** | Prospective midnight calibration plus move-now-versus-wait net-points replay; team value is diagnostic only |
 | 6 | Blank/double and rearrangement scenarios | Fixture quantity, rotation and uncertainty alter transfers, chips and captaincy together | **Point-in-time rearrangement episodes and a correlated Monte Carlo shadow are integrated; the sparse historical gate rejects authority** | Reach 20 independent resolution batches across three seasons, then prospective calibration; never treat a speculative fixture as confirmed |
 | 7 | Wildcard and Free Hit optimiser | These can repair structural decay or exploit a blank/double in one high-value action | **Exact permanent-WC/temporary-FH search and continuous retained-value replay are complete; historical downside rejects promotion** | Improve the frozen policy until untouched block downside passes, then joint four-chip and prospective replay |
@@ -57,13 +59,25 @@ but they must not displace the deadline-critical GW1 work.
 
 - Capture official bootstrap and fixtures, authenticated squad state, forecast inputs and attributable
   availability evidence on app open and at scheduled deadline windows.
+- Every genuinely fresh GW1 run now recollects the preseason lineup feed before simulation. Explicit
+  official-snapshot reuse may reuse checksum-aligned role evidence for controlled research, but the
+  normal app/scheduler path cannot hide a new friendly behind an older valid receipt.
 - Between those windows, probe decision-relevant official semantics on a deadline-sensitive cadence.
   Status/news, prices, set-piece orders, rules and fixture allocation trigger the full pipeline;
   transfer-counter noise is reserved for the cheaper price telemetry path.
+- The same lightweight probe archives each Betfair observation and compares it with the prior
+  generation. It starts the expensive decision funnel only when decision-event coverage/provider
+  changes, an inferred team goal rate moves by at least 0.10, or a clean-sheet probability moves
+  by at least 0.025. Scheduled deadline windows still force validation even when those thresholds
+  are not crossed.
 - Tighten source TTLs as the deadline approaches. Team news can invalidate a run immediately.
 - Poll current market odds on every refresh. Archive partial evidence, but admit only a complete,
-  timestamp-safe event to paired match-world simulation. Its weekly transfer challenger failed the
-  untouched season and therefore has zero decision weight.
+  timestamp-safe event to paired match-world simulation. Betfair's competition ID is discovered by
+  exact name rather than frozen from its URL. The blunt exchange goal-rate replacement selected
+  20% on 2024/25 but lost the untouched 2025/26 legal path by two points, so that simulator blend
+  has zero authority. Separately, the defender-only player-feature model improved top-k points and
+  MAE in all three forward seasons and has a capped 20% preseason weight on fully covered events;
+  80% remains direct xP and weekly-transfer use remains disabled.
 - Record every publication candidate; never overwrite the active decision until all lineage and
   completeness checks pass.
 
@@ -76,12 +90,55 @@ but they must not displace the deadline-critical GW1 work.
 - For every candidate, jointly optimise the XI from all 15, bench order, captain and vice-captain.
 - Prefer the evidence-weighted low-regret choice, not a fragile central-mean winner.
 
+The first outcome-based [horizon/decay replay](../reports/horizon-decay-policy-replay.md) now tests
+1/3/5/8-week horizons and five decay settings as continuous GW1–8 policies: it rebuilds the decision
+at every historical deadline, carries the squad and legally available free transfers, and scores
+realised points with autosubs and captain fallback. Selection nominated 5 weeks/0.88, but it tied
+8 weeks/0.88 on the sealed 2025/26 path and lacked local parameter support. Production therefore
+remains 8 weeks/0.88 as a conservative incumbent, not as a claimed universal optimum.
+
+The final cross-family selector now has its own
+[historical replay](../reports/synthesis-selector-policy-replay.md). It applies the live selector
+shape to realised short (GW1–5) and long (GW1–8) legal policy families, selects weights by
+leave-one-season-out regret on 2023/24 and 2024/25, and freezes the result against 2025/26. The
+challenger grid did not earn a change, so production retains the 0.50 horizon-family weight and
+0.20 worst-family surcharge. The live synthesis checksum-links that result; the weights are no
+longer an undocumented judgment call.
+
+Before a squad is called deadline-ready, a separate scoring-structure gate now rescans every
+synthesis finalist plus squads generated at bench proxy weights from zero to 20%. It uses exact
+formation-valid autosubs and captain fallback, then removes and doubles the uncertain bonus and
+defensive-contribution layers. A supported cross-scenario reversal blocks the final deadline pack.
+This makes the optimiser's 8% bench coefficient a candidate generator only, never the last word.
+
 ### Participation evidence
 
-The next model work is targeted rather than another blanket calibration: DNP/1–59/60–89/90
-probabilities, conditional minute quantiles, preseason starts/substitutions, injuries/suspensions,
-new-signing and promoted-club priors, and explicit uncertainty for uncovered clubs. A position is
+The production contract now exposes DNP/1–59/60–89/90 probabilities for every selected player and
+joins them to hash-aligned official status/news and attributable preseason lineup evidence. The UI
+keeps three meanings separate: a modelled minute distribution, authoritative official status/news,
+and a zero-weight friendly context/stress flag. Stress alternatives are explicitly counterfactual—not inferred
+probabilities—and cannot silently change the squad. A supported alternative is published as
+`scenario_attention` while the aligned decision remains current; only missing, stale or mismatched
+lineage blocks publication. Friendly lineups have zero direct production weight: post-tournament
+returns and experimental teams remain verification context, never automatic minute or availability
+downgrades. Each supported alternative also reports its multi-gameweek synthesis rank and regret
+cost so a one-scenario gain cannot be mistaken for the season recommendation. A model change is
 promoted only if probability metrics and downstream decision replay improve on forward seasons.
+
+Two independent public predicted-XI adapters now sit between official status and friendly context.
+They archive raw HTML and source timestamps, require exact official fixture/team alignment, refuse
+negative votes from incomplete or stale pages, and expose start/bench/disagreement evidence in the
+existing participation disclosure. The 10 August capture includes all 15 selected players in the
+one currently eligible RotoWire XI; FFScout was captured but its advertised update timestamp was
+stale. The layer remains weight zero. After each finalized GW, an immutable prospective scoreboard
+compares its exact lineup hits with the champion start model. Six qualifying live events can only
+open an exact legal replay—not directly promote the source. See
+[participation evidence](participation-evidence.md).
+
+The availability receipt now expands this view from the selected 15 to every player in every
+jointly tested synthesis finalist. It reports squad, starter and captain exposure, and fails closed
+if any frontier player is missing official, forecast or role evidence. Predicted-XI coverage is
+shown over the same frontier but remains zero-authority.
 
 ## 2. Weekly decision engine
 
@@ -100,6 +157,12 @@ All 15 players enter lineup and captain consideration. Actions run on shared cor
 bench promotion, captain fallback or hit is compared on the same football outcomes. The UI should
 lead with the selected action, gain versus roll, uncertainty and strongest rejected alternative,
 then allow the player to inspect every assumption.
+
+The web read model now follows the official next actionable event rather than hard-coding GW1. A
+validated weekly receipt is authoritative for the displayed transferred 15, XI, bench order,
+captain, vice-captain, projected score and future horizon. The simpler full-15 lineup optimiser is
+used only while a matching weekly receipt is unavailable. Receipts for another event are rejected
+instead of leaking into the current workspace.
 
 ## 3. Price-change economics
 
@@ -238,15 +301,42 @@ Champion/challenger order:
 5. calibrated 5+/10+ return and full score distributions; and
 6. market/Elo/xG challengers only where licensing and timestamps are safe.
 
-The market challenger now has a live, event-aware evidence path into both the GW1 component
-tournament and the in-season weekly simulator. It uses paired random worlds and records candidate or
-action rank changes, but it is omitted from production scenario weights. Full provenance and the
-promotion contract are documented in the
+The market challenger now has a live, event-aware evidence path into the GW1 component tournament,
+the in-season weekly simulator and the direct preseason defender forecast. The broad simulator
+replacement remains paired-shadow only. A separately validated player-feature model has 20%
+preseason authority for defenders on fully covered Betfair events; 80% remains direct xP and all
+other positions/events are unchanged. Weekly transfer authority is still zero. Full provenance and
+the promotion contract are documented in the
 [market evidence subsystem](market-evidence-subsystem.md).
+
+The three-band return model was also isolated to captain/vice selection while freezing the legal
+squad, XI and bench. A validation-only one-standard-error rule selected the full distribution
+score. It gained 21 points on untouched 2025/26 (+0.553/GW), but the four-GW downside interval was
+-0.421 to +1.526/GW and the separate 2023/24 replication gained only one point. It therefore remains
+`HOLD_SHADOW`; production captaincy continues to use direct xP and exact vice fallback. See the
+[captain-only replay](../reports/captain-return-policy-replay.md).
+
+The longer-horizon attacking chance-quality experiment is also closed. It used only live-servable
+official goals, assists, xG, xA and minutes plus existing deadline context, while keeping champion
+appearance probabilities fixed. Its 10% and 20% blends reversed sign between 2023/24 and 2024/25,
+so the multi-season stability rule selected 0%; both attacking positions then lost top-k capture
+on untouched 2025/26. The result is `REJECT`, not a production fallback. The added lagged columns
+remain useful infrastructure for the next, narrower role-aware shrinkage experiment. See the
+[attacking chance-quality challenger](../reports/attacking-chance-quality-challenger.md).
 
 Every candidate uses time-forward folds, a frozen selection season and an untouched test season.
 Statistical improvement is only permission to run legal squad/transfer/captain replay. A model is
 promoted only when downstream outcomes also clear downside and legality gates.
+
+The first role/minutes residual experiment demonstrates that distinction. GK and FWD appearance
+probabilities improved on their decision-focused statistical sample, but substituting them into
+the exact legal policy lost 23 points in 2024/25 and eight in untouched 2025/26. It is rejected.
+The first true lead-specific model improved all four positional screens and gained ten legal-policy
+points in each forward season, so it is retained as a bounded shadow only. In the current-season
+adaptive test, its best squad beat the incumbent under paired base, lead and role-downside worlds,
+but then posted 3.617 robust regret in the independent component/high-goal funnel and did not win
+the horizon or synthesis stages. This negative full-funnel result retains `R-dc7de17def` and is
+evidence that forecast-family diversity is useful only behind the complete decision gate.
 
 ## 6. Learning after every gameweek
 
@@ -270,8 +360,10 @@ and counterfactual regret tell us whether the process is actually improving.
    receipts rather than launching parallel decision paths.
 2. Operate the live GW1 evidence windows; improve only attributable participation inputs that pass
    the full squad decision funnel.
-3. Run and publish the final independent-seed GW1 tournament.
-4. Exercise the exact authenticated weekly contract on the first complete post-GW1 response.
+3. Retain the published independent-seed GW1 tournament and rerun it only at the material-change
+   and declared deadline windows.
+4. Replace the successful synthetic GW2 rehearsal with the first complete authenticated post-GW1
+   response, then publish the real weekly receipt.
 5. Operate the implemented price shadow and promote only after prospective threshold calibration
    plus move-now-versus-wait net-points replay.
 6. Accumulate more point-in-time rearrangement episodes; the implemented probabilistic shadow stays

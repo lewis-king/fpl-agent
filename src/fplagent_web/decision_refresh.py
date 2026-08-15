@@ -4,7 +4,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,6 +15,7 @@ from fplagent_engine.deadline_pipeline import (
 )
 from fplagent_engine.preseason_pipeline import (
     GW1_PIPELINE_RECEIPT,
+    gw1_pipeline_implementation_sha256,
     run_gw1_deadline_pipeline,
 )
 from fplagent_llm.paths import ROOT
@@ -22,6 +23,7 @@ from fplagent_llm.paths import ROOT
 from .models import WorkspaceRefreshView
 
 DEFAULT_REFRESH_STATE = ROOT / "data" / "web" / "state" / "workspace-refresh.json"
+DEFAULT_APP_OPEN_MAX_AGE = timedelta(hours=6)
 RefreshMode = Literal["gw1", "weekly"]
 RefreshReason = Literal["app_open", "manual", "scheduled", "material_change"]
 PipelineRunner = Callable[..., Mapping[str, Any]]
@@ -58,6 +60,7 @@ class WorkspaceRefreshCoordinator:
         gw1_receipt_path: Path = GW1_PIPELINE_RECEIPT,
         weekly_receipt_path: Path = WEEKLY_PIPELINE_RECEIPT,
         clock: Callable[[], datetime] | None = None,
+        app_open_max_age: timedelta = DEFAULT_APP_OPEN_MAX_AGE,
     ) -> None:
         self.state_path = state_path
         self.gw1_runner = gw1_runner
@@ -65,6 +68,7 @@ class WorkspaceRefreshCoordinator:
         self.gw1_receipt_path = gw1_receipt_path
         self.weekly_receipt_path = weekly_receipt_path
         self.clock = clock or (lambda: datetime.now(tz=UTC))
+        self.app_open_max_age = app_open_max_age
         self._lock = threading.RLock()
         self._active_run_id: str | None = None
         self._worker: threading.Thread | None = None
@@ -80,6 +84,17 @@ class WorkspaceRefreshCoordinator:
         with self._lock:
             if self._active_run_id is not None:
                 return self._read_state()
+
+            previous = self._read_state()
+            recent = self._recent_app_open_result(
+                previous,
+                mode=mode,
+                reason=reason,
+                manager_entry_id=manager_entry_id,
+                event=event,
+            )
+            if recent is not None:
+                return recent
 
             requested_at = self._now().isoformat()
             run_seed = f"{mode}:{reason}:{manager_entry_id}:{event}:{requested_at}"
@@ -154,6 +169,26 @@ class WorkspaceRefreshCoordinator:
                         ),
                     }
                 )
+                self._write_state(interrupted)
+                return interrupted
+            if (
+                state.status == "running"
+                and self._active_run_id == state.run_id
+                and (self._worker is None or not self._worker.is_alive())
+            ):
+                interrupted = state.model_copy(
+                    update={
+                        "status": "failed",
+                        "completed_at": self._now().isoformat(),
+                        "failure_code": "refresh_worker_terminated",
+                        "message": (
+                            "The local refresh worker ended without a terminal receipt. The "
+                            "last valid workspace was retained; restart the app before retrying."
+                        ),
+                    }
+                )
+                self._active_run_id = None
+                self._worker = None
                 self._write_state(interrupted)
                 return interrupted
             if state.status == "running" and self._active_run_id == state.run_id:
@@ -290,6 +325,82 @@ class WorkspaceRefreshCoordinator:
         if value.tzinfo is None:
             raise ValueError("workspace refresh clock must include a timezone")
         return value.astimezone(UTC)
+
+    def _recent_app_open_result(
+        self,
+        previous: WorkspaceRefreshView,
+        *,
+        mode: RefreshMode,
+        reason: RefreshReason,
+        manager_entry_id: int | None,
+        event: int,
+    ) -> WorkspaceRefreshView | None:
+        if reason != "app_open" or previous.status not in {
+            "published",
+            "reused",
+            "not_ready",
+            "blocked",
+        }:
+            return None
+        if (
+            previous.mode != mode
+            or previous.event != event
+            or previous.manager_entry_id != manager_entry_id
+            or previous.completed_at is None
+        ):
+            return None
+        try:
+            completed_at = datetime.fromisoformat(previous.completed_at)
+        except ValueError:
+            return None
+        if completed_at.tzinfo is None:
+            return None
+        age = self._now() - completed_at.astimezone(UTC)
+        if age < timedelta(0) or age >= self.app_open_max_age:
+            return None
+        receipt_path = (
+            self.gw1_receipt_path if mode == "gw1" else self.weekly_receipt_path
+        )
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt_checked_at = datetime.fromisoformat(str(receipt["checked_at"]))
+            if receipt_checked_at.tzinfo is None:
+                raise ValueError("pipeline receipt time is naive")
+            external_terminal_result = (
+                receipt.get("status") == "published"
+                and receipt_checked_at.astimezone(UTC) > completed_at.astimezone(UTC)
+            )
+            receipt_identity = receipt.get("input_identity") or {}
+            receipt_implementation = (
+                str(receipt_identity.get("implementation_sha256") or "")
+                if isinstance(receipt_identity, Mapping)
+                else ""
+            )
+            implementation_changed = (
+                mode == "gw1"
+                and bool(receipt_implementation)
+                and receipt_implementation != gw1_pipeline_implementation_sha256()
+            )
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            external_terminal_result = False
+            implementation_changed = False
+        if external_terminal_result or implementation_changed:
+            return None
+        if previous.status in {"published", "reused"}:
+            hours = self.app_open_max_age.total_seconds() / 3600
+            return previous.model_copy(
+                update={
+                    "status": "reused",
+                    "reason": "app_open",
+                    "reused": True,
+                    "message": (
+                        f"Decision evidence was checked at {completed_at.astimezone(UTC).isoformat()}; "
+                        f"the validated result is being reused within the {hours:g}-hour "
+                        "app-open window."
+                    ),
+                }
+            )
+        return previous
 
     def _read_state(self) -> WorkspaceRefreshView:
         if not self.state_path.is_file():

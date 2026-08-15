@@ -58,6 +58,8 @@ SHORTLIST_JSON = RESULT_DIR / "shortlist.json"
 RESULTS_JSON = RESULT_DIR / "results.json"
 DECISION_JSON = DECISIONS / "2026-27-gw1-global-robust-search.json"
 REPORT = REPORTS / "gw1-global-robust-search.md"
+ADAPTIVE_RESULTS = MODEL_DATA / "adaptive_preseason_v1" / "results.json"
+ADAPTIVE_ORIGIN = "adaptive-lead-shadow"
 
 SCENARIO_WEIGHTS = {
     "base_evidence_open": 0.30,
@@ -70,7 +72,14 @@ SCENARIO_WEIGHTS = {
     "high_goal_fixed": 0.025,
 }
 CENTRAL_REGRET_CAP = 1.0
-BENCHMARK_ORIGINS = {"C007", "C005", "C009", "S028", "S001"}
+BENCHMARK_ORIGINS = {
+    "C007",
+    "C005",
+    "C009",
+    "S028",
+    "S001",
+    ADAPTIVE_ORIGIN,
+}
 GLOBAL_ORIGINS = {"global-milp", "global-evolution"}
 
 
@@ -116,6 +125,25 @@ def _load_seed_squads(
             if key not in origins:
                 order.append(key)
             origins[key].add(str(candidate["candidate_id"]))
+    if current_forecast_sha256 is not None and ADAPTIVE_RESULTS.is_file():
+        adaptive = load_json_artifact(ADAPTIVE_RESULTS, "adaptive preseason challenger")
+        gate = adaptive.get("tournament", {}).get("full_pipeline_request_gate", {})
+        same_forecast = (
+            adaptive.get("lineage", {}).get("current_forecast_sha256")
+            == current_forecast_sha256
+        )
+        if (
+            adaptive.get("verdict") == "REQUEST_FULL_PIPELINE"
+            and gate.get("passed") is True
+            and same_forecast
+        ):
+            challenger = adaptive["tournament"]["leader"]["candidate"]
+            key = _squad_key(challenger["selected"])
+            if key not in origins:
+                order.append(key)
+            origins[key].update(
+                {ADAPTIVE_ORIGIN, str(adaptive["tournament"]["leader"]["candidate_id"])}
+            )
     if not order:
         raise FileNotFoundError(
             "No seed candidates exist. Run the residual and component candidate generators first."
@@ -1283,8 +1311,8 @@ def _render_report(result: dict[str, Any], meta: dict[int, dict[str, Any]]) -> s
     lines = [
         "# GW1 global robust-search funnel",
         "",
-        f"**Built:** {result['created_at']}  ",
-        f"**Status:** {result['decision_status']}  ",
+        f"**Built:** {result['created_at']}<br>",
+        f"**Status:** {result['decision_status']}<br>",
         f"**Leader:** {leader['candidate_id']} · {leader['display_name']}",
         "",
         "## Verdict",

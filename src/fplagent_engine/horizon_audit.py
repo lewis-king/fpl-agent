@@ -838,8 +838,8 @@ def _render_report(result: dict[str, Any], meta: dict[int, dict]) -> str:
     lines = [
         "# GW1 horizon-adequacy audit",
         "",
-        f"**Built:** {result['created_at']}  ",
-        f"**Verdict:** {result['verdict']}  ",
+        f"**Built:** {result['created_at']}<br>",
+        f"**Verdict:** {result['verdict']}<br>",
         f"**Leader:** {leader['candidate_id']} · {leader['display_name']}",
         "",
         (

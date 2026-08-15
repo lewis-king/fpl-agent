@@ -300,10 +300,10 @@ class CaptainComparisonService:
         event = int(arguments["event"])
         risk_policy = str(arguments["risk_policy"])
         as_of = str(arguments["as_of"])
-        if event != 1:
+        if not 1 <= event <= 38:
             raise RuntimeToolError(
-                "event_not_available",
-                "The current local decision receipt supports GW1 only; rerun the engine first.",
+                "invalid_event",
+                "The requested gameweek must be between 1 and 38.",
             )
         if risk_policy == "mini_league":
             raise RuntimeToolError(

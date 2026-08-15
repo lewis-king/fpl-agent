@@ -10,8 +10,8 @@ interface SquadPitchProps {
   onSelectPlayer: (player: Player) => void
   view: 'pitch' | 'list'
   onViewChange: (view: 'pitch' | 'list') => void
-  squadMode: 'current' | 'recommended'
-  onSquadModeChange: (mode: 'current' | 'recommended') => void
+  squadMode: 'current' | 'model' | 'recommended'
+  onSquadModeChange: (mode: 'current' | 'model' | 'recommended') => void
 }
 
 export function SquadPitch({
@@ -23,49 +23,45 @@ export function SquadPitch({
   squadMode,
   onSquadModeChange,
 }: SquadPitchProps) {
-  const allPlayers = [...workspace.squad.starters, ...workspace.squad.bench]
-  const recommendedStarterIds = new Set(
-    workspace.squad.starters
-      .map((player) => player.player_id)
-      .filter((playerId) => !workspace.decision.captain.benched_player_ids.includes(playerId))
-      .concat(workspace.decision.captain.promoted_player_ids),
-  )
-  const recommendedStarters = allPlayers
-    .filter((player) => recommendedStarterIds.has(player.player_id))
-    .map((player, index) => ({
-      ...player,
-      role: 'starter' as const,
-      order: index + 1,
-      captain: player.player_id === workspace.decision.captain.captain_player_id,
-      vice_captain: player.player_id === workspace.decision.captain.vice_captain_player_id,
-    }))
-  const recommendedBench = allPlayers
-    .filter((player) => !recommendedStarterIds.has(player.player_id))
-    .sort((left, right) => Number(right.position === 'GK') - Number(left.position === 'GK'))
-    .map((player, index) => ({
-      ...player,
-      role: 'bench' as const,
-      order: index + 1,
-      captain: false,
-      vice_captain: false,
-    }))
-  const displayedStarters = squadMode === 'recommended'
-    ? recommendedStarters
-    : workspace.squad.starters
-  const displayedBench = squadMode === 'recommended' ? recommendedBench : workspace.squad.bench
+  const recommendedStarters = workspace.decision.recommended_squad.starters
+  const recommendedBench = workspace.decision.recommended_squad.bench
+  const modelSquad = workspace.decision.model_squad
+  const modelStarters = modelSquad?.starters ?? []
+  const modelBench = modelSquad?.bench ?? []
+  const displayedStarters = squadMode === 'model' && modelSquad
+    ? modelStarters
+    : squadMode === 'recommended'
+      ? recommendedStarters
+      : workspace.squad.starters
+  const displayedBench = squadMode === 'model' && modelSquad
+    ? modelBench
+    : squadMode === 'recommended'
+      ? recommendedBench
+      : workspace.squad.bench
   const grouped = groupByPosition(displayedStarters)
   const hasRecommendationChanges = !workspace.decision.captain.lineup_recommendation_aligned
     || !workspace.decision.captain.recommendation_aligned
-  const displayFormation = squadMode === 'recommended'
-    ? workspace.decision.captain.recommended_formation
-    : workspace.squad.formation
+  const currentIds = new Set([...workspace.squad.starters, ...workspace.squad.bench].map((player) => player.player_id))
+  const modelOnlyIds = new Set(
+    [...modelStarters, ...modelBench]
+      .filter((player) => !currentIds.has(player.player_id))
+      .map((player) => player.player_id),
+  )
+  const decisionEvent = workspace.phase.decision_event ?? workspace.phase.event
+  const displayFormation = squadMode === 'model' && modelSquad
+    ? modelSquad.formation
+    : squadMode === 'recommended'
+      ? workspace.decision.captain.recommended_formation
+      : workspace.squad.formation
   const currentCopy = workspace.squad.source === 'connected'
     ? { kicker: 'Current FPL team', title: `Your GW${workspace.phase.event} starting XI` }
     : { kicker: 'Current proposal', title: `GW${workspace.phase.event} starting XI` }
-  const phaseCopy = squadMode === 'recommended'
-    ? { kicker: 'Recommended setup', title: `Modelled GW${workspace.phase.event} XI` }
+  const phaseCopy = squadMode === 'model' && modelSquad
+    ? { kicker: 'Published model squad', title: `Best 15-player GW${modelSquad.event} build` }
+    : squadMode === 'recommended'
+    ? { kicker: 'Best XI from your squad', title: `Modelled GW${decisionEvent} lineup` }
     : workspace.phase.phase === 'live_gameweek'
-    ? { kicker: 'Submitted team', title: `GW${workspace.phase.event} points team` }
+    ? { kicker: 'Next-deadline baseline', title: `Current squad · planning GW${decisionEvent}` }
     : workspace.phase.phase === 'review'
       ? { kicker: 'Gameweek record', title: `GW${workspace.phase.event} submitted XI` }
       : workspace.phase.phase === 'pre_deadline'
@@ -87,17 +83,30 @@ export function SquadPitch({
               aria-pressed={squadMode === 'current'}
               onClick={() => onSquadModeChange('current')}
             >
-              Current
+              {workspace.squad.source === 'connected' ? 'Your FPL squad' : 'Current squad'}
             </button>
-            <button
-              type="button"
-              className={squadMode === 'recommended' ? 'is-active' : ''}
-              aria-pressed={squadMode === 'recommended'}
-              onClick={() => onSquadModeChange('recommended')}
-            >
-              Recommended
-              {hasRecommendationChanges ? <span aria-label="Changes available" /> : null}
-            </button>
+            {modelSquad && workspace.phase.phase === 'preseason' ? (
+              <button
+                type="button"
+                className={squadMode === 'model' ? 'is-active' : ''}
+                aria-pressed={squadMode === 'model'}
+                onClick={() => onSquadModeChange('model')}
+              >
+                Model squad
+                {modelOnlyIds.size ? <span aria-label={`${modelOnlyIds.size} changes available`} /> : null}
+              </button>
+            ) : null}
+            {(workspace.phase.phase !== 'preseason' || hasRecommendationChanges) ? (
+              <button
+                type="button"
+                className={squadMode === 'recommended' ? 'is-active' : ''}
+                aria-pressed={squadMode === 'recommended'}
+                onClick={() => onSquadModeChange('recommended')}
+              >
+                Best XI
+                {hasRecommendationChanges ? <span aria-label="Lineup changes available" /> : null}
+              </button>
+            ) : null}
           </div>
           <span className="formation-label">{displayFormation}</span>
           <div className="segmented-control" role="group" aria-label="Squad view">
@@ -137,7 +146,11 @@ export function SquadPitch({
                       player={player}
                       selected={selectedPlayerId === player.player_id}
                       onSelect={onSelectPlayer}
-                      change={squadMode === 'recommended' && workspace.decision.captain.promoted_player_ids.includes(player.player_id) ? 'in' : undefined}
+                      change={squadMode === 'model' && modelOnlyIds.has(player.player_id)
+                        ? 'in'
+                        : squadMode === 'recommended' && workspace.decision.captain.promoted_player_ids.includes(player.player_id)
+                          ? 'in'
+                          : undefined}
                     />
                   ))}
                 </div>
@@ -157,7 +170,11 @@ export function SquadPitch({
                       selected={selectedPlayerId === player.player_id}
                       onSelect={onSelectPlayer}
                       compact
-                      change={squadMode === 'recommended' && workspace.decision.captain.promoted_player_ids.includes(player.player_id) ? 'in' : undefined}
+                      change={squadMode === 'model' && modelOnlyIds.has(player.player_id)
+                        ? 'in'
+                        : squadMode === 'recommended' && workspace.decision.captain.promoted_player_ids.includes(player.player_id)
+                          ? 'in'
+                          : undefined}
                     />
                   ))}
                 </div>
@@ -170,7 +187,7 @@ export function SquadPitch({
       <div className="bench-module">
         <div className="bench-heading">
           <span>Bench</span>
-          <small>{squadMode === 'recommended' ? 'Outside the modelled XI' : 'Autosub order · left to right'}</small>
+          <small>{squadMode === 'recommended' ? 'Outside the best XI' : 'Autosub order · left to right'}</small>
         </div>
         <div className="bench-grid">
           {displayedBench.map((player, index) => (
@@ -181,7 +198,11 @@ export function SquadPitch({
                 selected={selectedPlayerId === player.player_id}
                 onSelect={onSelectPlayer}
                 compact
-                change={squadMode === 'recommended' && workspace.decision.captain.benched_player_ids.includes(player.player_id) ? 'out' : undefined}
+                change={squadMode === 'model' && modelOnlyIds.has(player.player_id)
+                  ? 'in'
+                  : squadMode === 'recommended' && workspace.decision.captain.benched_player_ids.includes(player.player_id)
+                    ? 'out'
+                    : undefined}
               />
             </div>
           ))}

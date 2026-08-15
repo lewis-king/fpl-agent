@@ -195,14 +195,14 @@ export function GenerateSquadDialog({
                 <div className="published-mark"><SparkleIcon size={21} weight="duotone" aria-hidden="true" /></div>
                 <div>
                   <span>Ready immediately</span>
-                  <strong>Use the published robust recommendation</strong>
+                  <strong>Make the published model squad active</strong>
                   <p>
-                    The expensive model tournament has already run. This is the current promoted
-                    baseline, not a cached random answer.
+                    You can preview and compare it from the pitch first. Activating it here makes
+                    the promoted 15-player squad the working context for analysis and chat.
                   </p>
                 </div>
                 <button className="secondary-button" type="button" onClick={() => void choosePublished()} disabled={Boolean(busy)}>
-                  {busy === 'published' ? 'Loading…' : 'Use best available'}
+                  {busy === 'published' ? 'Activating…' : 'Make model squad active'}
                 </button>
               </div>
 

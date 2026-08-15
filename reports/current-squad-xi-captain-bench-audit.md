@@ -6,17 +6,17 @@ This is a read-only, checksum-bound audit of the currently published 15. It does
 
 ## Published configuration
 
-- Formation: 5-3-2
+- Formation: 4-3-3
 - Captain / vice: Bruno Fernandes / Tarkowski
-- XI: Donnarumma, Tarkowski, Collins, Maguire, Mukiele, Truffert, Bruno Fernandes, Mbeumo, Gibbs-White, Igor Thiago, Watkins
-- Bench order: Calvert-Lewin, Szoboszlai, McAteer, Verbruggen
+- XI: Donnarumma, Tarkowski, Maguire, Senesi, Truffert, Bruno Fernandes, Mbeumo, Gibbs-White, Igor Thiago, Watkins, Calvert-Lewin
+- Bench order: Szoboszlai, Hill, Tanaka, Verbruggen
 
 ## Selection champion
 
-- Formation: 5-3-2
+- Formation: 4-3-3
 - Captain / vice: Bruno Fernandes / Tarkowski
-- XI: Watkins, Truffert, Collins, Igor Thiago, Tarkowski, Donnarumma, Maguire, Bruno Fernandes, Mbeumo, Gibbs-White, Mukiele
-- Bench order: Calvert-Lewin, Szoboszlai, McAteer, Verbruggen
+- XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Donnarumma, Maguire, Bruno Fernandes, Mbeumo, Gibbs-White, Senesi
+- Bench order: Szoboszlai, Hill, Tanaka, Verbruggen
 
 ## Independent holdout difference versus published
 

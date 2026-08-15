@@ -71,7 +71,9 @@ def moving_block_mean_interval(
     }
 
 
-def _load_event_rows() -> tuple[dict[tuple[str, int], list[dict[str, Any]]], dict[str, Any]]:
+def _load_event_rows(
+    seasons: tuple[str, ...] = SEASONS,
+) -> tuple[dict[tuple[str, int], list[dict[str, Any]]], dict[str, Any]]:
     component = {
         (str(row["season"]), int(row["event_number"]), int(row["element"])): row
         for row in pq.read_table(OOF_FORECAST).to_pylist()
@@ -81,14 +83,14 @@ def _load_event_rows() -> tuple[dict[tuple[str, int], list[dict[str, Any]]], dic
             row["target_minutes"]
         )
         for row in pq.read_table(TRAINING_FEATURES).to_pylist()
-        if str(row["season"]) in SEASONS
+        if str(row["season"]) in seasons
     }
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
-    component_coverage = {season: {"covered": 0, "fallback": 0} for season in SEASONS}
+    component_coverage = {season: {"covered": 0, "fallback": 0} for season in seasons}
     excluded = 0
     for raw in pq.read_table(BACKTEST_FORECAST).to_pylist():
         season = str(raw["season"])
-        if season not in SEASONS:
+        if season not in seasons:
             continue
         key = (season, int(raw["event_number"]), int(raw["element"]))
         if raw.get("market_price") is None or key not in minutes:
@@ -117,7 +119,7 @@ def _load_event_rows() -> tuple[dict[tuple[str, int], list[dict[str, Any]]], dic
             "removed": False,
         }
         grouped.setdefault((season, int(raw["event_number"])), []).append(enriched)
-    for season in SEASONS:
+    for season in seasons:
         events = sorted(event for candidate, event in grouped if candidate == season)
         if events != list(range(1, 39)):
             raise ValueError(f"Sequential replay requires events 1-38 for {season}: {events}")

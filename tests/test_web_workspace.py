@@ -4,14 +4,21 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 from fastapi.testclient import TestClient
 
 from fplagent_data.http import sha256_file
+from fplagent_llm.runtime_tools import DEFAULT_DECISION
 from fplagent_web.app import create_app
 from fplagent_web.workspace import WorkspaceBuilder
 
 
 def _weekly_receipt(path: Path) -> None:
+    current_starters = [384, 229, 418, 498, 61, 426, 427, 480, 106, 55, 346]
+    current_bench = [368, 60, 345, 109]
+    transferred_bench = [368, 60, 345, 1]
     action_summaries = [
         {
             "action_id": "roll",
@@ -23,6 +30,19 @@ def _weekly_receipt(path: Path) -> None:
             "captain_name": "Watkins",
             "vice_captain_player_id": 426,
             "vice_captain_name": "Bruno Fernandes",
+            "starter_player_ids": current_starters,
+            "bench_player_ids": current_bench,
+            "event_lineups": [
+                {
+                    "event": 2,
+                    "formation": "3-4-3",
+                    "projected_points": 57.1,
+                    "starter_player_ids": current_starters,
+                    "bench_player_ids": current_bench,
+                    "captain_player_id": 55,
+                    "vice_captain_player_id": 426,
+                }
+            ],
             "incremental_points_cost": 0,
             "next_free_transfers": 2,
             "terminal_free_transfers": 4,
@@ -36,9 +56,9 @@ def _weekly_receipt(path: Path) -> None:
                 {
                     "outgoing_player_id": 109,
                     "outgoing_name": "Verbruggen",
-                    "incoming_player_id": 384,
-                    "incoming_name": "Donnarumma",
-                    "incoming_price": 55,
+                    "incoming_player_id": 1,
+                    "incoming_name": "Raya",
+                    "incoming_price": 60,
                 }
             ],
             "formation": "3-4-3",
@@ -46,6 +66,19 @@ def _weekly_receipt(path: Path) -> None:
             "captain_name": "Bruno Fernandes",
             "vice_captain_player_id": 55,
             "vice_captain_name": "Watkins",
+            "starter_player_ids": current_starters,
+            "bench_player_ids": transferred_bench,
+            "event_lineups": [
+                {
+                    "event": 2,
+                    "formation": "3-4-3",
+                    "projected_points": 60.2,
+                    "starter_player_ids": current_starters,
+                    "bench_player_ids": transferred_bench,
+                    "captain_player_id": 426,
+                    "vice_captain_player_id": 55,
+                }
+            ],
             "incremental_points_cost": 0,
             "next_free_transfers": 1,
             "terminal_free_transfers": 3,
@@ -88,6 +121,41 @@ def _weekly_receipt(path: Path) -> None:
                     "central_scenario": "residual",
                 },
                 "selected_robust_metrics": {"robust_regret": 0.17},
+                "chip_shadow": {
+                    "status": "retain_chip",
+                    "operational_recommendation": "no_chip",
+                    "shadow_preference": {"chip": "bench_boost"},
+                    "candidates": [
+                        {
+                            "checks": [
+                                {"name": "retention policy promoted", "passed": False}
+                            ]
+                        }
+                    ],
+                },
+                "squad_chip_shadow": {
+                    "status": "retain_chip_uncalibrated_option_value",
+                    "operational_recommendation": "no_chip",
+                    "shadow_preference": {"chip": "wildcard"},
+                    "candidates": [
+                        {
+                            "checks": [
+                                {
+                                    "name": "retained chip option value calibrated",
+                                    "passed": False,
+                                }
+                            ]
+                        }
+                    ],
+                },
+                "diagnostics": {
+                    "early_transfer_shadow": {
+                        "status": "ready_shadow",
+                        "operational_recommendation": "wait",
+                        "route_blocked_by_threshold_stress": True,
+                        "next_price_change_at": "2026-08-23T23:00:00+00:00",
+                    }
+                },
             }
         ),
         encoding="utf-8",
@@ -95,6 +163,7 @@ def _weekly_receipt(path: Path) -> None:
 
 
 def test_workspace_builder_exposes_grounded_gw1_read_model(tmp_path: Path) -> None:
+    published = json.loads(DEFAULT_DECISION.read_text(encoding="utf-8"))
     workspace = WorkspaceBuilder(
         active_decision_path=tmp_path / "missing-active.json",
         profile_path=tmp_path / "profile.json",
@@ -103,7 +172,7 @@ def test_workspace_builder_exposes_grounded_gw1_read_model(tmp_path: Path) -> No
 
     assert workspace.phase.phase == "preseason"
     assert workspace.phase.primary_action == "generate_squad"
-    assert workspace.squad.formation == "5-3-2"
+    assert workspace.squad.formation == published["decision"]["squad"]["formation"]
     assert len(workspace.squad.starters) == 11
     assert len(workspace.squad.bench) == 4
     assert workspace.squad.confirmed is False
@@ -121,6 +190,37 @@ def test_workspace_builder_exposes_grounded_gw1_read_model(tmp_path: Path) -> No
     assert workspace.decision.weekly.status == "not_available"
 
 
+def test_fixture_view_preserves_every_match_in_a_double_gameweek(tmp_path: Path) -> None:
+    database = tmp_path / "fixtures.duckdb"
+    connection = duckdb.connect(str(database))
+    try:
+        connection.execute("CREATE TABLE fpl_current_teams (id INTEGER, short_name VARCHAR)")
+        connection.execute("INSERT INTO fpl_current_teams VALUES (1, 'ARS'), (2, 'CHE'), (3, 'LIV')")
+        connection.execute(
+            """
+            CREATE TABLE fpl_current_fixtures (
+                event INTEGER, team_h INTEGER, team_a INTEGER,
+                team_h_difficulty INTEGER, team_a_difficulty INTEGER,
+                kickoff_time VARCHAR
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO fpl_current_fixtures VALUES
+                (25, 1, 2, 2, 4, '2027-02-06T15:00:00+00:00'),
+                (25, 3, 1, 3, 3, '2027-02-10T19:45:00+00:00')
+            """
+        )
+    finally:
+        connection.close()
+
+    fixtures = WorkspaceBuilder(database_path=database)._fixtures(25)
+
+    assert [row.label for row in fixtures[1]] == ["CHE (H)", "LIV (A)"]
+    assert fixtures[1][0].kickoff_time < fixtures[1][1].kickoff_time
+
+
 def test_workspace_exposes_selected_and_rejected_weekly_actions(tmp_path: Path) -> None:
     weekly_path = tmp_path / "weekly.json"
     _weekly_receipt(weekly_path)
@@ -130,14 +230,31 @@ def test_workspace_exposes_selected_and_rejected_weekly_actions(tmp_path: Path) 
         profile_path=tmp_path / "profile.json",
         deadline_status_path=None,
         weekly_decision_path=weekly_path,
-    ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
+    ).build(now=datetime(2026, 8, 22, 12, tzinfo=UTC))
 
     weekly = workspace.decision.weekly
     assert weekly.status == "ready"
     assert weekly.event == 2
     assert weekly.selected is not None
     assert weekly.selected.label == "Make one free transfer"
-    assert weekly.selected.transfers[0].incoming_name == "Donnarumma"
+    assert weekly.selected.transfers[0].incoming_name == "Raya"
+    assert weekly.selected.projected_points == 60.2
+    assert workspace.phase.phase == "live_gameweek"
+    assert workspace.phase.decision_event == 2
+    assert workspace.decision.recommended_squad.source == "weekly_decision"
+    assert workspace.decision.recommended_squad.event == 2
+    assert workspace.decision.recommended_squad.expected_points == 60.2
+    assert any(
+        player.player_id == 1 for player in workspace.decision.recommended_squad.bench
+    )
+    assert workspace.decision.captain.captain_name == "Bruno Fernandes"
+    assert workspace.decision.captain.evidence_status == "weekly_decision_receipt"
+    assert weekly.chip_advice is not None
+    assert weekly.chip_advice.headline == "Save the chips"
+    assert weekly.chip_advice.watched_chips == ["bench_boost", "wildcard"]
+    assert weekly.execution_timing is not None
+    assert weekly.execution_timing.recommendation == "wait"
+    assert weekly.execution_timing.affordability_at_risk is True
     assert weekly.strongest_rejected is not None
     assert weekly.strongest_rejected.route_type == "roll"
     assert weekly.expected_gain_vs_roll == 1.2
@@ -342,6 +459,139 @@ def test_failed_deadline_evidence_gate_forces_visible_refresh_state(
     assert workspace.freshness.refresh_required is True
     assert workspace.freshness.message.startswith("Decision refresh required:")
     assert "forecast source snapshot" in workspace.freshness.message
+
+
+def test_workspace_joins_aligned_participation_evidence_and_minute_bands(
+    tmp_path: Path,
+) -> None:
+    decision = json.loads(DEFAULT_DECISION.read_text(encoding="utf-8"))
+    selected = decision["decision"]["candidate"]["selected"]
+    flagged = int(selected[0])
+    consensus_path = tmp_path / "participation-consensus.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event": 1,
+                    "element": int(element),
+                    "official_chance": 100,
+                    "official_news": "",
+                    "attention": [],
+                    "consensus": "single_source_start",
+                    "predicted_start_sources": ["rotowire"],
+                    "predicted_not_start_sources": [],
+                    "complete_source_count": 1,
+                }
+                for element in selected
+            ]
+        ),
+        consensus_path,
+    )
+    watch_path = tmp_path / "availability.json"
+    watch_path.write_text(
+        json.dumps(
+            {
+                "current": True,
+                "checked_at": "2026-08-21T10:00:00+00:00",
+                "lineage": {
+                    "decision_sha256": sha256_file(DEFAULT_DECISION),
+                    "forecast_sha256": sha256_file(
+                        Path("data/model/forecasts/2026-27-preseason.parquet")
+                    ),
+                },
+                "summary": {
+                    "selected_players": 15,
+                    "official_attention": 0,
+                    "role_verification": 1,
+                    "uncovered_club_feed": 0,
+                    "no_attention": 14,
+                },
+                "scenario_stability": {
+                    "baseline_stable": True,
+                    "moderate_stable": True,
+                },
+                "predicted_lineup_consensus": {
+                    "current": True,
+                    "status": "shadow_consensus_partial",
+                    "eligible_source_count": 1,
+                    "captured_source_count": 2,
+                },
+                "coverage": {"teams": 20, "teams_with_confirmed_lineups": 19},
+                "decision_impacts": [],
+                "players": [
+                    {
+                        "element": flagged,
+                        "attention": ["three_plus_lineup_absence"],
+                        "official": {"chance": 100, "news": ""},
+                        "preseason": {
+                            "eligible_team_matches": 4,
+                            "squad_listings": 0,
+                            "starts": 0,
+                            "appearances": 0,
+                            "last_match_listed": False,
+                            "last_match_started": None,
+                        },
+                        "supported_edge_sensitivity": None,
+                        "predicted_lineups": {
+                            "consensus": "single_source_start",
+                            "predicted_start_sources": ["rotowire"],
+                            "predicted_not_start_sources": [],
+                            "complete_source_count": 1,
+                            "production_weight": 0.0,
+                            "production_adjustment_authorized": False,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    workspace = WorkspaceBuilder(
+        active_decision_path=tmp_path / "missing-active.json",
+        profile_path=tmp_path / "profile.json",
+        deadline_status_path=None,
+        availability_watch_path=watch_path,
+        participation_consensus_path=consensus_path,
+    ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
+
+    player = next(
+        row
+        for row in workspace.squad.starters + workspace.squad.bench
+        if row.player_id == flagged
+    )
+    assert workspace.participation.status == "attention"
+    assert workspace.participation.teams_with_confirmed_lineups == 19
+    assert workspace.participation.predicted_start_support == 15
+    assert workspace.participation.predicted_lineup_eligible_sources == 1
+    assert workspace.participation.predicted_lineup_captured_sources == 2
+    assert player.participation.evidence_status == "verify_role"
+    assert player.participation.predicted_start_sources == ["rotowire"]
+    assert player.participation.states.dnp == round(1 - player.play_probability, 4)
+    assert "4 tracked preseason lineups" in player.participation.detail
+
+    active_path = tmp_path / "connected.json"
+    decision["workspace_candidate"] = {
+        **(decision.get("workspace_candidate") or {}),
+        "source": "connected",
+        "source_label": "Authenticated FPL squad",
+    }
+    active_path.write_text(json.dumps(decision), encoding="utf-8")
+    connected = WorkspaceBuilder(
+        active_decision_path=active_path,
+        profile_path=tmp_path / "profile.json",
+        deadline_status_path=None,
+        availability_watch_path=watch_path,
+        participation_consensus_path=consensus_path,
+    ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
+    connected_player = next(
+        row
+        for row in connected.squad.starters + connected.squad.bench
+        if row.player_id == flagged
+    )
+    assert connected_player.participation.evidence_status == "verify_role"
+    assert connected.participation.baseline_stable is None
+    assert connected.participation.alternatives == []
+    assert "Squad-specific stress alternatives are hidden" in connected.participation.detail
 
 
 def test_workspace_exposes_only_a_hash_aligned_successful_app_open_receipt(

@@ -6,8 +6,11 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import CONSENSUS as DEFAULT_PARTICIPATION_CONSENSUS
 from fplagent_llm.paths import ROOT
 from fplagent_llm.runtime_tools import (
     DEFAULT_COMPONENTS,
@@ -18,19 +21,28 @@ from fplagent_llm.runtime_tools import (
 )
 
 from .models import (
+    AppearanceStatesView,
     CapabilityView,
     CaptainInsight,
+    ChipAdviceView,
     DecisionView,
     EvidenceItem,
+    ExecutionTimingView,
     FixtureView,
     FreshnessView,
     HorizonEvent,
+    ModelSquadView,
+    ParticipationAlternativeView,
+    ParticipationSummaryView,
     PhaseView,
+    PlayerParticipationView,
     PlayerView,
+    RecommendedSquadView,
     SquadView,
     UserView,
     WeeklyActionView,
     WeeklyDecisionView,
+    WeeklyLineupView,
     WeeklyTransferView,
     WorkspaceView,
 )
@@ -41,6 +53,7 @@ DEFAULT_DATABASE = ROOT / "data" / "fpl_history.duckdb"
 DEFAULT_DEADLINE_STATUS = ROOT / "data" / "manifests" / "fpl-deadline-evidence-status.json"
 DEFAULT_WEEKLY_DECISION = ROOT / "data" / "decisions" / "2026-27-weekly-current.json"
 DEFAULT_REFRESH_STATE = ROOT / "data" / "web" / "state" / "workspace-refresh.json"
+DEFAULT_AVAILABILITY_WATCH = ROOT / "data" / "manifests" / "fpl-availability-watch.json"
 
 
 class WorkspaceBuildError(RuntimeError):
@@ -61,6 +74,8 @@ class WorkspaceBuilder:
         deadline_status_path: Path | None = DEFAULT_DEADLINE_STATUS,
         weekly_decision_path: Path | None = DEFAULT_WEEKLY_DECISION,
         refresh_state_path: Path | None = None,
+        availability_watch_path: Path | None = DEFAULT_AVAILABILITY_WATCH,
+        participation_consensus_path: Path | None = None,
     ) -> None:
         self.decision_path = decision_path
         self.forecast_path = forecast_path
@@ -72,6 +87,14 @@ class WorkspaceBuilder:
         self.deadline_status_path = deadline_status_path
         self.weekly_decision_path = weekly_decision_path
         self.refresh_state_path = refresh_state_path
+        self.availability_watch_path = availability_watch_path
+        self.participation_consensus_path = participation_consensus_path
+        if (
+            self.participation_consensus_path is None
+            and availability_watch_path == DEFAULT_AVAILABILITY_WATCH
+            and forecast_path == DEFAULT_FORECASTS
+        ):
+            self.participation_consensus_path = DEFAULT_PARTICIPATION_CONSENSUS
 
     def build(self, *, now: datetime | None = None) -> WorkspaceView:
         current = now or datetime.now(tz=UTC)
@@ -79,11 +102,19 @@ class WorkspaceBuilder:
             raise ValueError("workspace time must include a timezone")
         resolved_decision_path = self._resolved_decision_path()
         payload = self._read_decision(resolved_decision_path)
+        published_payload = (
+            self._read_decision(self.decision_path)
+            if self.decision_path.is_file()
+            else None
+        )
+        phase = self._phase(current, self._event_calendar())
+        analysis_event = phase.decision_event or phase.event
         candidate_meta = payload.get("workspace_candidate") or {}
         risk_profile = str(candidate_meta.get("risk_profile") or "safer")
         captain_policy = "robust" if risk_profile == "safer" else "expected_points"
         managers = LocalManagerRepository(resolved_decision_path, manager_id=self.manager_id)
         state = managers.get_state(self.manager_id, current.isoformat())
+        weekly_decision = self._weekly_decision(event=analysis_event)
         captain_result = CaptainComparisonService(
             managers,
             self.forecast_path,
@@ -91,7 +122,7 @@ class WorkspaceBuilder:
         ).compare(
             {
                 "manager_id": self.manager_id,
-                "event": 1,
+                "event": analysis_event,
                 "risk_policy": captain_policy,
                 "as_of": current.isoformat(),
             }
@@ -99,23 +130,64 @@ class WorkspaceBuilder:
         squad_payload = payload["decision"]["squad"]
         all_rows = list(squad_payload["starters"]) + list(squad_payload["bench"])
         player_ids = [int(row["element"]) for row in all_rows]
-        forecasts = self._forecasts(player_ids, event=1)
-        fixtures = self._fixtures(event=1)
+        published_rows = (
+            list(published_payload["decision"]["squad"]["starters"])
+            + list(published_payload["decision"]["squad"]["bench"])
+            if published_payload is not None
+            else []
+        )
+        published_player_ids = [int(row["element"]) for row in published_rows]
+        weekly_player_ids: list[int] = []
+        if weekly_decision.status == "ready" and weekly_decision.selected is not None:
+            weekly_player_ids = [
+                *weekly_decision.selected.starter_player_ids,
+                *weekly_decision.selected.bench_player_ids,
+            ]
+        forecast_player_ids = list(
+            dict.fromkeys([*player_ids, *published_player_ids, *weekly_player_ids])
+        )
+        forecasts = self._forecasts(forecast_player_ids, event=analysis_event)
+        participation, participation_by_id = self._participation_context(
+            resolved_decision_path,
+            {player_id: forecasts[player_id] for player_id in player_ids},
+        )
+        fixtures = self._fixtures(event=analysis_event)
         teams = self._teams()
         lineup = payload["decision"]["candidate"]["lineups"]["1"]
+        model_squad = self._model_squad(
+            event=analysis_event,
+            payload=published_payload,
+            forecasts=forecasts,
+            fixtures=fixtures,
+            teams=teams,
+        )
 
         starters = [
-            self._player_view(row, "starter", index, forecasts, fixtures, teams)
+            self._player_view(
+                row, "starter", index, forecasts, fixtures, teams, participation_by_id
+            )
             for index, row in enumerate(squad_payload["starters"], start=1)
         ]
         bench = [
-            self._player_view(row, "bench", index, forecasts, fixtures, teams)
+            self._player_view(
+                row, "bench", index, forecasts, fixtures, teams, participation_by_id
+            )
             for index, row in enumerate(squad_payload["bench"], start=1)
         ]
         names = {row.player_id: row.name for row in starters + bench}
-        phase = self._phase(current, self._event_calendar())
-        weekly_decision = self._weekly_decision(
-            event=phase.decision_event or phase.event
+        recommended_squad = self._recommended_squad(
+            event=analysis_event,
+            weekly_decision=weekly_decision,
+            captain_result=captain_result,
+            current_rows=all_rows,
+            current_starter_ids=[int(row["element"]) for row in squad_payload["starters"]],
+            forecasts=forecasts,
+            fixtures=fixtures,
+            teams=teams,
+            participation_by_id=participation_by_id,
+        )
+        names.update(
+            {row.player_id: row.name for row in recommended_squad.starters + recommended_squad.bench}
         )
         forecast_observed_at = datetime.fromisoformat(str(captain_result["forecast_observed_at"]))
         if forecast_observed_at.tzinfo is None:
@@ -134,6 +206,37 @@ class WorkspaceBuilder:
         vice = captain_result["vice_captain"]
         stored_captain = captain_result["stored_receipt"]
         recommended_lineup = captain_result["recommended_lineup"]
+        if recommended_squad.source == "weekly_decision" and weekly_decision.selected is not None:
+            selected_action = weekly_decision.selected
+            recommended_ids = {row.player_id for row in recommended_squad.starters}
+            current_starter_ids = {row.player_id for row in starters}
+            captain = {
+                "player_id": selected_action.captain_player_id,
+                "name": selected_action.captain_name,
+            }
+            vice = {
+                "player_id": selected_action.vice_captain_player_id,
+                "name": selected_action.vice_captain_name,
+            }
+            promoted_ids = sorted(recommended_ids - current_starter_ids)
+            benched_ids = sorted(current_starter_ids - recommended_ids)
+            recommended_lineup = {
+                "formation": recommended_squad.formation,
+                "promoted_player_ids": promoted_ids,
+                "promoted_player_names": [names.get(value, f"#{value}") for value in promoted_ids],
+                "benched_player_ids": benched_ids,
+                "benched_player_names": [names.get(value, f"#{value}") for value in benched_ids],
+                "aligned_with_current_xi": not promoted_ids and not benched_ids,
+            }
+            stored_captain = {
+                **stored_captain,
+                "captaincy_aligned": (
+                    selected_action.captain_player_id
+                    == int(stored_captain["captain_player_id"])
+                    and selected_action.vice_captain_player_id
+                    == int(stored_captain["vice_captain_player_id"])
+                ),
+            }
         source = str(candidate_meta.get("source") or "generated")
         if source not in {"generated", "uploaded", "connected"}:
             source = "generated"
@@ -184,6 +287,22 @@ class WorkspaceBuilder:
         refresh_evidence = self._refresh_evidence()
         if refresh_evidence is not None:
             decision_evidence.append(refresh_evidence)
+        horizon = self._horizon(
+            payload,
+            names,
+            start_event=analysis_event,
+            weekly_decision=weekly_decision,
+        )
+        if not horizon:
+            horizon = [
+                HorizonEvent(
+                    event=analysis_event,
+                    formation=recommended_squad.formation,
+                    expected_points=recommended_squad.expected_points,
+                    captain_name=str(captain["name"]),
+                    vice_captain_name=str(vice["name"]),
+                )
+            ]
 
         return WorkspaceView(
             generated_at=current.isoformat(),
@@ -210,6 +329,7 @@ class WorkspaceBuilder:
                     else str(state["refresh_reason"])
                 ),
             ),
+            participation=participation,
             squad=SquadView(
                 source=source,
                 confirmed=confirmed,
@@ -217,7 +337,11 @@ class WorkspaceBuilder:
                 formation=str(squad_payload["formation"]),
                 budget_spent=float(squad_payload["budget_spent"]),
                 bank=float(squad_payload["bank"]),
-                expected_points=round(float(lineup["expected_points"]), 2),
+                expected_points=round(
+                    sum(forecasts[int(row["element"])]["expected_points"] for row in squad_payload["starters"])
+                    + forecasts[int(lineup["captain"])]["expected_points"],
+                    2,
+                ),
                 candidate_id=str(payload["decision"]["candidate"]["candidate_id"]),
                 source_label=str(
                     candidate_meta.get("source_label") or "Published robust recommendation"
@@ -262,13 +386,31 @@ class WorkspaceBuilder:
                     benched_player_names=[
                         str(value) for value in recommended_lineup["benched_player_names"]
                     ],
-                    evidence_status=str(captain_result["evidence_status"]),
-                    score_metric=str(captain_result["score_metric"]),
-                    score_edge=float(captain_result["score_edge"]),
-                    receipt_id=str(captain_result["receipt_id"]),
+                    evidence_status=(
+                        "weekly_decision_receipt"
+                        if recommended_squad.source == "weekly_decision"
+                        else str(captain_result["evidence_status"])
+                    ),
+                    score_metric=(
+                        "shared_scenario_points"
+                        if recommended_squad.source == "weekly_decision"
+                        else str(captain_result["score_metric"])
+                    ),
+                    score_edge=(
+                        float(forecasts[int(captain["player_id"])]["robust_points"])
+                        - float(forecasts[int(vice["player_id"])]["robust_points"])
+                    ),
+                    receipt_id=(
+                        weekly_decision.selected.action_id
+                        if recommended_squad.source == "weekly_decision"
+                        and weekly_decision.selected is not None
+                        else str(captain_result["receipt_id"])
+                    ),
                     main_risk=str(captain_result["main_risk"]),
                 ),
-                horizon=self._horizon(payload, names),
+                recommended_squad=recommended_squad,
+                model_squad=model_squad,
+                horizon=horizon,
                 evidence=decision_evidence,
                 recommendation=" ".join(recommendation_parts),
                 caveat=str(payload["deadline_rule"]),
@@ -318,8 +460,402 @@ class WorkspaceBuilder:
                 path=str(receipt_path),
                 sha256=expected_sha256,
             )
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            pa.ArrowException,
+        ):
             return None
+
+    def _refresh_is_running(self) -> bool:
+        if self.refresh_state_path is None or not self.refresh_state_path.is_file():
+            return False
+        try:
+            value = json.loads(self.refresh_state_path.read_text(encoding="utf-8"))
+            return value.get("status") == "running"
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    @staticmethod
+    def _player_participation(
+        forecast: dict[str, Any], evidence: dict[str, Any] | None
+    ) -> PlayerParticipationView:
+        states = AppearanceStatesView(
+            dnp=round(float(forecast["p_dnp"]), 4),
+            minutes_1_59=round(float(forecast["p_1_59"]), 4),
+            minutes_60_89=round(float(forecast["p_60_89"]), 4),
+            minutes_90_plus=round(float(forecast["p_90_or_more"]), 4),
+        )
+        if evidence is None:
+            return PlayerParticipationView(
+                evidence_status="refreshing",
+                confidence="low",
+                headline="Role evidence refreshing",
+                detail=(
+                    "The minute-band forecast is available, but the attributable official and "
+                    "lineup evidence is not aligned to this decision yet."
+                ),
+                states=states,
+            )
+
+        attention = list(map(str, evidence.get("attention") or []))
+        official = evidence.get("official") or {}
+        preseason = evidence.get("preseason") or {}
+        sensitivity = evidence.get("supported_edge_sensitivity") or {}
+        predicted = evidence.get("predicted_lineups") or {}
+        predicted_consensus = str(predicted.get("consensus") or "") or None
+        predicted_start_sources = list(
+            map(str, predicted.get("predicted_start_sources") or [])
+        )
+        predicted_not_start_sources = list(
+            map(str, predicted.get("predicted_not_start_sources") or [])
+        )
+        source_support = len(predicted_start_sources)
+        source_suffix = (
+            f" {source_support} current predicted-XI source"
+            f"{'s' if source_support != 1 else ''} also include this player; this is "
+            "prospective evidence with zero production weight."
+            if source_support
+            else ""
+        )
+        if "official_unavailable" in attention:
+            status, confidence = "official_attention", "low"
+            headline = "Officially unavailable"
+            detail = str(official.get("news") or "Official FPL availability is zero.")
+        elif "official_doubt_or_news" in attention:
+            status, confidence = "official_attention", "medium"
+            headline = "Official update needs review"
+            detail = str(official.get("news") or "Official FPL carries an availability flag.")
+        elif "predicted_bench_consensus_shadow" in attention:
+            status, confidence = "lineup_watch", "low"
+            headline = "Predicted XIs flag a bench role"
+            detail = (
+                f"{len(predicted_not_start_sources)} independent current sources omit this "
+                "player from the predicted XI. This opens a deadline review; it does not yet "
+                "override the validated minute model."
+            )
+        elif "predicted_lineup_disagreement" in attention:
+            status, confidence = "lineup_watch", "medium"
+            headline = "Predicted XIs disagree"
+            detail = (
+                "Current providers disagree on the starting role. Keep the model prior and "
+                "recheck after press conferences."
+            )
+        elif "three_plus_lineup_absence" in attention:
+            status, confidence = "verify_role", "low"
+            headline = "Deadline role check required"
+            detail = (
+                f"Not listed in {int(preseason.get('eligible_team_matches') or 0)} "
+                "tracked preseason lineups. Post-tournament phased returns can cause this; it is "
+                "a verification flag, not an injury claim or a forecast downgrade."
+            ) + source_suffix
+        elif "low_recent_start_share" in attention:
+            status, confidence = "verify_role", "medium"
+            headline = "Starting role needs verification"
+            detail = (
+                f"Started {int(preseason.get('starts') or 0)} of "
+                f"{int(preseason.get('eligible_team_matches') or 0)} tracked preseason matches. "
+                "Friendly rotation and phased returns do not automatically reduce projected minutes."
+            ) + source_suffix
+        elif "uncovered_club_feed" in attention:
+            status, confidence = "uncovered", "low"
+            headline = "No confirmed club lineup feed"
+            detail = "Role evidence is unknown for this club; no penalty is silently applied."
+        else:
+            status, confidence = "clear", "high"
+            headline = (
+                "Predicted XI support"
+                if predicted_consensus
+                in {"predicted_start_consensus", "single_source_start"}
+                else "No current participation flag"
+            )
+            matches = int(preseason.get("eligible_team_matches") or 0)
+            starts = int(preseason.get("starts") or 0)
+            if source_support:
+                confidence = "high" if source_support >= 2 else "medium"
+                detail = (
+                    f"Included in {source_support} current predicted XI source"
+                    f"{'s' if source_support != 1 else ''}. The source vote is shown separately "
+                    "and retains zero model weight until prospective validation."
+                )
+            else:
+                detail = (
+                    f"Observed in the current evidence set with {starts} starts across "
+                    f"{matches} tracked matches."
+                    if matches
+                    else "Official status and the production forecast carry no current warning."
+                )
+        return PlayerParticipationView(
+            evidence_status=status,
+            confidence=confidence,
+            headline=headline,
+            detail=detail,
+            attention=attention,
+            states=states,
+            official_chance=(
+                int(official["chance"]) if official.get("chance") is not None else None
+            ),
+            official_news=str(official.get("news") or ""),
+            eligible_team_matches=(
+                int(preseason["eligible_team_matches"])
+                if preseason.get("eligible_team_matches") is not None
+                else None
+            ),
+            squad_listings=(
+                int(preseason["squad_listings"])
+                if preseason.get("squad_listings") is not None
+                else None
+            ),
+            starts=(
+                int(preseason["starts"]) if preseason.get("starts") is not None else None
+            ),
+            appearances=(
+                int(preseason["appearances"])
+                if preseason.get("appearances") is not None
+                else None
+            ),
+            last_match_listed=preseason.get("last_match_listed"),
+            last_match_started=preseason.get("last_match_started"),
+            mechanically_retained_p_play=(
+                round(float(sensitivity["mechanically_retained_p_play"]), 4)
+                if sensitivity.get("mechanically_retained_p_play") is not None
+                else None
+            ),
+            predicted_lineup_consensus=predicted_consensus,
+            predicted_start_sources=predicted_start_sources,
+            predicted_not_start_sources=predicted_not_start_sources,
+            predicted_lineup_production_weight=0.0,
+        )
+
+    def _participation_context(
+        self, decision_path: Path, forecasts: dict[int, dict[str, Any]]
+    ) -> tuple[ParticipationSummaryView, dict[int, dict[str, Any]]]:
+        path = self.availability_watch_path
+        refreshing = self._refresh_is_running()
+        fallback_status = "refreshing" if refreshing else "unavailable"
+        fallback = ParticipationSummaryView(
+            status=fallback_status,
+            headline=(
+                "Checking lineup confidence"
+                if refreshing
+                else "Lineup evidence is not available"
+            ),
+            detail=(
+                "The last decision remains visible while official and role evidence is aligned."
+                if refreshing
+                else "Use the model minute bands cautiously until a matching evidence receipt exists."
+            ),
+            selected_players=len(forecasts),
+        )
+        if path is None or not path.is_file():
+            return fallback, {}
+        try:
+            watch = json.loads(path.read_text(encoding="utf-8"))
+            lineage = watch.get("lineage") or {}
+            forecast_aligned = lineage.get("forecast_sha256") == sha256_file(
+                self.forecast_path
+            )
+            decision_aligned = lineage.get("decision_sha256") == sha256_file(decision_path)
+            if not forecast_aligned or not watch.get("current"):
+                return fallback, {}
+            rows = {
+                int(row["element"]): row
+                for row in watch.get("players") or []
+                if row.get("element") is not None and int(row["element"]) in forecasts
+            }
+            stability = watch.get("scenario_stability") or {}
+            coverage = watch.get("coverage") or {}
+            predicted_layer = watch.get("predicted_lineup_consensus") or {}
+            if (
+                predicted_layer.get("current")
+                and self.participation_consensus_path is not None
+                and self.participation_consensus_path.is_file()
+            ):
+                for predicted in pq.read_table(self.participation_consensus_path).to_pylist():
+                    element = int(predicted["element"])
+                    if element not in forecasts or element in rows:
+                        continue
+                    predicted_attention = list(map(str, predicted.get("attention") or []))
+                    rows[element] = {
+                        "element": element,
+                        "attention": predicted_attention,
+                        "official": {
+                            "chance": predicted.get("official_chance"),
+                            "news": str(predicted.get("official_news") or ""),
+                        },
+                        "preseason": {},
+                        "supported_edge_sensitivity": None,
+                        "predicted_lineups": {
+                            "consensus": str(predicted.get("consensus") or ""),
+                            "predicted_start_sources": list(
+                                map(str, predicted.get("predicted_start_sources") or [])
+                            ),
+                            "predicted_not_start_sources": list(
+                                map(
+                                    str,
+                                    predicted.get("predicted_not_start_sources") or [],
+                                )
+                            ),
+                            "complete_source_count": int(
+                                predicted.get("complete_source_count") or 0
+                            ),
+                            "production_weight": 0.0,
+                            "production_adjustment_authorized": False,
+                        },
+                    }
+            alternatives = (
+                [
+                    ParticipationAlternativeView.model_validate(row)
+                    for row in watch.get("decision_impacts") or []
+                ]
+                if decision_aligned
+                else []
+            )
+            attentions = [set(map(str, row.get("attention") or [])) for row in rows.values()]
+            official_attention = sum(
+                bool(values & {"official_unavailable", "official_doubt_or_news"})
+                for values in attentions
+            )
+            role_verification = sum(
+                bool(values & {"three_plus_lineup_absence", "low_recent_start_share"})
+                for values in attentions
+            )
+            uncovered = sum("uncovered_club_feed" in values for values in attentions)
+            predicted_start_support = sum(
+                (row.get("predicted_lineups") or {}).get("consensus")
+                in {"predicted_start_consensus", "single_source_start"}
+                for row in rows.values()
+            )
+            predicted_bench = sum(
+                (row.get("predicted_lineups") or {}).get("consensus")
+                == "predicted_bench_consensus"
+                for row in rows.values()
+            )
+            predicted_disagreement = sum(
+                (row.get("predicted_lineups") or {}).get("consensus")
+                == "source_disagreement"
+                for row in rows.values()
+            )
+            missing = len(set(forecasts) - set(rows))
+            baseline_stable = (
+                bool(stability.get("baseline_stable")) if decision_aligned else None
+            )
+            moderate_stable = (
+                bool(stability.get("moderate_stable")) if decision_aligned else None
+            )
+            unstable = bool(
+                decision_aligned
+                and (not baseline_stable or not moderate_stable)
+            )
+            needs_attention = bool(
+                official_attention
+                or role_verification
+                or uncovered
+                or predicted_bench
+                or predicted_disagreement
+                or missing
+                or unstable
+            )
+            flagged = (
+                official_attention
+                + role_verification
+                + uncovered
+                + predicted_bench
+                + predicted_disagreement
+                + missing
+            )
+            official_clear = max(0, len(rows) - official_attention)
+            if official_attention:
+                headline = "Official availability needs review"
+            elif predicted_bench or predicted_disagreement:
+                headline = "Predicted lineups need a deadline check"
+            elif role_verification or unstable:
+                headline = "Official status clear; context checks remain"
+            else:
+                headline = "Official participation status is clear"
+            if official_attention:
+                detail = (
+                    f"{official_attention} of {len(forecasts)} players carries an official FPL "
+                    "availability or news flag. Official evidence is already represented in the "
+                    "minute forecast."
+                )
+            elif predicted_bench or predicted_disagreement:
+                detail = (
+                    f"{predicted_bench} selected players carry a two-source bench flag and "
+                    f"{predicted_disagreement} have contradictory predicted XIs. These are "
+                    "review triggers, not automatic forecast changes."
+                )
+            elif unstable:
+                detail = (
+                    f"All {official_clear} aligned players are officially clear. A friendly-lineup "
+                    "stress test identifies a supported alternative, but friendly evidence has "
+                    "zero production weight and cannot change the squad without attributable "
+                    "deadline evidence."
+                )
+            elif not decision_aligned:
+                detail = (
+                    f"Player-level evidence is current for {len(rows)} of {len(forecasts)} players. "
+                    "Squad-specific stress alternatives are hidden because this is a different "
+                    "connected or uploaded squad."
+                )
+            elif flagged:
+                detail = (
+                    f"All {official_clear} aligned players are officially clear; "
+                    f"{role_verification + uncovered} carry a zero-weight preseason context check."
+                )
+            elif predicted_start_support:
+                detail = (
+                    f"{predicted_start_support} of {len(forecasts)} selected players appear in "
+                    "the currently eligible predicted XI feed. This is independently visible "
+                    "but remains zero-weight while the prospective scoreboard accumulates."
+                )
+            else:
+                detail = "No selected player carries a current official or observed-role flag."
+            return (
+                ParticipationSummaryView(
+                    status="attention" if needs_attention else "current",
+                    checked_at=str(watch.get("checked_at") or "") or None,
+                    headline=headline,
+                    detail=detail,
+                    selected_players=len(forecasts),
+                    clear_players=sum(not values for values in attentions),
+                    official_clear_players=official_clear,
+                    official_attention=official_attention,
+                    role_verification=role_verification,
+                    uncovered_club_feed=uncovered,
+                    predicted_start_support=predicted_start_support,
+                    predicted_bench_flags=predicted_bench,
+                    predicted_disagreements=predicted_disagreement,
+                    predicted_lineup_eligible_sources=int(
+                        predicted_layer.get("eligible_source_count") or 0
+                    ),
+                    predicted_lineup_captured_sources=int(
+                        predicted_layer.get("captured_source_count") or 0
+                    ),
+                    predicted_lineup_status=str(
+                        predicted_layer.get("status") or "not_collected"
+                    ),
+                    baseline_stable=baseline_stable,
+                    moderate_stable=moderate_stable,
+                    teams_with_confirmed_lineups=(
+                        int(coverage["teams_with_confirmed_lineups"])
+                        if coverage.get("teams_with_confirmed_lineups") is not None
+                        else None
+                    ),
+                    teams_total=(
+                        int(coverage["teams"])
+                        if coverage.get("teams") is not None
+                        else None
+                    ),
+                    alternatives=alternatives,
+                ),
+                rows,
+            )
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return fallback, {}
 
     @staticmethod
     def _weekly_action_label(route_type: str, transfer_count: int, points_cost: int) -> str:
@@ -338,6 +874,26 @@ class WorkspaceBuilder:
         route_type = str(summary["route_type"])
         transfer_count = int(summary["transfer_count"])
         points_cost = int(summary["incremental_points_cost"])
+        event_lineups = [
+            WeeklyLineupView(
+                event=int(row["event"]),
+                formation=str(row["formation"]),
+                projected_points=float(row["projected_points"]),
+                starter_player_ids=[int(value) for value in row["starter_player_ids"]],
+                bench_player_ids=[int(value) for value in row["bench_player_ids"]],
+                captain_player_id=int(row["captain_player_id"]),
+                vice_captain_player_id=int(row["vice_captain_player_id"]),
+            )
+            for row in summary.get("event_lineups", [])
+        ]
+        starter_player_ids = [
+            int(value) for value in summary.get("starter_player_ids", [])
+        ]
+        bench_player_ids = [int(value) for value in summary.get("bench_player_ids", [])]
+        if event_lineups and not starter_player_ids:
+            starter_player_ids = event_lineups[0].starter_player_ids
+        if event_lineups and not bench_player_ids:
+            bench_player_ids = event_lineups[0].bench_player_ids
         return WeeklyActionView(
             action_id=str(summary["action_id"]),
             route_type=route_type,
@@ -366,6 +922,10 @@ class WorkspaceBuilder:
             vice_captain_name=str(
                 summary.get("vice_captain_name") or f"#{summary['vice_captain_player_id']}"
             ),
+            starter_player_ids=starter_player_ids,
+            bench_player_ids=bench_player_ids,
+            projected_points=(event_lineups[0].projected_points if event_lineups else None),
+            event_lineups=event_lineups,
             incremental_points_cost=points_cost,
             next_free_transfers=(
                 int(summary["next_free_transfers"])
@@ -395,6 +955,17 @@ class WorkspaceBuilder:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             decision_event = int(payload["decision_event"])
+            if decision_event != event:
+                return WeeklyDecisionView(
+                    status="not_available",
+                    event=event,
+                    promotion_status="awaiting_current_event_receipt",
+                    explanation=(
+                        f"The stored weekly receipt is for GW{decision_event}; a validated GW{event} "
+                        "receipt has not been published yet."
+                    ),
+                    receipt_path=str(path),
+                )
             summaries = {
                 str(summary["action_id"]): summary for summary in payload["action_summaries"]
             }
@@ -444,6 +1015,13 @@ class WorkspaceBuilder:
                     "This route cleared the after-cost gain, scenario-stability and paired "
                     "uncertainty gates."
                 )
+            execution_timing = self._execution_timing_view(
+                (payload.get("diagnostics") or {}).get("early_transfer_shadow") or {}
+            )
+            chip_advice = self._chip_advice_view(
+                payload.get("chip_shadow") or {},
+                payload.get("squad_chip_shadow") or {},
+            )
             return WeeklyDecisionView(
                 status="ready",
                 event=decision_event,
@@ -458,6 +1036,8 @@ class WorkspaceBuilder:
                 robust_regret=float(payload["selected_robust_metrics"]["robust_regret"]),
                 promotion_status=promotion_status,
                 explanation=explanation,
+                execution_timing=execution_timing,
+                chip_advice=chip_advice,
                 receipt_path=str(path),
                 receipt_sha256=sha256_file(path),
             )
@@ -469,6 +1049,80 @@ class WorkspaceBuilder:
                 explanation=f"The weekly decision receipt cannot be trusted: {exc}",
                 receipt_path=str(path),
             )
+
+    @staticmethod
+    def _execution_timing_view(payload: dict[str, Any]) -> ExecutionTimingView | None:
+        if not payload:
+            return None
+        status = str(payload.get("status") or "not_ready")
+        if status == "not_applicable":
+            return ExecutionTimingView(
+                status=status,
+                recommendation="not_applicable",
+                headline="No transfer timing decision",
+                detail=str(payload.get("reason") or "The selected route makes no transfer."),
+            )
+        affordability_at_risk = bool(payload.get("route_blocked_by_threshold_stress"))
+        if affordability_at_risk:
+            headline = "Price pressure could block this move"
+            detail = (
+                "The threshold stress would make the route unaffordable, but the price signal is "
+                "still shadow-only. Wait for team news unless a later calibrated policy clears it."
+            )
+        elif status == "ready_shadow":
+            headline = "Wait before making the transfer"
+            detail = (
+                "The route remains affordable under the current threshold stress; preserve injury "
+                "and lineup information for now."
+            )
+        else:
+            headline = "Transfer timing evidence is not ready"
+            detail = str(payload.get("reason") or "The safe operational action is to wait.")
+        return ExecutionTimingView(
+            status=status,
+            recommendation="wait",
+            headline=headline,
+            detail=detail,
+            affordability_at_risk=affordability_at_risk,
+            next_price_change_at=(
+                str(payload["next_price_change_at"])
+                if payload.get("next_price_change_at")
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _chip_advice_view(
+        team_chip: dict[str, Any], squad_chip: dict[str, Any]
+    ) -> ChipAdviceView | None:
+        if not team_chip and not squad_chip:
+            return None
+        watched = []
+        for payload in (team_chip, squad_chip):
+            preference = payload.get("shadow_preference") or {}
+            chip = preference.get("chip")
+            if chip and str(chip) not in watched:
+                watched.append(str(chip))
+        blockers: list[str] = []
+        for payload in (team_chip, squad_chip):
+            candidates = payload.get("candidates") or []
+            if not candidates:
+                continue
+            for check in candidates[0].get("checks") or []:
+                if not check.get("passed"):
+                    value = str(check.get("name") or "chip safety gate")
+                    if value not in blockers:
+                        blockers.append(value)
+        detail = "All eligible chip branches were compared with retaining the chip."
+        if watched:
+            detail += " The strongest research-only shadows were " + " and ".join(watched) + "."
+        detail += " None has cleared the historical and prospective safety gates."
+        return ChipAdviceView(
+            headline="Save the chips",
+            detail=detail,
+            watched_chips=watched,
+            blockers=blockers[:4],
+        )
 
     @staticmethod
     def _deadline_evidence_message(status: dict[str, Any] | None) -> str:
@@ -496,7 +1150,8 @@ class WorkspaceBuilder:
                 """
                 SELECT f.element, f.team_id, f.team_short_name, f.expected_points,
                        f.robust_points, f.p_play, f.status, f.news,
-                       coalesce(c.expected_minutes, 0.0)
+                       coalesce(c.expected_minutes, 0.0),
+                       f.p_dnp, f.p_1_59, f.p_60_89, f.p_90_or_more
                 FROM read_parquet(?) f
                 LEFT JOIN read_parquet(?) c USING (season, event_number, element)
                 WHERE f.event_number = ?
@@ -516,6 +1171,10 @@ class WorkspaceBuilder:
                 "status": str(row[6]),
                 "news": str(row[7] or ""),
                 "expected_minutes": float(row[8]),
+                "p_dnp": float(row[9]),
+                "p_1_59": float(row[10]),
+                "p_60_89": float(row[11]),
+                "p_90_or_more": float(row[12]),
             }
             for row in rows
         }
@@ -535,7 +1194,7 @@ class WorkspaceBuilder:
             connection.close()
         return {int(row[0]): (str(row[1]), str(row[2])) for row in rows}
 
-    def _fixtures(self, event: int) -> dict[int, FixtureView]:
+    def _fixtures(self, event: int) -> dict[int, list[FixtureView]]:
         connection = self._connection()
         try:
             rows = connection.execute(
@@ -554,16 +1213,249 @@ class WorkspaceBuilder:
             ).fetchall()
         finally:
             connection.close()
-        return {
-            int(row[0]): FixtureView(
+        fixtures: dict[int, list[FixtureView]] = {}
+        for row in sorted(rows, key=lambda value: (str(value[4]), int(value[0]))):
+            fixtures.setdefault(int(row[0]), []).append(FixtureView(
                 opponent=str(row[1]),
                 venue=str(row[2]),
                 difficulty=int(row[3]),
                 kickoff_time=str(row[4]),
                 label=f"{row[1]} ({row[2]})",
-            )
+            ))
+        return fixtures
+
+    def _player_metadata_rows(self, player_ids: list[int]) -> dict[int, dict[str, Any]]:
+        if not player_ids:
+            return {}
+        connection = self._connection()
+        try:
+            rows = connection.execute(
+                """
+                SELECT p.id, p.web_name,
+                       CASE pos.singular_name_short WHEN 'GKP' THEN 'GK'
+                            ELSE pos.singular_name_short END,
+                       p.team, p.now_cost / 10.0
+                FROM fpl_current_players p
+                JOIN fpl_current_positions pos ON pos.id = p.element_type
+                WHERE p.id IN (SELECT * FROM unnest(?))
+                """,
+                [player_ids],
+            ).fetchall()
+        finally:
+            connection.close()
+        return {
+            int(row[0]): {
+                "element": int(row[0]),
+                "name": str(row[1]),
+                "position": str(row[2]),
+                "team": int(row[3]),
+                "price": float(row[4]),
+            }
             for row in rows
         }
+
+    def _model_squad(
+        self,
+        *,
+        event: int,
+        payload: dict[str, Any] | None,
+        forecasts: dict[int, dict[str, Any]],
+        fixtures: dict[int, list[FixtureView]],
+        teams: dict[int, tuple[str, str]],
+    ) -> ModelSquadView | None:
+        if payload is None or event != 1:
+            return None
+        try:
+            squad = payload["decision"]["squad"]
+            lineup = payload["decision"]["candidate"]["lineups"]["1"]
+            raw_starters = [dict(row) for row in squad["starters"]]
+            raw_bench = [dict(row) for row in squad["bench"]]
+            candidate_id = str(payload["decision"]["candidate"]["candidate_id"])
+        except (KeyError, TypeError) as exc:
+            raise WorkspaceBuildError("the published model squad is incomplete") from exc
+        model_ids = {
+            int(row["element"]) for row in [*raw_starters, *raw_bench]
+        }
+        missing = model_ids - set(forecasts)
+        if missing:
+            raise WorkspaceBuildError(
+                f"GW1 forecast missing for published model players: {sorted(missing)}"
+            )
+        _, participation_by_id = self._participation_context(
+            self.decision_path,
+            {player_id: forecasts[player_id] for player_id in model_ids},
+        )
+        captain_id = int(lineup["captain"])
+        vice_id = int(lineup["vice_captain"])
+        for row in [*raw_starters, *raw_bench]:
+            player_id = int(row["element"])
+            row["captain"] = player_id == captain_id
+            row["vice_captain"] = player_id == vice_id
+        starters = [
+            self._player_view(
+                row,
+                "starter",
+                index,
+                forecasts,
+                fixtures,
+                teams,
+                participation_by_id,
+            )
+            for index, row in enumerate(raw_starters, start=1)
+        ]
+        bench = [
+            self._player_view(
+                row,
+                "bench",
+                index,
+                forecasts,
+                fixtures,
+                teams,
+                participation_by_id,
+            )
+            for index, row in enumerate(raw_bench, start=1)
+        ]
+        return ModelSquadView(
+            event=1,
+            candidate_id=candidate_id,
+            generated_at=str(payload["created_at"]),
+            formation=str(squad["formation"]),
+            expected_points=round(
+                sum(
+                    forecasts[int(row["element"])]["expected_points"]
+                    for row in raw_starters
+                )
+                + forecasts[captain_id]["expected_points"],
+                2,
+            ),
+            budget_spent=float(squad["budget_spent"]),
+            bank=float(squad["bank"]),
+            selection_basis=(
+                "Lowest combined regret across the independent five-week robust and "
+                "eight-week horizon audit families."
+            ),
+            starters=starters,
+            bench=bench,
+        )
+
+    def _recommended_squad(
+        self,
+        *,
+        event: int,
+        weekly_decision: WeeklyDecisionView,
+        captain_result: dict[str, Any],
+        current_rows: list[dict[str, Any]],
+        current_starter_ids: list[int],
+        forecasts: dict[int, dict[str, Any]],
+        fixtures: dict[int, list[FixtureView]],
+        teams: dict[int, tuple[str, str]],
+        participation_by_id: dict[int, dict[str, Any]],
+    ) -> RecommendedSquadView:
+        selected = weekly_decision.selected
+        weekly_ids = (
+            [*selected.starter_player_ids, *selected.bench_player_ids]
+            if weekly_decision.status == "ready" and selected is not None
+            else []
+        )
+        if (
+            selected is not None
+            and len(selected.starter_player_ids) == 11
+            and len(selected.bench_player_ids) == 4
+            and len(set(weekly_ids)) == 15
+            and set(weekly_ids) <= set(forecasts)
+        ):
+            rows_by_id = self._player_metadata_rows(weekly_ids)
+            if set(rows_by_id) == set(weekly_ids):
+                for player_id, row in rows_by_id.items():
+                    row["captain"] = player_id == selected.captain_player_id
+                    row["vice_captain"] = player_id == selected.vice_captain_player_id
+                starters = [
+                    self._player_view(
+                        rows_by_id[player_id],
+                        "starter",
+                        index,
+                        forecasts,
+                        fixtures,
+                        teams,
+                        participation_by_id,
+                    )
+                    for index, player_id in enumerate(selected.starter_player_ids, start=1)
+                ]
+                bench = [
+                    self._player_view(
+                        rows_by_id[player_id],
+                        "bench",
+                        index,
+                        forecasts,
+                        fixtures,
+                        teams,
+                        participation_by_id,
+                    )
+                    for index, player_id in enumerate(selected.bench_player_ids, start=1)
+                ]
+                expected_points = selected.projected_points
+                if expected_points is None:
+                    expected_points = sum(row.robust_points for row in starters)
+                    expected_points += next(
+                        row.robust_points
+                        for row in starters
+                        if row.player_id == selected.captain_player_id
+                    )
+                return RecommendedSquadView(
+                    event=event,
+                    source="weekly_decision",
+                    action_id=selected.action_id,
+                    formation=selected.formation,
+                    expected_points=round(expected_points, 2),
+                    starters=starters,
+                    bench=bench,
+                )
+
+        current_by_id = {int(row["element"]): dict(row) for row in current_rows}
+        recommended = captain_result["recommended_lineup"]
+        starter_ids = [int(value) for value in recommended["starter_player_ids"]]
+        starter_set = set(starter_ids)
+        ordered_starters = [value for value in current_starter_ids if value in starter_set]
+        ordered_starters.extend(value for value in starter_ids if value not in ordered_starters)
+        bench_ids = [value for value in current_by_id if value not in starter_set]
+        captain_id = int(captain_result["captain"]["player_id"])
+        vice_id = int(captain_result["vice_captain"]["player_id"])
+        for player_id, row in current_by_id.items():
+            row["captain"] = player_id == captain_id
+            row["vice_captain"] = player_id == vice_id
+        starters = [
+            self._player_view(
+                current_by_id[player_id],
+                "starter",
+                index,
+                forecasts,
+                fixtures,
+                teams,
+                participation_by_id,
+            )
+            for index, player_id in enumerate(ordered_starters, start=1)
+        ]
+        bench = [
+            self._player_view(
+                current_by_id[player_id],
+                "bench",
+                index,
+                forecasts,
+                fixtures,
+                teams,
+                participation_by_id,
+            )
+            for index, player_id in enumerate(bench_ids, start=1)
+        ]
+        return RecommendedSquadView(
+            event=event,
+            source="lineup_optimizer",
+            action_id=str(captain_result["receipt_id"]),
+            formation=str(recommended["formation"]),
+            expected_points=round(float(recommended["captain_inclusive_score"]), 2),
+            starters=starters,
+            bench=bench,
+        )
 
     def _event_calendar(self) -> list[dict[str, Any]]:
         connection = self._connection()
@@ -714,8 +1606,9 @@ class WorkspaceBuilder:
         role: str,
         order: int,
         forecasts: dict[int, dict[str, Any]],
-        fixtures: dict[int, FixtureView],
+        fixtures: dict[int, list[FixtureView]],
         teams: dict[int, tuple[str, str]],
+        participation_by_id: dict[int, dict[str, Any]],
     ) -> PlayerView:
         player_id = int(row["element"])
         forecast = forecasts.get(player_id)
@@ -737,17 +1630,43 @@ class WorkspaceBuilder:
             robust_points=round(float(forecast["robust_points"]), 2),
             expected_minutes=round(float(forecast["expected_minutes"]), 1),
             play_probability=round(float(forecast["p_play"]), 4),
-            fixture=fixtures.get(team_id),
+            fixture=(fixtures.get(team_id) or [None])[0],
+            fixtures=fixtures.get(team_id, []),
             role=role,
             order=order,
             captain=bool(row.get("captain", False)),
             vice_captain=bool(row.get("vice_captain", False)),
             availability_status=str(forecast["status"]),
             news=str(forecast["news"]),
+            participation=WorkspaceBuilder._player_participation(
+                forecast, participation_by_id.get(player_id)
+            ),
         )
 
     @staticmethod
-    def _horizon(payload: dict[str, Any], names: dict[int, str]) -> list[HorizonEvent]:
+    def _horizon(
+        payload: dict[str, Any],
+        names: dict[int, str],
+        *,
+        start_event: int,
+        weekly_decision: WeeklyDecisionView,
+    ) -> list[HorizonEvent]:
+        if weekly_decision.status == "ready" and weekly_decision.selected is not None:
+            weekly_rows = [
+                HorizonEvent(
+                    event=row.event,
+                    formation=row.formation,
+                    expected_points=round(row.projected_points, 2),
+                    captain_name=names.get(row.captain_player_id, f"#{row.captain_player_id}"),
+                    vice_captain_name=names.get(
+                        row.vice_captain_player_id, f"#{row.vice_captain_player_id}"
+                    ),
+                )
+                for row in weekly_decision.selected.event_lineups
+                if row.event >= start_event
+            ]
+            if weekly_rows:
+                return weekly_rows
         return [
             HorizonEvent(
                 event=int(event),
@@ -762,6 +1681,7 @@ class WorkspaceBuilder:
                 payload["decision"]["candidate"]["lineups"].items(),
                 key=lambda item: int(item[0]),
             )
+            if int(event) >= start_event
         ]
 
     @staticmethod

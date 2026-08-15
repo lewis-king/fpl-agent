@@ -10,6 +10,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import (
+    CONSENSUS as PARTICIPATION_CONSENSUS,
+)
+from fplagent_data.participation_consensus import RECEIPT as PARTICIPATION_RECEIPT
 from fplagent_data.paths import MANIFESTS, PROCESSED
 from fplagent_data.preseason_lineups import fpl_role_mapping_fingerprint
 
@@ -26,7 +30,7 @@ from .preseason_role_scenario import (
 from .preseason_role_scenario import RESULTS_JSON as SCENARIO_RESULTS
 from .preseason_role_threshold import RESULTS_JSON as THRESHOLD_RESULTS
 
-VERSION = 1
+VERSION = 2
 EVENT = 1
 PLAYERS = PROCESSED / "fpl" / "2026-27" / "preseason" / "players.parquet"
 TEAMS = PROCESSED / "fpl" / "2026-27" / "preseason" / "teams.parquet"
@@ -125,6 +129,140 @@ def _attention_labels(
     return labels
 
 
+def _decision_frontier(
+    decision: Mapping[str, Any],
+    *,
+    player_by_id: Mapping[int, Mapping[str, Any]],
+    forecast_by_id: Mapping[int, Mapping[str, Any]],
+    role_by_id: Mapping[int, Mapping[str, Any]],
+    participation_by_id: Mapping[int, Mapping[str, Any]],
+    issues: list[str],
+) -> dict[str, Any]:
+    """Audit evidence for every player who can win the final synthesis, not just its leader."""
+    published = ((decision.get("decision") or {}).get("candidate") or {})
+    ranking = list(decision.get("ranking") or [])
+    requested_ids = [str(row["candidate_id"]) for row in ranking if row.get("candidate_id")]
+    if not requested_ids and published.get("candidate_id"):
+        requested_ids = [str(published["candidate_id"])]
+
+    candidates: dict[str, Mapping[str, Any]] = {}
+    if published.get("candidate_id"):
+        candidates[str(published["candidate_id"])] = published
+    source = decision.get("source_artifacts") or {}
+    shortlist_value = source.get("robust_shortlist")
+    shortlist_sha = source.get("robust_shortlist_sha256")
+    if shortlist_value:
+        shortlist_path = Path(str(shortlist_value))
+        if not shortlist_path.is_file():
+            issues.append(f"missing synthesis frontier shortlist: {shortlist_path}")
+        elif shortlist_sha and sha256_file(shortlist_path) != shortlist_sha:
+            issues.append("synthesis frontier shortlist differs from the decision receipt")
+        else:
+            try:
+                shortlist = json.loads(shortlist_path.read_text(encoding="utf-8"))
+                candidates.update(
+                    {
+                        str(candidate["candidate_id"]): candidate
+                        for candidate in shortlist.get("candidates") or []
+                    }
+                )
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                issues.append(f"invalid synthesis frontier shortlist: {exc}")
+
+    missing_candidates = sorted(set(requested_ids) - set(candidates))
+    if missing_candidates:
+        issues.append(
+            "synthesis frontier candidates missing from the checksum-bound shortlist: "
+            f"{missing_candidates}"
+        )
+    frontier = [candidates[candidate_id] for candidate_id in requested_ids if candidate_id in candidates]
+    exposure: dict[int, dict[str, int]] = {}
+    for candidate in frontier:
+        selected = set(map(int, candidate.get("selected") or []))
+        lineup = (candidate.get("lineups") or {}).get(str(EVENT)) or {}
+        starters = set(map(int, lineup.get("starters") or []))
+        captain = int(lineup["captain"]) if lineup.get("captain") is not None else None
+        for element in selected:
+            counts = exposure.setdefault(
+                element, {"squads": 0, "starts": 0, "captaincies": 0}
+            )
+            counts["squads"] += 1
+            counts["starts"] += int(element in starters)
+            counts["captaincies"] += int(element == captain)
+
+    frontier_elements = set(exposure)
+    missing_layers = {
+        "official": sorted(frontier_elements - set(player_by_id)),
+        "forecast": sorted(frontier_elements - set(forecast_by_id)),
+        "role": sorted(frontier_elements - set(role_by_id)),
+    }
+    for layer, elements in missing_layers.items():
+        if elements:
+            issues.append(f"frontier players missing from {layer} evidence: {elements}")
+
+    flags = (
+        derive_role_flags(list(role_by_id.values()), frontier_elements)
+        if frontier_elements and not missing_layers["role"]
+        else {}
+    )
+    rows = []
+    denominator = max(len(frontier), 1)
+    for element, counts in exposure.items():
+        if element not in player_by_id or element not in forecast_by_id:
+            continue
+        official = player_by_id[element]
+        forecast = forecast_by_id[element]
+        predicted = participation_by_id.get(element)
+        attention = _attention_labels(official, flags.get(element, FLAG_UNCOVERED))
+        if float(forecast.get("p_play") or 0.0) < 0.75:
+            attention.append("model_p_play_below_75pct")
+        if predicted is not None:
+            for label in map(str, predicted.get("attention") or []):
+                if label not in attention:
+                    attention.append(label)
+        rows.append(
+            {
+                "element": element,
+                "name": str(forecast.get("player_name") or official.get("web_name") or element),
+                "team": str(forecast.get("team_name") or official.get("team") or ""),
+                "position": str(forecast.get("position") or ""),
+                "squad_exposure": counts["squads"] / denominator,
+                "start_exposure": counts["starts"] / denominator,
+                "captain_exposure": counts["captaincies"] / denominator,
+                "p_play": float(forecast.get("p_play") or 0.0),
+                "expected_points": float(forecast.get("expected_points") or 0.0),
+                "role_flag": flags.get(element),
+                "predicted_lineup_consensus": (
+                    str(predicted.get("consensus")) if predicted is not None else None
+                ),
+                "attention": attention,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            not bool(row["attention"]),
+            -float(row["captain_exposure"]),
+            -float(row["start_exposure"]),
+            -float(row["squad_exposure"]),
+            str(row["name"]),
+        )
+    )
+    return {
+        "candidate_count": len(frontier),
+        "requested_candidate_count": len(requested_ids),
+        "player_count": len(frontier_elements),
+        "complete_official_forecast_role_coverage": not any(missing_layers.values()),
+        "predicted_lineup_coverage": sum(element in participation_by_id for element in exposure),
+        "attention_player_count": sum(bool(row["attention"]) for row in rows),
+        "players": rows,
+        "missing": missing_layers,
+        "authority": (
+            "Official, forecast and role coverage are publication gates. Predicted lineups are "
+            "shown across the entire decision frontier but retain zero production weight."
+        ),
+    }
+
+
 def _scenario_stability(scenario: Mapping[str, Any]) -> dict[str, Any]:
     scenarios = scenario.get("scenarios")
     if not isinstance(scenarios, Mapping):
@@ -168,6 +306,133 @@ def _scenario_stability(scenario: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _configuration_names(value: Any) -> set[str]:
+    if not isinstance(value, Mapping):
+        return set()
+    return {
+        str(name)
+        for field in ("starters", "bench_order")
+        for name in (value.get(field) or [])
+        if name not in (None, "")
+    }
+
+
+def _synthesis_tradeoff(
+    decision: Mapping[str, Any] | None,
+    challenger_squad_id: str,
+) -> dict[str, Any]:
+    if not isinstance(decision, Mapping):
+        return {}
+    selected_id = str(
+        ((decision.get("decision") or {}).get("candidate_id") or "")
+        if isinstance(decision.get("decision"), Mapping)
+        else ""
+    )
+    ranking = decision.get("ranking")
+    if not selected_id or not isinstance(ranking, list):
+        return {}
+    rows = {
+        str(row.get("candidate_id") or ""): row
+        for row in ranking
+        if isinstance(row, Mapping) and row.get("candidate_id")
+    }
+    selected = rows.get(selected_id)
+    challenger = rows.get(challenger_squad_id)
+    if not isinstance(selected, Mapping) or not isinstance(challenger, Mapping):
+        return {}
+
+    def delta(field: str) -> float | None:
+        if selected.get(field) is None or challenger.get(field) is None:
+            return None
+        return float(challenger[field]) - float(selected[field])
+
+    synthesis_delta = delta("synthesis_regret")
+    robust_delta = delta("robust_family_regret")
+    horizon_delta = delta("horizon_family_regret")
+    rank = int(challenger["rank"]) if challenger.get("rank") is not None else None
+    why = None
+    if synthesis_delta is not None and synthesis_delta > 0:
+        rank_text = f"ranked {rank}" if rank is not None else "ranked below the winner"
+        why = (
+            f"Review only: the alternative is {rank_text} in the multi-gameweek synthesis "
+            f"and carries {synthesis_delta:.3f} more synthesis regret than the selected squad."
+        )
+    return {
+        "challenger_synthesis_rank": rank,
+        "synthesis_regret_delta": synthesis_delta,
+        "five_week_regret_delta": robust_delta,
+        "eight_week_regret_delta": horizon_delta,
+        "why_not_selected": why,
+    }
+
+
+def _decision_impacts(
+    scenario: Mapping[str, Any],
+    decision: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Summarise supported scenario reversals without granting them authority.
+
+    The scenario artifact is intentionally verbose because it is a research receipt.  This
+    projection gives API/UI consumers the smallest actionable description of a reversal while
+    preserving the fact that every scenario is a counterfactual sensitivity bound.
+    """
+    values = scenario.get("scenarios")
+    if not isinstance(values, Mapping):
+        return []
+    impacts: list[dict[str, Any]] = []
+    for scenario_name in (
+        "baseline",
+        "moderate_role_stress",
+        "severe_role_stress",
+        "not_listed_dnp_boundary",
+    ):
+        row = values.get(scenario_name)
+        if not isinstance(row, Mapping):
+            continue
+        replay = row.get("deep_squad_replay")
+        if not isinstance(replay, Mapping) or not replay.get("cross_family_holdout_support"):
+            continue
+        incumbent = replay.get("incumbent_configuration")
+        challenger = replay.get("challenger_configuration")
+        incumbent_names = _configuration_names(incumbent)
+        challenger_names = _configuration_names(challenger)
+        deltas = replay.get("holdout_delta_challenger_to_incumbent") or {}
+        family_means = [
+            float(metric["mean"])
+            for metric in deltas.values()
+            if isinstance(metric, Mapping) and metric.get("mean") is not None
+        ]
+        challenger_squad_id = str(replay.get("challenger_squad_id") or "")
+        impacts.append(
+            {
+                "scenario": scenario_name,
+                "description": str(row.get("description") or ""),
+                "challenger_squad_id": challenger_squad_id,
+                "incoming": sorted(challenger_names - incumbent_names),
+                "outgoing": sorted(incumbent_names - challenger_names),
+                "formation": (
+                    str(challenger.get("formation") or "")
+                    if isinstance(challenger, Mapping)
+                    else ""
+                ),
+                "captain": (
+                    str(challenger.get("captain") or "")
+                    if isinstance(challenger, Mapping)
+                    else ""
+                ),
+                "vice_captain": (
+                    str(challenger.get("vice_captain") or "")
+                    if isinstance(challenger, Mapping)
+                    else ""
+                ),
+                "minimum_family_gain": min(family_means) if family_means else None,
+                "counterfactual_not_probability": True,
+                **_synthesis_tradeoff(decision, challenger_squad_id),
+            }
+        )
+    return impacts
+
+
 def audit_availability_watch(
     *,
     as_of: str | datetime | None = None,
@@ -181,6 +446,8 @@ def audit_availability_watch(
     role_evidence_path: Path = ROLE_EVIDENCE,
     scenario_results_path: Path = SCENARIO_RESULTS,
     threshold_results_path: Path = THRESHOLD_RESULTS,
+    participation_receipt_path: Path | None = None,
+    participation_consensus_path: Path | None = None,
     output_path: Path | None = RECEIPT,
 ) -> dict[str, Any]:
     checked = _aware(as_of or datetime.now(tz=UTC), "as_of")
@@ -199,6 +466,41 @@ def audit_availability_watch(
     events = _load_parquet(events_path, "official events table", issues)
     forecasts = _load_parquet(forecast_path, "direct forecast", issues)
     role_rows = _load_parquet(role_evidence_path, "preseason role evidence", issues)
+
+    # Third-party predicted lineups are deliberately optional and shadow-only.  The live
+    # default consumes them when present, while isolated historical/unit replays do not
+    # accidentally inherit a workstation's current receipt.
+    if (
+        participation_receipt_path is None
+        and participation_consensus_path is None
+        and players_path == PLAYERS
+        and forecast_path == CURRENT_FORECAST
+    ):
+        participation_receipt_path = PARTICIPATION_RECEIPT
+        participation_consensus_path = PARTICIPATION_CONSENSUS
+    participation_receipt: dict[str, Any] | None = None
+    participation_rows: list[dict[str, Any]] = []
+    participation_current = False
+    participation_issues: list[str] = []
+    if participation_receipt_path is not None or participation_consensus_path is not None:
+        if participation_receipt_path is None or participation_consensus_path is None:
+            participation_issues.append(
+                "participation receipt and consensus paths must be supplied together"
+            )
+        elif not participation_receipt_path.is_file() or not participation_consensus_path.is_file():
+            participation_issues.append("predicted-lineup consensus has not been collected")
+        else:
+            loaded = _load_json(
+                participation_receipt_path,
+                "participation consensus receipt",
+                participation_issues,
+            )
+            participation_receipt = loaded
+            participation_rows = _load_parquet(
+                participation_consensus_path,
+                "participation consensus",
+                participation_issues,
+            )
 
     if issues:
         result = {
@@ -274,6 +576,44 @@ def audit_availability_watch(
             "preseason threshold does not describe the current forecast",
         ),
     ]
+    if participation_receipt is not None and participation_consensus_path is not None:
+        participation_output = participation_receipt.get("outputs") or {}
+        participation_input = participation_receipt.get("inputs") or {}
+        if participation_receipt.get("event") != EVENT:
+            participation_issues.append("predicted-lineup consensus describes another event")
+        if participation_output.get("consensus_sha256") != sha256_file(
+            participation_consensus_path
+        ):
+            participation_issues.append("predicted-lineup consensus differs from its receipt")
+        if participation_input.get("official_players_sha256") != players_sha:
+            participation_issues.append(
+                "predicted-lineup consensus uses a different official player generation"
+            )
+        if participation_input.get("forecast_sha256") != forecast_sha:
+            participation_issues.append(
+                "predicted-lineup consensus uses a different forecast generation"
+            )
+        try:
+            participation_observed = _aware(
+                str(participation_receipt["observed_at"]),
+                "participation observed_at",
+            )
+            participation_age = checked - participation_observed
+            if participation_age < -timedelta(minutes=5):
+                participation_issues.append(
+                    "predicted-lineup consensus was observed in the future"
+                )
+            elif participation_age > advisory_max_age:
+                participation_issues.append(
+                    "predicted-lineup consensus is stale: "
+                    f"{int(participation_age.total_seconds())}s exceeds "
+                    f"{int(advisory_max_age.total_seconds())}s"
+                )
+        except (AvailabilityWatchError, KeyError, ValueError) as exc:
+            participation_issues.append(str(exc))
+        participation_current = not participation_issues
+    if participation_issues:
+        warnings.extend(participation_issues)
     mapping_fingerprint = receipt_inputs.get("role_mapping_fingerprint")
     if mapping_fingerprint:
         current_mapping = fpl_role_mapping_fingerprint(teams, players, events)
@@ -330,6 +670,23 @@ def audit_availability_watch(
         for row in role_rows
         if row.get("fpl_element") is not None
     }
+    participation_by_id = (
+        {
+            int(row["element"]): row
+            for row in participation_rows
+            if row.get("element") is not None and int(row.get("event") or -1) == EVENT
+        }
+        if participation_current
+        else {}
+    )
+    frontier = _decision_frontier(
+        decision,
+        player_by_id=player_by_id,
+        forecast_by_id=forecast_by_id,
+        role_by_id=role_by_id,
+        participation_by_id=participation_by_id,
+        issues=issues,
+    )
     missing = {
         "official": sorted(set(selected) - set(player_by_id)),
         "forecast": sorted(set(selected) - set(forecast_by_id)),
@@ -365,6 +722,10 @@ def audit_availability_watch(
         role = role_by_id[element]
         flag = flags[element]
         attention = _attention_labels(official, flag)
+        predicted = participation_by_id.get(element)
+        if predicted is not None:
+            predicted_attention = list(map(str, predicted.get("attention") or []))
+            attention.extend(label for label in predicted_attention if label not in attention)
         mechanical = mechanical_rates.get(str(element)) or {}
         player_rows.append(
             {
@@ -406,6 +767,24 @@ def audit_availability_watch(
                     if mechanical
                     else None
                 ),
+                "predicted_lineups": (
+                    {
+                        "consensus": str(predicted["consensus"]),
+                        "predicted_start_sources": list(
+                            map(str, predicted.get("predicted_start_sources") or [])
+                        ),
+                        "predicted_not_start_sources": list(
+                            map(str, predicted.get("predicted_not_start_sources") or [])
+                        ),
+                        "complete_source_count": int(
+                            predicted.get("complete_source_count") or 0
+                        ),
+                        "production_weight": 0.0,
+                        "production_adjustment_authorized": False,
+                    }
+                    if predicted is not None
+                    else None
+                ),
                 "attention": attention,
             }
         )
@@ -431,9 +810,39 @@ def audit_availability_watch(
         warnings.append(
             f"{len(uncovered)} selected players have no confirmed preseason club feed"
         )
+    predicted_bench = [
+        row
+        for row in player_rows
+        if (row.get("predicted_lineups") or {}).get("consensus")
+        == "predicted_bench_consensus"
+    ]
+    predicted_disagreement = [
+        row
+        for row in player_rows
+        if (row.get("predicted_lineups") or {}).get("consensus")
+        == "source_disagreement"
+    ]
+    if predicted_bench:
+        warnings.append(
+            f"{len(predicted_bench)} selected players have a two-source predicted-bench flag; "
+            "this remains shadow evidence pending prospective calibration"
+        )
+    if predicted_disagreement:
+        warnings.append(
+            f"{len(predicted_disagreement)} selected players have contradictory predicted lineups"
+        )
     stability = _scenario_stability(scenario)
+    participation_sources = (
+        participation_receipt.get("sources")
+        if participation_receipt is not None
+        and isinstance(participation_receipt.get("sources"), Mapping)
+        else {}
+    )
     if not stability["baseline_stable"] or not stability["moderate_stable"]:
-        issues.append("published decision is not stable in baseline and moderate role scenarios")
+        warnings.append(
+            "independent role replay identifies supported baseline or moderate alternatives; "
+            "these counterfactuals require review but do not make aligned evidence stale"
+        )
 
     if issues:
         status = "refresh_required"
@@ -441,6 +850,9 @@ def audit_availability_watch(
     elif official_risks:
         status = "official_attention"
         action = "rerun_full_deadline_pipeline_if_official_evidence_changed"
+    elif not stability["baseline_stable"] or not stability["moderate_stable"]:
+        status = "scenario_attention"
+        action = "retain_decision_and_review_supported_alternatives"
     elif role_verification:
         status = "verification_required"
         action = "retain_decision_and_verify_flagged_players"
@@ -462,6 +874,23 @@ def audit_availability_watch(
             "Official status is already represented by the aligned forecast. Preseason lineup "
             "evidence and sensitivity factors are advisory and cannot directly change production."
         ),
+        "evidence_hierarchy": {
+            "production": [
+                "official_fpl_status_and_news",
+                "historically_validated_minute_model",
+            ],
+            "deadline_override_requires": (
+                "timestamped official club, manager press-conference or official FPL evidence"
+            ),
+            "context_only": ["preseason_friendly_lineups"],
+            "prospective_shadow": ["independent_predicted_lineup_consensus"],
+            "predicted_lineup_production_weight": 0.0,
+            "preseason_friendly_production_weight": 0.0,
+            "reason": (
+                "The historical role-feature challenger lost points in exact legal replay; "
+                "post-tournament return schedules and experimental friendly teams are confounders."
+            ),
+        },
         "lineage": {
             "decision_sha256": decision_sha,
             "forecast_sha256": forecast_sha,
@@ -477,6 +906,63 @@ def audit_availability_watch(
             ),
         },
         "scenario_stability": stability,
+        "predicted_lineup_consensus": {
+            "collected": participation_receipt is not None,
+            "current": participation_current,
+            "status": (
+                participation_receipt.get("status")
+                if participation_receipt is not None
+                else "not_collected"
+            ),
+            "production_weight": 0.0,
+            "production_adjustment_authorized": False,
+            "promotion_gate": (
+                participation_receipt.get("promotion_gate") or {}
+                if participation_receipt is not None
+                else {}
+            ),
+            "summary": (
+                participation_receipt.get("summary") or {}
+                if participation_receipt is not None
+                else {}
+            ),
+            "eligible_source_count": (
+                sum(
+                    bool(source.get("decision_eligible"))
+                    for source in participation_sources.values()
+                    if isinstance(source, Mapping)
+                )
+                if participation_receipt is not None
+                else 0
+            ),
+            "captured_source_count": (
+                sum(
+                    source.get("status") == "captured"
+                    for source in participation_sources.values()
+                    if isinstance(source, Mapping)
+                )
+                if participation_receipt is not None
+                else 0
+            ),
+            "issues": participation_issues,
+        },
+        "decision_frontier": frontier,
+        "decision_impacts": _decision_impacts(scenario, decision),
+        "coverage": {
+            "teams": (scenario.get("coverage") or {}).get("teams"),
+            "teams_with_confirmed_lineups": (scenario.get("coverage") or {}).get(
+                "teams_with_confirmed_lineups"
+            ),
+            "teams_without_confirmed_lineups": list(
+                map(
+                    str,
+                    (scenario.get("coverage") or {}).get(
+                        "teams_without_confirmed_lineups"
+                    )
+                    or [],
+                )
+            ),
+        },
         "threshold_boundary": {
             "classification": boundary.get("classification"),
             "highest_supported_not_listed_retention": highest_supported,

@@ -34,7 +34,10 @@ from .component_models import (
 from .component_models import (
     MODEL_FILE as COMPONENT_EVENT_MODEL_FILE,
 )
-from .market_odds import apply_current_market_shadow_rates
+from .market_odds import (
+    apply_current_market_decision_rates,
+    apply_current_market_shadow_rates,
+)
 from .models import BACKTEST_FORECAST, CURRENT_FORECAST, require_cuda
 from .paths import ARTIFACTS, MODEL_DATA, REPORTS, ensure_engine_layout
 from .tournament import (
@@ -1186,6 +1189,7 @@ def simulate_component_outcomes(
     seed: int,
     *,
     component_forecast_path: Path = CURRENT_COMPONENT_FORECAST,
+    component_point_weights: dict[str, int] | None = None,
 ) -> tuple[
     list[int],
     np.ndarray,
@@ -1194,6 +1198,29 @@ def simulate_component_outcomes(
     dict[str, np.ndarray],
     dict[str, Any],
 ]:
+    point_components = (
+        "appearance_points",
+        "goal_points",
+        "assist_points",
+        "clean_sheet_points",
+        "goals_conceded_points",
+        "save_points",
+        "penalty_points",
+        "discipline_points",
+        "bonus_points",
+        "defensive_contribution_points",
+    )
+    weights = {name: 1 for name in point_components}
+    if component_point_weights:
+        unknown = set(component_point_weights) - set(weights)
+        if unknown:
+            raise ValueError(f"Unknown component point weights: {sorted(unknown)}")
+        if any(
+            not isinstance(value, int) or not 0 <= value <= 3
+            for value in component_point_weights.values()
+        ):
+            raise ValueError("Component point weights must be integer multipliers in [0, 3]")
+        weights.update(component_point_weights)
     rng = np.random.default_rng(seed)
     player_ids = sorted(by_player)
     players = len(player_ids)
@@ -1550,19 +1577,7 @@ def simulate_component_outcomes(
             float(play_error.max(initial=0.0)),
         )
         event_points = sum(
-            event_components_total[name]
-            for name in (
-                "appearance_points",
-                "goal_points",
-                "assist_points",
-                "clean_sheet_points",
-                "goals_conceded_points",
-                "save_points",
-                "penalty_points",
-                "discipline_points",
-                "bonus_points",
-                "defensive_contribution_points",
-            )
+            weights[name] * event_components_total[name] for name in point_components
         )
         points[:, event_offset, :] = np.clip(event_points, -32, 120).astype(np.int8)
         component_values = {
@@ -1606,6 +1621,7 @@ def simulate_component_outcomes(
         "score_summaries": score_summaries,
         "play_rho": residual_calibration.play_rho,
         "component_event_models": component_forecast_diagnostics,
+        "component_point_weights": weights,
     }
     return player_ids, points, anchored, played, component_means, diagnostics
 
@@ -2079,7 +2095,13 @@ def run_component_tournament(
     rows, loaded = _load_rows(DEFAULT_EVENTS)
     by_player = loaded["by_player"]
     meta = loaded["meta"]
-    goal_rates, current_goal_diagnostics = predict_current_goal_rates(by_player, DEFAULT_EVENTS)
+    incumbent_goal_rates, current_goal_diagnostics = predict_current_goal_rates(
+        by_player, DEFAULT_EVENTS
+    )
+    goal_rates, market_decision = apply_current_market_decision_rates(
+        incumbent_goal_rates,
+        events=DEFAULT_EVENTS,
+    )
     empirical = calibrate_empirical_components()
     attack_allocation_backtest = backtest_attack_allocation(empirical)
     scoring_reconstruction_backtest = backtest_scoring_reconstruction()
@@ -2235,9 +2257,10 @@ def run_component_tournament(
             )
         ]
     market_goal_rates, market_shadow = apply_current_market_shadow_rates(
-        goal_rates,
+        incumbent_goal_rates,
         events=DEFAULT_EVENTS,
     )
+    market_shadow["production_application"] = market_decision
     if market_shadow["status"] == "ready_shadow":
         (
             market_player_ids,

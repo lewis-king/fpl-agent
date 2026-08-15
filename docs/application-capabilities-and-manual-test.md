@@ -1,6 +1,6 @@
 # FPLAgent capabilities and manual test guide
 
-**Updated:** 8 August 2026  
+**Updated:** 10 August 2026
 **Product mode today:** local, read-only, preseason-first FPL decision workspace
 
 ## What the application does
@@ -17,6 +17,9 @@ The last validated workspace appears immediately. A persisted single-flight refr
 authenticated squad and public evidence, rebuilds only when inputs changed, and atomically replaces
 the visible decision only after lineage and evidence gates pass. A failed refresh preserves the last
 good result.
+
+Official FPL semantics and material betting-market movement are probed between the scheduled
+deadline windows. Small exchange ticks are archived without launching a full squad search.
 
 ### Connects the manager's real FPL squad
 
@@ -58,7 +61,10 @@ analysis rail provides:
 - captain and vice comparison over the recommended XI;
 - robust xP, expected minutes and play probability for the selected player;
 - strongest model signals and the priority review queue;
-- availability, favourable-fixture, bench-xP and bench-spend summaries;
+- official availability, zero-weight preseason context checks, favourable-fixture, bench-xP and
+  bench-spend summaries;
+- timestamped predicted-XI start support, two-source bench flags and provider disagreement, kept
+  visibly separate from the model and official status;
 - position-unit summaries and all 15 ranked model scores;
 - deterministic strengths, concerns and delta to the published benchmark;
 - opening-horizon xP, main uncertainty, freshness and source hashes; and
@@ -165,12 +171,22 @@ Open <http://127.0.0.1:5173>. Supporting ports are API `8000`, private Qwen `801
    is the weakest position in this 15?” and “Rebuild around three Liverpool players while keeping
    X”. Numerical answers should agree with the active pitch/receipt or state why data is missing.
 9. **Evidence:** open “Inspect sources and receipt”. Confirm paths and SHA-256 hashes are visible and
-   freshness warnings are explicit.
+   freshness warnings are explicit. A supported role counterfactual should appear as attention
+   while the decision remains current; missing, stale or mismatched lineage must block publication.
+   Confirm the headline distinguishes official availability from friendly context, says friendly
+   rotation and post-tournament returns have zero production weight and do not directly change xP,
+   and that a supported alternative explains its production synthesis rank/rejection.
 10. **Manual refresh:** use Refresh workspace. Repeated clicks should join one run. An unchanged run
     should reuse the content-addressed result; a failure must retain the previous decision.
 11. **Preseason weekly boundary:** the weekly transfer card may correctly say pending/not ready.
     FPL has not yet exposed truthful post-GW1 transfer-bank and purchase-price state.
-12. **Shutdown:** press `Ctrl+C` once in the web launcher terminal and once in MCP. Both should return
+12. **First weekly receipt:** after GW1, confirm the primary pitch targets the next deadline and the
+    Recommended view applies the receipt's transfers, XI, bench order and armband together. Expand
+    Chip & timing and verify the operational call is distinct from any research-only shadow.
+13. **Blank/double display:** on a confirmed double, verify both opponent labels appear on every
+    affected player while a blank shows no fixture; the projected points should already aggregate
+    the exact event schedule.
+14. **Shutdown:** press `Ctrl+C` once in the web launcher terminal and once in MCP. Both should return
     to the shell without a lingering daemon.
 
 Useful health checks:
@@ -187,6 +203,8 @@ curl -s http://127.0.0.1:8000/api/v1/market/telemetry
 ```bash
 .venv/bin/fplagent prospective-scoreboard
 .venv/bin/fplagent challenger-registry
+.venv/bin/fplagent replay-captain-returns
+.venv/bin/fplagent rehearse-weekly-decision --event 2 --horizon 5
 ```
 
 After a final GW, score its frozen decision first:

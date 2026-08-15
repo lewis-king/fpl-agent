@@ -76,6 +76,45 @@ def test_confirmed_upload_becomes_the_active_workspace(tmp_path: Path) -> None:
     assert workspace.critique.suggested_questions
 
 
+def test_mcp_candidate_identity_changes_with_squad_not_observation_time(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    published = json.loads(DEFAULT_DECISION.read_text(encoding="utf-8"))
+    squad = published["decision"]["squad"]
+    lineup = published["decision"]["candidate"]["lineups"]["1"]
+    players = list(squad["starters"]) + list(squad["bench"])
+    picks = [
+        {
+            "element": int(player["element"]),
+            "name": str(player["name"]),
+            "position": position,
+            "is_captain": int(player["element"]) == int(lineup["captain"]),
+            "is_vice_captain": int(player["element"]) == int(lineup["vice_captain"]),
+        }
+        for position, player in enumerate(players, start=1)
+    ]
+    snapshot = {
+        "status": "connected",
+        "entry_id": 431892,
+        "observed_at": "2026-08-08T10:00:00+00:00",
+        "picks": picks,
+    }
+
+    first = service.adopt_mcp_snapshot(snapshot)
+    second = service.adopt_mcp_snapshot(
+        {**snapshot, "observed_at": "2026-08-08T12:00:00+00:00"}
+    )
+    changed_picks = [dict(row) for row in picks]
+    changed_picks[0]["is_captain"] = True
+    for row in changed_picks[1:]:
+        row["is_captain"] = False
+    changed = service.adopt_mcp_snapshot({**snapshot, "picks": changed_picks})
+
+    assert first == second
+    assert changed != first
+
+
 def test_workspace_distinguishes_current_armband_from_model_recommendation(
     tmp_path: Path,
 ) -> None:
@@ -122,8 +161,10 @@ def test_critique_names_full_squad_differences_from_published_benchmark(
     tmp_path: Path,
 ) -> None:
     service = _service(tmp_path)
+    published = json.loads(DEFAULT_DECISION.read_text(encoding="utf-8"))
+    excluded = int(published["decision"]["squad"]["bench"][0]["element"])
     service.generate(
-        GenerateSquadRequest(horizon=1, excluded_player_ids=[124])
+        GenerateSquadRequest(horizon=1, excluded_player_ids=[excluded])
     )
 
     critique = service.critique()
@@ -132,8 +173,37 @@ def test_critique_names_full_squad_differences_from_published_benchmark(
     )
 
     assert "the active benchmark instead contains" in structural.detail
-    assert 124 in structural.player_ids
+    assert excluded in structural.player_ids
     assert critique.suggested_questions[0].startswith("Why does the benchmark use")
+
+
+def test_workspace_exposes_published_model_squad_separately_from_active_squad(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    published = json.loads(DEFAULT_DECISION.read_text(encoding="utf-8"))
+    excluded = int(published["decision"]["squad"]["bench"][0]["element"])
+    service.generate(
+        GenerateSquadRequest(horizon=1, excluded_player_ids=[excluded])
+    )
+
+    workspace = WorkspaceBuilder(
+        active_decision_path=service.active_decision_path,
+        profile_path=tmp_path / "profile.json",
+    ).build()
+    model = workspace.decision.model_squad
+
+    assert model is not None
+    assert model.candidate_id == published["decision"]["candidate"]["candidate_id"]
+    assert excluded not in {
+        player.player_id
+        for player in [*workspace.squad.starters, *workspace.squad.bench]
+    }
+    assert excluded in {
+        player.player_id for player in [*model.starters, *model.bench]
+    }
+    assert len(model.starters) == 11
+    assert len(model.bench) == 4
 
 
 def test_chat_optimiser_returns_exact_applied_constraints_and_roster(tmp_path: Path) -> None:

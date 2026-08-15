@@ -299,3 +299,29 @@ def test_component_simulator_scores_doubles_per_fixture_and_blanks_as_zero(
     assert identity["single_fixture_player_events"] == 2
     assert identity["blank_player_events"] == 3
     assert identity["maximum_fixtures_per_team_event"] == 2
+
+
+def test_component_simulation_rejects_unknown_scoring_stress() -> None:
+    with pytest.raises(ValueError, match="Unknown component point weights"):
+        simulate_component_outcomes(
+            {},
+            (1,),
+            {},
+            None,  # type: ignore[arg-type]
+            10,
+            1,
+            component_point_weights={"imaginary_points": 0},
+        )
+
+
+def test_component_simulation_rejects_fractional_scoring_stress() -> None:
+    with pytest.raises(ValueError, match="integer multipliers"):
+        simulate_component_outcomes(
+            {},
+            (1,),
+            {},
+            None,  # type: ignore[arg-type]
+            10,
+            1,
+            component_point_weights={"bonus_points": 0.5},  # type: ignore[dict-item]
+        )

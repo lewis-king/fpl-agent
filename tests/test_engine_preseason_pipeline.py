@@ -37,6 +37,8 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
     pq.write_table(pa.Table.from_pylist([{"event_number": 1, "element": 1}]), component)
     role_receipt = tmp_path / "role-receipt.json"
     role_evidence = tmp_path / "role-evidence.parquet"
+    participation_receipt = tmp_path / "participation-receipt.json"
+    participation_consensus = tmp_path / "participation-consensus.parquet"
     role_receipt.write_text('{"current": true}\n', encoding="utf-8")
     pq.write_table(pa.Table.from_pylist([{"fpl_element": 1}]), role_evidence)
     calls: list[str] = []
@@ -51,6 +53,17 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
 
     def role_evidence_refresher() -> dict[str, Any]:
         raise AssertionError("current role evidence must not be fetched again")
+
+    def participation_refresher(**kwargs: Any) -> dict[str, Any]:
+        calls.append("participation_consensus")
+        Path(kwargs["receipt_path"]).write_text(
+            '{"status":"shadow_consensus_ready"}\n', encoding="utf-8"
+        )
+        pq.write_table(
+            pa.Table.from_pylist([{"event": 1, "element": 1}]),
+            Path(kwargs["consensus_path"]),
+        )
+        return {"status": "shadow_consensus_ready", "production_weight": 0.0}
 
     def initial_squad_runner(stability_samples: int) -> dict[str, Any]:
         assert stability_samples == 3
@@ -156,7 +169,13 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             "published_role_scenario_report_path": tmp_path / "role-scenario.md",
             "published_role_threshold_path": tmp_path / "role-threshold.json",
             "published_role_threshold_report_path": tmp_path / "role-threshold.md",
+            "published_robust_report_path": tmp_path / "robust-search.md",
+            "published_horizon_report_path": tmp_path / "horizon-audit.md",
+            "published_structure_stress_path": tmp_path / "structure-stress.json",
+            "published_structure_stress_report_path": tmp_path / "structure-stress.md",
             "availability_watch_path": tmp_path / "availability-watch.json",
+            "participation_receipt_path": participation_receipt,
+            "participation_consensus_path": participation_consensus,
             "refresh_runner": refresh_runner,
             "initial_squad_runner": initial_squad_runner,
             "tournament_runner": named_runner(
@@ -179,6 +198,19 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
                 },
             ),
             "synthesis_runner": synthesis_runner,
+            "structure_stress_runner": artifact_runner(
+                "structure_stress",
+                {
+                    "verdict": "PASS",
+                    "publishable": True,
+                    "stress_leader_id": "R-gw1",
+                    "supported_reversal": True,
+                    "reconciliation": {
+                        "passed": True,
+                        "status": "gw1_edge_recorded_multiweek_selector_retains_published",
+                    },
+                },
+            ),
             "role_scenario_runner": artifact_runner(
                 "preseason_role_scenario",
                 {
@@ -192,6 +224,7 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             ),
             "role_lineage_validator": role_lineage_validator,
             "role_evidence_refresher": role_evidence_refresher,
+            "participation_refresher": participation_refresher,
             "availability_auditor": availability_auditor,
             "evidence_auditor": evidence_auditor,
             "prospective_freezer": prospective_freezer,
@@ -215,6 +248,7 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
     assert second["reused"] is True
     assert first_calls == [
         "refresh",
+        "participation_consensus",
         "initial_squad",
         "residual_tournament",
         "component_tournament",
@@ -223,11 +257,12 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "robust_search",
         "horizon_audit",
         "synthesis",
+        "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
         "prospective_freeze",
     ]
-    assert calls == [*first_calls, "refresh"]
+    assert calls == [*first_calls, "refresh", "participation_consensus"]
     assert audit_calls["count"] == 3
     assert [stage["name"] for stage in first["stages"]] == [
         "initial_squad",
@@ -238,6 +273,7 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "robust_search",
         "horizon_audit",
         "synthesis",
+        "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
         "availability_watch",
@@ -250,6 +286,67 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "robust-search.md",
         "horizon-audit.md",
     }
+    assert Path(kwargs["published_robust_report_path"]).read_text(encoding="utf-8") == (
+        "# robust_search\n"
+    )
+    assert Path(kwargs["published_horizon_report_path"]).read_text(encoding="utf-8") == (
+        "# horizon_audit\n"
+    )
+    assert Path(kwargs["published_structure_stress_report_path"]).read_text(
+        encoding="utf-8"
+    ) == "# structure_stress\n"
+
+
+def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
+    tmp_path: Path,
+) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+    first = run_gw1_deadline_pipeline(**kwargs)
+    receipt_path = Path(kwargs["pipeline_receipt_path"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["status"] = "running"
+    receipt["published"] = False
+    receipt["stages"] = receipt["stages"][:8]
+    receipt["current_stage"] = "structure_stress"
+    receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+    stage_dir = Path(kwargs["staging_root"]) / first["input_fingerprint"][:16]
+    for name in (
+        "structure-stress.json",
+        "structure-stress.md",
+        "preseason-role-scenario.json",
+        "preseason-role-scenario.md",
+        "preseason-role-threshold.json",
+        "preseason-role-threshold.md",
+        "availability-watch.json",
+    ):
+        (stage_dir / name).unlink(missing_ok=True)
+    calls.clear()
+
+    resumed = run_gw1_deadline_pipeline(**kwargs)
+
+    assert resumed["status"] == "published"
+    assert calls == [
+        "refresh",
+        "participation_consensus",
+        "structure_stress",
+        "preseason_role_scenario",
+        "preseason_role_threshold",
+        "prospective_freeze",
+    ]
+    assert [stage["name"] for stage in resumed["stages"]] == [
+        "initial_squad",
+        "residual_tournament",
+        "component_selection",
+        "component_candidates",
+        "component_holdout",
+        "robust_search",
+        "horizon_audit",
+        "synthesis",
+        "structure_stress",
+        "preseason_role_scenario",
+        "preseason_role_threshold",
+        "availability_watch",
+    ]
 
 
 def test_failed_staged_gate_does_not_replace_active_gw1_decision(tmp_path: Path) -> None:
@@ -315,7 +412,43 @@ def test_stale_role_evidence_is_repaired_before_expensive_stages(tmp_path: Path)
 
     assert result["status"] == "published"
     assert validation_calls == 2
-    assert calls[:3] == ["refresh", "role_evidence_refresh", "initial_squad"]
+    assert calls[:4] == [
+        "refresh",
+        "role_evidence_refresh",
+        "participation_consensus",
+        "initial_squad",
+    ]
+
+
+def test_fresh_official_run_always_refreshes_role_evidence_before_tournaments(
+    tmp_path: Path,
+) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+    validation_calls = 0
+
+    def validator(**_: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        return {"status": "current", "role_evidence_sha256": "fresh"}
+
+    def refresher() -> dict[str, Any]:
+        calls.append("role_evidence_refresh")
+        return {"created_at": "2026-08-07T11:30:01+00:00"}
+
+    kwargs["reuse_latest_official"] = False
+    kwargs["role_lineage_validator"] = validator
+    kwargs["role_evidence_refresher"] = refresher
+
+    result = run_gw1_deadline_pipeline(**kwargs)
+
+    assert result["status"] == "published"
+    assert validation_calls == 1
+    assert calls[:4] == [
+        "refresh",
+        "role_evidence_refresh",
+        "participation_consensus",
+        "initial_squad",
+    ]
 
 
 def test_role_evidence_refresh_failure_stops_before_tournaments(tmp_path: Path) -> None:
@@ -347,6 +480,10 @@ def test_failed_final_recheck_rolls_back_all_published_gw1_artifacts(
         "decision": Path(kwargs["published_decision_path"]),
         "results": Path(kwargs["published_results_path"]),
         "report": Path(kwargs["published_report_path"]),
+        "robust": Path(kwargs["published_robust_report_path"]),
+        "horizon": Path(kwargs["published_horizon_report_path"]),
+        "structure": Path(kwargs["published_structure_stress_path"]),
+        "structure_report": Path(kwargs["published_structure_stress_report_path"]),
         "status": Path(kwargs["deadline_status_path"]),
     }
     for name, path in tracked.items():
@@ -381,6 +518,10 @@ def test_failed_prospective_freeze_rolls_back_published_gw1_artifacts(
         "decision": Path(kwargs["published_decision_path"]),
         "results": Path(kwargs["published_results_path"]),
         "report": Path(kwargs["published_report_path"]),
+        "robust": Path(kwargs["published_robust_report_path"]),
+        "horizon": Path(kwargs["published_horizon_report_path"]),
+        "structure": Path(kwargs["published_structure_stress_path"]),
+        "structure_report": Path(kwargs["published_structure_stress_report_path"]),
         "status": Path(kwargs["deadline_status_path"]),
     }
     for name, path in tracked.items():

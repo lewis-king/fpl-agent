@@ -54,6 +54,7 @@ function normalizeWorkspace(workspace: Workspace): Workspace {
     },
     decision: {
       ...workspace.decision,
+      model_squad: workspace.decision.model_squad ?? null,
       weekly: workspace.decision.weekly ?? {
         status: 'not_available',
         event: workspace.phase.event,

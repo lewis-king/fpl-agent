@@ -8,6 +8,35 @@ export interface Fixture {
   label: string
 }
 
+export interface AppearanceStates {
+  dnp: number
+  minutes_1_59: number
+  minutes_60_89: number
+  minutes_90_plus: number
+}
+
+export interface PlayerParticipation {
+  evidence_status: 'clear' | 'lineup_watch' | 'verify_role' | 'official_attention' | 'uncovered' | 'refreshing'
+  confidence: 'high' | 'medium' | 'low'
+  headline: string
+  detail: string
+  attention: string[]
+  states: AppearanceStates
+  official_chance: number | null
+  official_news: string
+  eligible_team_matches: number | null
+  squad_listings: number | null
+  starts: number | null
+  appearances: number | null
+  last_match_listed: boolean | null
+  last_match_started: boolean | null
+  mechanically_retained_p_play: number | null
+  predicted_lineup_consensus: string | null
+  predicted_start_sources: string[]
+  predicted_not_start_sources: string[]
+  predicted_lineup_production_weight: number
+}
+
 export interface Player {
   player_id: number
   name: string
@@ -20,12 +49,56 @@ export interface Player {
   expected_minutes: number
   play_probability: number
   fixture: Fixture | null
+  fixtures: Fixture[]
   role: 'starter' | 'bench'
   order: number
   captain: boolean
   vice_captain: boolean
   availability_status: string
   news: string
+  participation: PlayerParticipation
+}
+
+export interface ParticipationAlternative {
+  scenario: string
+  description: string
+  challenger_squad_id: string
+  incoming: string[]
+  outgoing: string[]
+  formation: string
+  captain: string
+  vice_captain: string
+  minimum_family_gain: number | null
+  counterfactual_not_probability: boolean
+  challenger_synthesis_rank: number | null
+  synthesis_regret_delta: number | null
+  five_week_regret_delta: number | null
+  eight_week_regret_delta: number | null
+  why_not_selected: string | null
+}
+
+export interface ParticipationSummary {
+  status: 'current' | 'attention' | 'refreshing' | 'unavailable'
+  checked_at: string | null
+  headline: string
+  detail: string
+  selected_players: number
+  clear_players: number
+  official_clear_players: number
+  official_attention: number
+  role_verification: number
+  uncovered_club_feed: number
+  predicted_start_support: number
+  predicted_bench_flags: number
+  predicted_disagreements: number
+  predicted_lineup_eligible_sources: number
+  predicted_lineup_captured_sources: number
+  predicted_lineup_status: string
+  baseline_stable: boolean | null
+  moderate_stable: boolean | null
+  teams_with_confirmed_lineups: number | null
+  teams_total: number | null
+  alternatives: ParticipationAlternative[]
 }
 
 export interface WeeklyTransfer {
@@ -47,6 +120,18 @@ export interface WeeklyAction {
   captain_name: string
   vice_captain_player_id: number
   vice_captain_name: string
+  starter_player_ids: number[]
+  bench_player_ids: number[]
+  projected_points: number | null
+  event_lineups: Array<{
+    event: number
+    formation: string
+    projected_points: number
+    starter_player_ids: number[]
+    bench_player_ids: number[]
+    captain_player_id: number
+    vice_captain_player_id: number
+  }>
   incremental_points_cost: number
   next_free_transfers: number | null
   terminal_free_transfers: number | null
@@ -67,6 +152,21 @@ export interface WeeklyDecision {
   robust_regret: number | null
   promotion_status: string
   explanation: string
+  execution_timing: {
+    status: string
+    recommendation: 'wait' | 'not_applicable'
+    headline: string
+    detail: string
+    affordability_at_risk: boolean
+    next_price_change_at: string | null
+  } | null
+  chip_advice: {
+    recommendation: 'no_chip'
+    headline: string
+    detail: string
+    watched_chips: string[]
+    blockers: string[]
+  } | null
   receipt_path: string | null
   receipt_sha256: string | null
 }
@@ -118,6 +218,7 @@ export interface Workspace {
     refresh_required: boolean
     message: string
   }
+  participation: ParticipationSummary
   squad: {
     source: 'generated' | 'uploaded' | 'connected'
     confirmed: boolean
@@ -167,6 +268,27 @@ export interface Workspace {
       receipt_id: string
       main_risk: string
     }
+    recommended_squad: {
+      event: number
+      source: 'lineup_optimizer' | 'weekly_decision'
+      action_id: string
+      formation: string
+      expected_points: number
+      starters: Player[]
+      bench: Player[]
+    }
+    model_squad: {
+      event: number
+      candidate_id: string
+      generated_at: string
+      formation: string
+      expected_points: number
+      budget_spent: number
+      bank: number
+      selection_basis: string
+      starters: Player[]
+      bench: Player[]
+    } | null
     horizon: Array<{
       event: number
       formation: string

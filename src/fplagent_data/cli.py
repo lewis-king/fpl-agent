@@ -23,8 +23,10 @@ from .market_telemetry import (
     build_price_change_outcomes,
     collect_market_observation,
 )
+from .participation_consensus import collect_participation_consensus
 from .paths import ensure_layout
 from .preseason_lineups import collect_preseason_lineups, upgrade_role_receipt_mapping
+from .understat import collect_understat_season
 from .validate import validate
 
 SOURCES = {
@@ -83,11 +85,18 @@ def parser() -> argparse.ArgumentParser:
     event_outcome.add_argument("--observed-at")
     event_outcome.add_argument("--reuse-latest-official", action="store_true")
     commands.add_parser("collect-preseason-lineups")
+    participation = commands.add_parser("collect-participation-consensus")
+    participation.add_argument("--event", type=int)
+    participation.add_argument("--observed-at")
     commands.add_parser("upgrade-preseason-role-lineage")
     market_observation = commands.add_parser("collect-market-observation")
     market_observation.add_argument("--observed-at")
     commands.add_parser("build-market-features")
     commands.add_parser("build-price-change-outcomes")
+    understat = commands.add_parser("collect-understat")
+    understat.add_argument("--season-start", type=int, required=True)
+    understat.add_argument("--observed-at")
+    understat.add_argument("--force", action="store_true")
     return root
 
 
@@ -125,6 +134,18 @@ def main() -> None:
     if args.command == "collect-preseason-lineups":
         print(json.dumps(collect_preseason_lineups(), indent=2, sort_keys=True))
         return
+    if args.command == "collect-participation-consensus":
+        print(
+            json.dumps(
+                collect_participation_consensus(
+                    event=args.event,
+                    observed_at=args.observed_at,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
     if args.command == "upgrade-preseason-role-lineage":
         print(json.dumps(upgrade_role_receipt_mapping(), indent=2, sort_keys=True))
         return
@@ -142,6 +163,19 @@ def main() -> None:
         return
     if args.command == "build-price-change-outcomes":
         print(json.dumps(build_price_change_outcomes(), indent=2, sort_keys=True))
+        return
+    if args.command == "collect-understat":
+        print(
+            json.dumps(
+                collect_understat_season(
+                    args.season_start,
+                    observed_at=args.observed_at,
+                    force=args.force,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return
     if args.command == "refresh-current":
         snapshot = fpl_current.fetch(force=not args.reuse_latest)

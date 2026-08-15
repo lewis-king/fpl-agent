@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -145,6 +145,183 @@ def test_deterministic_refresh_failure_blocks_automatic_retry(tmp_path: Path) ->
     assert "automatic retries are paused" in final.message
 
 
+def test_app_open_reuses_recent_terminal_refresh_but_manual_bypasses(
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 8, 8, 10, tzinfo=UTC)]
+    calls = 0
+
+    def runner(**_: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {
+            "status": "published",
+            "published": True,
+            "reused": False,
+            "message": "Published current evidence.",
+        }
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_receipt_path=tmp_path / "pipeline.json",
+        clock=lambda: now[0],
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="app_open",
+        manager_entry_id=431892,
+        event=1,
+    )
+    _wait_for_terminal(coordinator)
+    assert calls == 1
+
+    now[0] += timedelta(hours=2)
+    cached = coordinator.request(
+        mode="gw1",
+        reason="app_open",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    assert cached.status == "reused"
+    assert cached.reused is True
+    assert "6-hour app-open window" in cached.message
+    assert calls == 1
+
+    coordinator.request(
+        mode="gw1",
+        reason="manual",
+        manager_entry_id=431892,
+        event=1,
+    )
+    _wait_for_terminal(coordinator)
+    assert calls == 2
+
+
+def test_recent_blocked_refresh_is_not_retried_by_app_open(tmp_path: Path) -> None:
+    calls = 0
+
+    def runner(**_: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise DeterministicPipelineError("role evidence is incoherent")
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_receipt_path=tmp_path / "pipeline.json",
+        clock=lambda: datetime(2026, 8, 8, 10, tzinfo=UTC),
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="material_change",
+        manager_entry_id=431892,
+        event=1,
+    )
+    blocked = _wait_for_terminal(coordinator)
+
+    cached = coordinator.request(
+        mode="gw1",
+        reason="app_open",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    assert blocked.status == "blocked"
+    assert cached.run_id == blocked.run_id
+    assert cached.status == "blocked"
+    assert calls == 1
+
+
+def test_newer_external_publication_invalidates_a_cached_block(tmp_path: Path) -> None:
+    calls = 0
+    pipeline = tmp_path / "pipeline.json"
+
+    def runner(**_: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise DeterministicPipelineError("role evidence is incoherent")
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_receipt_path=pipeline,
+        clock=lambda: datetime(2026, 8, 8, 11, tzinfo=UTC),
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="material_change",
+        manager_entry_id=431892,
+        event=1,
+    )
+    assert _wait_for_terminal(coordinator).status == "blocked"
+    pipeline.write_text(
+        '{"status":"published","checked_at":"2026-08-08T11:30:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    restarted = coordinator.request(
+        mode="gw1",
+        reason="app_open",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    assert restarted.status == "running"
+    assert _wait_for_terminal(coordinator).status == "blocked"
+    assert calls == 2
+
+
+def test_changed_gw1_implementation_invalidates_a_cached_block(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calls = 0
+    pipeline = tmp_path / "pipeline.json"
+
+    def runner(**_: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        raise DeterministicPipelineError("role evidence is incoherent")
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_receipt_path=pipeline,
+        clock=lambda: datetime(2026, 8, 8, 11, tzinfo=UTC),
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="material_change",
+        manager_entry_id=431892,
+        event=1,
+    )
+    assert _wait_for_terminal(coordinator).status == "blocked"
+    pipeline.write_text(
+        """{
+  "status": "failed",
+  "checked_at": "2026-08-08T11:00:00+00:00",
+  "input_identity": {"implementation_sha256": "old-implementation"}
+}\n""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "fplagent_web.decision_refresh.gw1_pipeline_implementation_sha256",
+        lambda: "new-implementation",
+    )
+
+    coordinator.request(
+        mode="gw1",
+        reason="app_open",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    assert _wait_for_terminal(coordinator).status == "blocked"
+    assert calls == 2
+
+
 def test_running_refresh_surfaces_pipeline_stage_progress(tmp_path: Path) -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -195,6 +372,34 @@ def test_running_refresh_surfaces_pipeline_stage_progress(tmp_path: Path) -> Non
     assert running.message == "Stage 6 of 11: searching globally robust squads."
     release.set()
     _wait_for_terminal(coordinator)
+
+
+def test_orphaned_in_process_worker_is_failed_closed(tmp_path: Path) -> None:
+    state = WorkspaceRefreshView(
+        run_id="refresh-v1-orphan",
+        status="running",
+        mode="gw1",
+        reason="manual",
+        requested_at="2026-08-08T10:00:00+00:00",
+        started_at="2026-08-08T10:00:00+00:00",
+        event=1,
+        message="Refresh started.",
+    )
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        clock=lambda: datetime(2026, 8, 8, 12, tzinfo=UTC),
+    )
+    coordinator._write_state(state)
+    coordinator._active_run_id = state.run_id
+    coordinator._worker = threading.Thread(target=lambda: None)
+
+    result = coordinator.status()
+
+    assert result.status == "failed"
+    assert result.failure_code == "refresh_worker_terminated"
+    assert result.completed_at == "2026-08-08T12:00:00+00:00"
+    assert "last valid workspace was retained" in result.message
+    assert coordinator._active_run_id is None
 
 
 def test_weekly_refresh_requires_a_manager_identity_without_starting_runner(

@@ -1,5 +1,6 @@
 import numpy as np
 
+from fplagent_engine.captain_return_challenger import choose_regularized_weight
 from fplagent_engine.market_transfer_replay import blend_score_rows
 from fplagent_engine.return_distribution import (
     choose_temperature,
@@ -43,3 +44,18 @@ def test_return_score_can_use_shared_sequential_replay_adapter() -> None:
     }
     scored = blend_score_rows([row], "return_distribution_expected_points", 0.5)[0]
     assert scored["expected_points"] == 4.5
+
+
+def test_captain_weight_uses_smallest_one_standard_error_candidate() -> None:
+    selected, rows = choose_regularized_weight(
+        {
+            0.0: [5, 5, 5, 5],
+            0.5: [6, 5, 6, 5],
+            1.0: [7, 4, 7, 4],
+        }
+    )
+
+    assert selected == 0.5
+    assert next(row for row in rows if row["weight"] == 0.5)[
+        "within_one_standard_error"
+    ] is True

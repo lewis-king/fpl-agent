@@ -66,6 +66,42 @@ class FixtureView(StrictModel):
     label: str
 
 
+class AppearanceStatesView(StrictModel):
+    dnp: float
+    minutes_1_59: float
+    minutes_60_89: float
+    minutes_90_plus: float
+
+
+class PlayerParticipationView(StrictModel):
+    evidence_status: Literal[
+        "clear",
+        "lineup_watch",
+        "verify_role",
+        "official_attention",
+        "uncovered",
+        "refreshing",
+    ]
+    confidence: Literal["high", "medium", "low"]
+    headline: str
+    detail: str
+    attention: list[str] = Field(default_factory=list)
+    states: AppearanceStatesView
+    official_chance: int | None = None
+    official_news: str = ""
+    eligible_team_matches: int | None = None
+    squad_listings: int | None = None
+    starts: int | None = None
+    appearances: int | None = None
+    last_match_listed: bool | None = None
+    last_match_started: bool | None = None
+    mechanically_retained_p_play: float | None = None
+    predicted_lineup_consensus: str | None = None
+    predicted_start_sources: list[str] = Field(default_factory=list)
+    predicted_not_start_sources: list[str] = Field(default_factory=list)
+    predicted_lineup_production_weight: float = 0.0
+
+
 class PlayerView(StrictModel):
     player_id: int
     name: str
@@ -78,12 +114,56 @@ class PlayerView(StrictModel):
     expected_minutes: float
     play_probability: float
     fixture: FixtureView | None
+    fixtures: list[FixtureView] = Field(default_factory=list)
     role: Literal["starter", "bench"]
     order: int
     captain: bool
     vice_captain: bool
     availability_status: str
     news: str
+    participation: PlayerParticipationView
+
+
+class ParticipationAlternativeView(StrictModel):
+    scenario: str
+    description: str
+    challenger_squad_id: str
+    incoming: list[str]
+    outgoing: list[str]
+    formation: str
+    captain: str
+    vice_captain: str
+    minimum_family_gain: float | None = None
+    counterfactual_not_probability: bool = True
+    challenger_synthesis_rank: int | None = None
+    synthesis_regret_delta: float | None = None
+    five_week_regret_delta: float | None = None
+    eight_week_regret_delta: float | None = None
+    why_not_selected: str | None = None
+
+
+class ParticipationSummaryView(StrictModel):
+    status: Literal["current", "attention", "refreshing", "unavailable"]
+    checked_at: str | None = None
+    headline: str
+    detail: str
+    selected_players: int = 15
+    clear_players: int = 0
+    official_clear_players: int = 0
+    official_attention: int = 0
+    role_verification: int = 0
+    uncovered_club_feed: int = 0
+    predicted_start_support: int = 0
+    predicted_bench_flags: int = 0
+    predicted_disagreements: int = 0
+    predicted_lineup_eligible_sources: int = 0
+    predicted_lineup_captured_sources: int = 0
+    predicted_lineup_status: str = "not_collected"
+    baseline_stable: bool | None = None
+    moderate_stable: bool | None = None
+    teams_with_confirmed_lineups: int | None = None
+    teams_total: int | None = None
+    alternatives: list[ParticipationAlternativeView] = Field(default_factory=list)
 
 
 class SquadView(StrictModel):
@@ -98,6 +178,29 @@ class SquadView(StrictModel):
     source_label: str
     parent_candidate_id: str | None = None
     locked_player_ids: list[int] = Field(default_factory=list)
+    starters: list[PlayerView]
+    bench: list[PlayerView]
+
+
+class RecommendedSquadView(StrictModel):
+    event: int
+    source: Literal["lineup_optimizer", "weekly_decision"]
+    action_id: str
+    formation: str
+    expected_points: float
+    starters: list[PlayerView]
+    bench: list[PlayerView]
+
+
+class ModelSquadView(StrictModel):
+    event: int
+    candidate_id: str
+    generated_at: str
+    formation: str
+    expected_points: float
+    budget_spent: float
+    bank: float
+    selection_basis: str
     starters: list[PlayerView]
     bench: list[PlayerView]
 
@@ -159,6 +262,16 @@ class WeeklyTransferView(StrictModel):
     incoming_price: float
 
 
+class WeeklyLineupView(StrictModel):
+    event: int
+    formation: str
+    projected_points: float
+    starter_player_ids: list[int]
+    bench_player_ids: list[int]
+    captain_player_id: int
+    vice_captain_player_id: int
+
+
 class WeeklyActionView(StrictModel):
     action_id: str
     route_type: Literal["roll", "one_free_transfer", "multi_free_transfer", "paid_transfer"]
@@ -170,10 +283,31 @@ class WeeklyActionView(StrictModel):
     captain_name: str
     vice_captain_player_id: int
     vice_captain_name: str
+    starter_player_ids: list[int]
+    bench_player_ids: list[int]
+    projected_points: float | None = None
+    event_lineups: list[WeeklyLineupView] = Field(default_factory=list)
     incremental_points_cost: int
     next_free_transfers: int | None
     terminal_free_transfers: int | None
     terminal_transfer_value: float
+
+
+class ExecutionTimingView(StrictModel):
+    status: str
+    recommendation: Literal["wait", "not_applicable"]
+    headline: str
+    detail: str
+    affordability_at_risk: bool = False
+    next_price_change_at: str | None = None
+
+
+class ChipAdviceView(StrictModel):
+    recommendation: Literal["no_chip"] = "no_chip"
+    headline: str
+    detail: str
+    watched_chips: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
 
 
 class WeeklyDecisionView(StrictModel):
@@ -190,6 +324,8 @@ class WeeklyDecisionView(StrictModel):
     robust_regret: float | None = None
     promotion_status: str
     explanation: str
+    execution_timing: ExecutionTimingView | None = None
+    chip_advice: ChipAdviceView | None = None
     receipt_path: str | None = None
     receipt_sha256: str | None = None
 
@@ -203,6 +339,8 @@ class EvidenceItem(StrictModel):
 class DecisionView(StrictModel):
     status: Literal["provisional", "confirmed"]
     captain: CaptainInsight
+    recommended_squad: RecommendedSquadView
+    model_squad: ModelSquadView | None = None
     horizon: list[HorizonEvent]
     evidence: list[EvidenceItem]
     recommendation: str
@@ -224,6 +362,7 @@ class WorkspaceView(StrictModel):
     user: UserView
     phase: PhaseView
     freshness: FreshnessView
+    participation: ParticipationSummaryView
     squad: SquadView
     critique: SquadCritique
     decision: DecisionView
