@@ -32,9 +32,31 @@ shadow evidence. This is still useful: it gives an independent diagnostic and a 
 to re-test as new seasons arrive. It is not forced into production merely because the source is
 respected.
 
-FBref's automated page returned HTTP 403 during this research run. FPLAgent does not bypass that
-response, count it as a provider or substitute an undocumented scraper. A permitted second source
-with a point-in-time archive remains a research-frontier gate.
+FBref's automated page returned HTTP 403 during this research run. More importantly, Sports
+Reference announced on 20 January 2026 that its advanced soccer-data provider had terminated the
+feed and required deletion of that data. FBref retained deep basic historical tables, but the xG,
+xA and richer event layer that would challenge this model no longer exists there at its former
+scale. FPLAgent therefore does not bypass the block or count basic FBref tables as an independent
+advanced-event provider.
+
+The package audit does not change that conclusion:
+
+- `football-metrics-toolkit@1.0.1` was last published in October 2024 and directly requests FBref
+  HTML with Axios before parsing it with Cheerio. It receives the same 403 and its documented
+  advanced columns describe the retired feed.
+- `soccerdata` is actively maintained and supports many providers, but its 2026 FBref repair uses
+  SeleniumBase CAPTCHA handling. It is a useful research convenience, not a stable API boundary.
+- `FBRAPI` proxies an FBref scraper behind a third-party server and API key. It relocates the same
+  source and schema risk rather than supplying independent observations.
+- Understat client libraries are available, but the project's existing collector already calls
+  the current structured `getLeagueData` endpoint, validates the schema and freezes raw bytes by
+  checksum. A library swap would add a dependency without adding information.
+
+Two genuine API candidates remain optional challengers. API-Football offers inexpensive lineups,
+injuries, odds and conventional player statistics but does not document the player-level xG layer
+needed to replace Understat. Sportmonks documents team/player xG and predicted lineups with stable
+IDs, but Premier League access is paid and expected lineups are a substantial add-on. Either must
+first be captured in shadow and beat the same point-in-time legal-policy gate.
 
 SofaScore was subsequently tested as that second historical event source. Its bounded challenger
 slightly improved frozen player MAE but lost 15 realised points in the untouched 2025/26 legal
