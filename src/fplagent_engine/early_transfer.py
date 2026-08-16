@@ -15,6 +15,10 @@ from fplagent_data.market_telemetry import (
     PRICE_OUTCOME_RECEIPT,
 )
 
+from .price_liquidity import (
+    CURRENT_FORECAST as CURRENT_PRICE_FORECAST,
+)
+from .price_liquidity import affordability_scenario, simulate_price_paths
 from .season_state import ManagerState, calculated_selling_price
 
 MAXIMUM_FEATURE_AGE = timedelta(minutes=45)
@@ -40,9 +44,7 @@ def _load_features(
     if age < timedelta(0):
         raise ValueError("market features were observed after the decision time")
     if age > MAXIMUM_FEATURE_AGE:
-        raise ValueError(
-            f"market features are {age.total_seconds() / 60:.1f} minutes old"
-        )
+        raise ValueError(f"market features are {age.total_seconds() / 60:.1f} minutes old")
     rows = pq.read_table(feature_path).to_pylist()
     by_element = {int(row["element"]): row for row in rows}
     if len(by_element) != len(rows):
@@ -53,12 +55,16 @@ def _load_features(
 def _next_uk_midnight(as_of: datetime) -> datetime:
     london = ZoneInfo("Europe/London")
     local = as_of.astimezone(london)
-    return (local + timedelta(days=1)).replace(
-        hour=0,
-        minute=0,
-        second=0,
-        microsecond=0,
-    ).astimezone(UTC)
+    return (
+        (local + timedelta(days=1))
+        .replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        .astimezone(UTC)
+    )
 
 
 def _selling_loss_after_fall(purchase_price: int, current_price: int) -> int:
@@ -191,6 +197,62 @@ def evaluate_early_transfer_shadow(
     calibration_passed = bool(
         calibration and (calibration.get("calibration_gate") or {}).get("passed")
     )
+    probabilistic_affordability = None
+    if CURRENT_PRICE_FORECAST.is_file():
+        try:
+            probabilities = {
+                int(row["element"]): {
+                    "p_fall": float(row["p_fall"]),
+                    "p_none": float(row["p_none"]),
+                    "p_rise": float(row["p_rise"]),
+                }
+                for row in pq.read_table(CURRENT_PRICE_FORECAST).to_pylist()
+            }
+            probabilistic_affordability = affordability_scenario(
+                [
+                    {
+                        "outgoing_player_id": int(transfer.outgoing_player_id),
+                        "incoming_player_id": int(transfer.incoming.player_id),
+                        "purchase_price": int(
+                            holdings[int(transfer.outgoing_player_id)].purchase_price
+                        ),
+                        "outgoing_current_price": int(
+                            holdings[int(transfer.outgoing_player_id)].current_price
+                        ),
+                    }
+                    for transfer in transfers
+                ],
+                bank=current_bank,
+                price_probabilities=probabilities,
+            )
+            probabilistic_affordability["three_night_paths"] = simulate_price_paths(
+                [
+                    {
+                        "outgoing_player_id": int(transfer.outgoing_player_id),
+                        "incoming_player_id": int(transfer.incoming.player_id),
+                        "purchase_price": int(
+                            holdings[int(transfer.outgoing_player_id)].purchase_price
+                        ),
+                        "outgoing_current_price": int(
+                            holdings[int(transfer.outgoing_player_id)].current_price
+                        ),
+                    }
+                    for transfer in transfers
+                ],
+                bank=current_bank,
+                price_probabilities=probabilities,
+                nights=3,
+            )
+            probabilistic_affordability.update(
+                {
+                    "status": "ready_shadow",
+                    "decision_authority": False,
+                    "forecast_path": str(CURRENT_PRICE_FORECAST),
+                    "forecast_sha256": sha256_file(CURRENT_PRICE_FORECAST),
+                }
+            )
+        except (OSError, ValueError, KeyError):
+            probabilistic_affordability = None
     return {
         **base,
         "status": "ready_shadow",
@@ -210,6 +272,7 @@ def evaluate_early_transfer_shadow(
         "prospective_outcome_nights": (
             int(calibration.get("outcome_nights", 0)) if calibration else 0
         ),
+        "probabilistic_affordability": probabilistic_affordability,
         "feature_artifact": str(feature_path),
         "feature_artifact_sha256": feature_receipt["output_sha256"],
         "feature_receipt": str(feature_receipt_path),

@@ -1,6 +1,6 @@
 # Participation and predicted-lineup evidence
 
-**Updated:** 10 August 2026
+**Updated:** 15 August 2026
 **Production authority:** official FPL status/news plus the historically validated minute model
 **Predicted-lineup authority:** prospective shadow, weight `0.0`
 
@@ -86,11 +86,13 @@ deadline, waits for the official event-live outcome to be final, and scores exac
 - a consensus XI ranked by provider vote share, with champion start probability only as a
   tie-breaker.
 
-The first gate requires at least six completed events, two eligible independent providers across at
+The gate requires at least six completed events, two eligible independent providers across at
 least ten teams in every qualifying event, positive mean lineup-hit lift, no negative event and a
-non-negative 95% lower bound. Passing does **not** promote the feed. It only authorizes an exact
-legal squad/transfer/XI/captain replay; production changes only if that downstream replay also
-passes its own downside gate.
+non-negative 95% lower bound. The same frozen consensus now applies a bounded participation
+adjustment to the champion xP and passes both forecasts through the identical legal £100m squad,
+XI, bench and captain solver. Positive aggregate legal-policy lift with no negative event is also
+required. Passing authorizes a bounded production challenger review; it does not silently promote
+the feed.
 
 Before GW1 the scoreboard correctly contains zero completed events and reports
 `awaiting_prospective_evidence`.

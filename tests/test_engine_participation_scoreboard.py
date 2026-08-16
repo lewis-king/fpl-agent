@@ -65,6 +65,7 @@ def test_prospective_pass_only_authorizes_legal_replay() -> None:
             "event": event,
             "two_source_teams": 20,
             "mean_delta_to_champion": 0.1,
+            "legal_policy": {"delta_to_champion": 1.0},
         }
         for event in range(1, 7)
     ]
@@ -72,7 +73,7 @@ def test_prospective_pass_only_authorizes_legal_replay() -> None:
     gate = _promotion_gate(events)
 
     assert gate["passed"] is True
-    assert gate["state"] == "ready_for_exact_legal_replay"
+    assert gate["state"] == "prospectively_validated"
     assert gate["production_changed"] is False
 
 
@@ -94,6 +95,4 @@ def test_one_bad_event_blocks_promotion_even_with_positive_mean() -> None:
 
 
 def test_cli_exposes_participation_scoreboard() -> None:
-    assert parser().parse_args(["participation-scoreboard"]).command == (
-        "participation-scoreboard"
-    )
+    assert parser().parse_args(["participation-scoreboard"]).command == ("participation-scoreboard")

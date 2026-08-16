@@ -27,17 +27,16 @@ def _solve_event(rows: list[dict], score_key: str) -> dict[str, Any]:
     highs = highspy.Highs()
     highs.setOptionValue("output_flag", False)
     highs.setOptionValue("random_seed", 7)
-    highs.setOptionValue("mip_rel_gap", 1e-9)
+    # Forecast objectives are only meaningful to a few decimal places. Requiring a
+    # 1e-9 relative MIP gap makes historically large player pools spend minutes
+    # proving numerically irrelevant ties between bench combinations. A 1e-6 gap
+    # is still far below one ten-thousandth of an expected FPL point, while keeping
+    # matched policy replays operationally bounded.
+    highs.setOptionValue("mip_rel_gap", 1e-6)
     integer = highspy.HighsVarType.kInteger
-    squad = highs.addVariables(
-        len(candidates), lb=0, ub=1, type=integer, out_array=True
-    )
-    start = highs.addVariables(
-        len(candidates), lb=0, ub=1, type=integer, out_array=True
-    )
-    captain = highs.addVariables(
-        len(candidates), lb=0, ub=1, type=integer, out_array=True
-    )
+    squad = highs.addVariables(len(candidates), lb=0, ub=1, type=integer, out_array=True)
+    start = highs.addVariables(len(candidates), lb=0, ub=1, type=integer, out_array=True)
+    captain = highs.addVariables(len(candidates), lb=0, ub=1, type=integer, out_array=True)
     highs.addConstr(sum(squad) == 15)
     highs.addConstr(sum(start) == 11)
     highs.addConstr(sum(captain) == 1)
@@ -46,9 +45,7 @@ def _solve_event(rows: list[dict], score_key: str) -> dict[str, Any]:
         <= 1000
     )
     for position, count in SQUAD_POSITIONS.items():
-        indices = [
-            index for index, row in enumerate(candidates) if row["position"] == position
-        ]
+        indices = [index for index, row in enumerate(candidates) if row["position"] == position]
         highs.addConstr(sum(squad[index] for index in indices) == count)
         minimum, maximum = STARTER_LIMITS[position]
         highs.addConstr(sum(start[index] for index in indices) >= minimum)
@@ -74,12 +71,8 @@ def _solve_event(rows: list[dict], score_key: str) -> dict[str, Any]:
     highs.maximize(objective)
     if highs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
         raise RuntimeError(f"Historical picker solve failed: {highs.getModelStatus()}")
-    selected_indices = [
-        index for index in range(len(candidates)) if highs.val(squad[index]) > 0.5
-    ]
-    starter_indices = [
-        index for index in range(len(candidates)) if highs.val(start[index]) > 0.5
-    ]
+    selected_indices = [index for index in range(len(candidates)) if highs.val(squad[index]) > 0.5]
+    starter_indices = [index for index in range(len(candidates)) if highs.val(start[index]) > 0.5]
     captain_index = next(
         index for index in range(len(candidates)) if highs.val(captain[index]) > 0.5
     )
@@ -89,9 +82,7 @@ def _solve_event(rows: list[dict], score_key: str) -> dict[str, Any]:
     return {
         "actual_points": actual_points,
         "predicted_objective": float(highs.getObjectiveValue()),
-        "budget": sum(
-            float(candidates[index]["market_price"]) for index in selected_indices
-        )
+        "budget": sum(float(candidates[index]["market_price"]) for index in selected_indices)
         / 10.0,
         "captain": candidates[captain_index]["player_name"],
         "squad": [candidates[index]["player_name"] for index in selected_indices],
@@ -108,9 +99,7 @@ def evaluate_picker() -> dict[str, Any]:
     evaluations = []
     for season in seasons:
         event_rows = [
-            row
-            for row in rows
-            if row["season"] == season and int(row["event_number"]) == 1
+            row for row in rows if row["season"] == season and int(row["event_number"]) == 1
         ]
         model = _solve_event(event_rows, "expected_points")
         baseline = _solve_event(event_rows, "form5_expected_points")
@@ -121,8 +110,7 @@ def evaluate_picker() -> dict[str, Any]:
                 "model": model,
                 "form5": baseline,
                 "oracle": oracle,
-                "model_lift_vs_form5": model["actual_points"]
-                - baseline["actual_points"],
+                "model_lift_vs_form5": model["actual_points"] - baseline["actual_points"],
             }
         )
     total_lift = sum(item["model_lift_vs_form5"] for item in evaluations)
@@ -137,9 +125,7 @@ def evaluate_picker() -> dict[str, Any]:
             "mean_actual_point_lift": total_lift / len(evaluations),
         },
     }
-    PICKER_METRICS.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    PICKER_METRICS.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     lines = [
         "# Historical GW1 picker backtest",
         "",

@@ -33,7 +33,7 @@ from .rules import SquadRules, load_rules
 from .schedule_scenarios import CURRENT_SCHEDULE_RECEIPT, build_schedule_receipt
 from .weekly_decision import run_weekly_decision
 
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2
 CURRENT_WEEKLY_DECISION = DECISIONS / "2026-27-weekly-current.json"
 WEEKLY_STAGING_ROOT = DECISIONS / "staging" / "weekly"
 WEEKLY_DECISION_ARCHIVE_ROOT = DECISIONS / "weekly"
@@ -45,7 +45,13 @@ class DeadlinePipelineError(ValueError):
 
 
 def _aware(value: str | datetime | None) -> datetime:
-    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value) if value else datetime.now(UTC)
+    parsed = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(value)
+        if value
+        else datetime.now(UTC)
+    )
     if parsed.tzinfo is None:
         raise DeadlinePipelineError("pipeline as_of must include a timezone")
     return parsed.astimezone(UTC)
@@ -109,9 +115,7 @@ def refresh_current_generation(
     try:
         market_goal_rates = build_current_market_goal_rates(horizon=horizon)
     except (OSError, RuntimeError, ValueError, KeyError, pa.ArrowException) as error:
-        market_goal_rates = disable_current_market_shadow(
-            f"{type(error).__name__}: {error}"
-        )
+        market_goal_rates = disable_current_market_shadow(f"{type(error).__name__}: {error}")
     schedule_result = build_schedule_receipt()
     schedule = {
         "current_path": schedule_result["current_path"],
@@ -227,9 +231,7 @@ def run_weekly_deadline_pipeline(
     state_deriver: Callable[..., Mapping[str, Any]] | None = None,
     decision_runner: Callable[..., Mapping[str, Any]] = run_weekly_decision,
     evidence_auditor: Callable[..., Mapping[str, Any]] = audit_deadline_evidence,
-    participation_refresher: Callable[..., Mapping[str, Any]] = (
-        collect_participation_consensus
-    ),
+    participation_refresher: Callable[..., Mapping[str, Any]] = (collect_participation_consensus),
     rules_loader: Callable[[], SquadRules] = load_rules,
 ) -> dict[str, Any]:
     checked = _aware(as_of)
@@ -302,12 +304,8 @@ def run_weekly_deadline_pipeline(
         "direct_forecast_sha256": sha256_file(direct_forecast_path),
         "component_forecast_sha256": sha256_file(component_forecast_path),
         "schedule_receipt_sha256": sha256_file(schedule_receipt_path),
-        "market_goal_rate_status": (refresh.get("market_goal_rates") or {}).get(
-            "status"
-        ),
-        "market_goal_rate_raw_sha256": (refresh.get("market_goal_rates") or {}).get(
-            "raw_sha256"
-        ),
+        "market_goal_rate_status": (refresh.get("market_goal_rates") or {}).get("status"),
+        "market_goal_rate_raw_sha256": (refresh.get("market_goal_rates") or {}).get("raw_sha256"),
         "market_goal_rate_rates_sha256": (refresh.get("market_goal_rates") or {}).get(
             "rates_sha256"
         ),

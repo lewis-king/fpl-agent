@@ -25,6 +25,7 @@ from .component_simulator import (
     simulate_component_outcomes,
     train_goal_model,
 )
+from .distribution_calibration import RESIDUAL_CALIBRATION, empirical_points_pmf
 from .early_transfer import evaluate_early_transfer_shadow
 from .form_reversion import evaluate_form_reversion_shadow
 from .manager_state_adapter import manager_state_from_snapshot, player_catalog_from_rows
@@ -102,8 +103,7 @@ def summarize_market_shadow_scenario(
             "incumbent_mean_net_points": incumbent_by_id[key].mean_net_points,
             "market_mean_net_points": challenger_by_id[key].mean_net_points,
             "mean_net_points_shift": (
-                challenger_by_id[key].mean_net_points
-                - incumbent_by_id[key].mean_net_points
+                challenger_by_id[key].mean_net_points - incumbent_by_id[key].mean_net_points
             ),
             "incumbent_rank": incumbent_rank[key],
             "market_rank": challenger_rank[key],
@@ -461,17 +461,17 @@ def synthesize_team_chip_shadow(
         raise ValueError("Chip shadow actions must have unique IDs")
     central_name = max(scenario_weights, key=scenario_weights.get)
     schedule_confirmed = bool(schedule_status and schedule_status.get("fully_confirmed"))
-    schedule_issues = list(schedule_status.get("issues", [])) if schedule_status else [
-        "no schedule status was supplied"
-    ]
+    schedule_issues = (
+        list(schedule_status.get("issues", []))
+        if schedule_status
+        else ["no schedule status was supplied"]
+    )
     rows = []
     historical_retention_passed = bool(
-        retention_calibration
-        and (retention_calibration.get("historical_gate") or {}).get("passed")
+        retention_calibration and (retention_calibration.get("historical_gate") or {}).get("passed")
     )
     promotion_retention_passed = bool(
-        retention_calibration
-        and (retention_calibration.get("promotion_gate") or {}).get("passed")
+        retention_calibration and (retention_calibration.get("promotion_gate") or {}).get("passed")
     )
     calibrated_thresholds = (
         retention_calibration.get("retained_value_thresholds", {})
@@ -586,11 +586,7 @@ def synthesize_team_chip_shadow(
         )
     )
     leader = rows[0]
-    status = (
-        "shadow_gate_passed_not_promoted"
-        if leader["shadow_gate_passed"]
-        else "retain_chip"
-    )
+    status = "shadow_gate_passed_not_promoted" if leader["shadow_gate_passed"] else "retain_chip"
     return {
         "status": status,
         "operational_recommendation": "no_chip",
@@ -606,9 +602,7 @@ def synthesize_team_chip_shadow(
                 "verdict": retention_calibration.get("verdict"),
                 "historical_gate": retention_calibration.get("historical_gate"),
                 "promotion_gate": retention_calibration.get("promotion_gate"),
-                "retained_value_thresholds": retention_calibration.get(
-                    "retained_value_thresholds"
-                ),
+                "retained_value_thresholds": retention_calibration.get("retained_value_thresholds"),
                 "receipt_path": retention_calibration.get("receipt_path"),
                 "receipt_sha256": retention_calibration.get("receipt_sha256"),
             }
@@ -656,8 +650,7 @@ def synthesize_squad_chip_shadow(
 
     weighted_base_means = {
         action.action_id: sum(
-            scenario_weights[name]
-            * float(values[:, index[action.action_id]].mean())
+            scenario_weights[name] * float(values[:, index[action.action_id]].mean())
             for name, values in scenario_totals.items()
         )
         for action in base_actions
@@ -675,8 +668,7 @@ def synthesize_squad_chip_shadow(
         else ["no schedule status was supplied"]
     )
     retention_passed = bool(
-        retention_calibration
-        and (retention_calibration.get("promotion_gate") or {}).get("passed")
+        retention_calibration and (retention_calibration.get("promotion_gate") or {}).get("passed")
     )
     retention_evidence = (
         (
@@ -707,10 +699,7 @@ def synthesize_squad_chip_shadow(
             scenario_weights[name] * values["mean_raw_delta_to_best_ordinary"]
             for name, values in scenario_rows.items()
         )
-        worst = min(
-            values["mean_raw_delta_to_best_ordinary"]
-            for values in scenario_rows.values()
-        )
+        worst = min(values["mean_raw_delta_to_best_ordinary"] for values in scenario_rows.values())
         central = scenario_rows[central_name]
         checks = [
             {
@@ -1046,11 +1035,7 @@ def run_weekly_decision(
     horizon_schedule = schedule_horizon_status(
         schedule_receipt,
         events=events,
-        team_ids={
-            int(row["team_id"])
-            for row in rows
-            if int(row["event_number"]) in events
-        },
+        team_ids={int(row["team_id"]) for row in rows if int(row["event_number"]) in events},
     )
     rearrangement_shadow = evaluate_rearrangement_shadow(
         schedule_receipt,
@@ -1133,9 +1118,7 @@ def run_weekly_decision(
         team_chip_totals,
         scenario_weights=scenario_weights,
         schedule_status=horizon_schedule,
-        retention_calibration=(
-            load_team_chip_retention_results() if chip_actions else None
-        ),
+        retention_calibration=(load_team_chip_retention_results() if chip_actions else None),
     )
     result["squad_chip_shadow"] = synthesize_squad_chip_shadow(
         actions,
@@ -1144,20 +1127,14 @@ def run_weekly_decision(
         scenario_totals,
         scenario_weights=scenario_weights,
         schedule_status=horizon_schedule,
-        retention_calibration=(
-            load_squad_chip_retention_results() if squad_chip_actions else None
-        ),
+        retention_calibration=(load_squad_chip_retention_results() if squad_chip_actions else None),
     )
     player_names = {
         int(row["element"]): str(row.get("player_name") or f"#{row['element']}")
         for row in rows
         if int(row["event_number"]) == event
     }
-    event_rows = {
-        int(row["element"]): row
-        for row in rows
-        if int(row["event_number"]) == event
-    }
+    event_rows = {int(row["element"]): row for row in rows if int(row["event_number"]) == event}
     for summary in result["action_summaries"]:
         summary["captain_name"] = player_names.get(
             int(summary["captain_player_id"]),
@@ -1229,6 +1206,15 @@ def run_weekly_decision(
                 if event_rows[element].get("expected_minutes") is not None
                 else None
             ),
+            "points_pmf": empirical_points_pmf(
+                float(event_rows[element]["expected_points"]),
+                position=str(event_rows[element]["position"]),
+                p_dnp=float(event_rows[element].get("p_dnp") or 0.0),
+            ),
+            "distribution_source": (
+                "pre-2026 position residual distribution plus explicit DNP mass"
+            ),
+            "distribution_calibration_sha256": sha256_file(RESIDUAL_CALIBRATION),
         }
         for element in relevant_players
     }
@@ -1239,8 +1225,8 @@ def run_weekly_decision(
             mini_league_context = json.loads(
                 DEFAULT_MINI_LEAGUE_CONTEXT.read_text(encoding="utf-8")
             )
-            result["diagnostics"]["mini_league_strategy_shadow"] = (
-                evaluate_mini_league_shadow(result, mini_league_context)
+            result["diagnostics"]["mini_league_strategy_shadow"] = evaluate_mini_league_shadow(
+                result, mini_league_context
             )
         except (OSError, json.JSONDecodeError, MiniLeagueStrategyError) as exc:
             result["diagnostics"]["mini_league_strategy_shadow"] = {
@@ -1309,23 +1295,17 @@ def run_weekly_decision(
         result["source_artifacts"].update(
             {
                 "forecast_challenger_registry": str(CHALLENGER_REGISTRY),
-                "forecast_challenger_registry_sha256": sha256_file(
-                    CHALLENGER_REGISTRY
-                ),
+                "forecast_challenger_registry_sha256": sha256_file(CHALLENGER_REGISTRY),
             }
         )
     if PROSPECTIVE_SCOREBOARD.is_file():
         result["source_artifacts"].update(
             {
                 "prospective_scoreboard": str(PROSPECTIVE_SCOREBOARD),
-                "prospective_scoreboard_sha256": sha256_file(
-                    PROSPECTIVE_SCOREBOARD
-                ),
+                "prospective_scoreboard_sha256": sha256_file(PROSPECTIVE_SCOREBOARD),
             }
         )
-    mini_league_shadow = result["diagnostics"].get(
-        "mini_league_strategy_shadow", {}
-    )
+    mini_league_shadow = result["diagnostics"].get("mini_league_strategy_shadow", {})
     if DEFAULT_MINI_LEAGUE_CONTEXT.is_file() and mini_league_shadow.get("status") in {
         "ready_shadow",
         "not_applicable_early_season",
@@ -1333,9 +1313,7 @@ def run_weekly_decision(
         result["source_artifacts"].update(
             {
                 "mini_league_context": str(DEFAULT_MINI_LEAGUE_CONTEXT),
-                "mini_league_context_sha256": sha256_file(
-                    DEFAULT_MINI_LEAGUE_CONTEXT
-                ),
+                "mini_league_context_sha256": sha256_file(DEFAULT_MINI_LEAGUE_CONTEXT),
             }
         )
     reversion_shadow = result["diagnostics"].get("form_reversion_shadow", {})
@@ -1347,9 +1325,7 @@ def run_weekly_decision(
         result["source_artifacts"].update(
             {
                 "form_reversion_shadow": reversion_shadow["artifact"],
-                "form_reversion_shadow_sha256": reversion_shadow[
-                    "artifact_sha256"
-                ],
+                "form_reversion_shadow_sha256": reversion_shadow["artifact_sha256"],
             }
         )
     market_shadow = result["diagnostics"].get("market_goal_rate_shadow", {})
@@ -1366,15 +1342,9 @@ def run_weekly_decision(
     if timing_shadow.get("status") == "ready_shadow":
         result["source_artifacts"].update(
             {
-                "early_transfer_market_features": timing_shadow[
-                    "feature_artifact"
-                ],
-                "early_transfer_market_features_sha256": timing_shadow[
-                    "feature_artifact_sha256"
-                ],
-                "early_transfer_market_feature_receipt": timing_shadow[
-                    "feature_receipt"
-                ],
+                "early_transfer_market_features": timing_shadow["feature_artifact"],
+                "early_transfer_market_features_sha256": timing_shadow["feature_artifact_sha256"],
+                "early_transfer_market_feature_receipt": timing_shadow["feature_receipt"],
                 "early_transfer_market_feature_receipt_sha256": timing_shadow[
                     "feature_receipt_sha256"
                 ],
@@ -1387,21 +1357,15 @@ def run_weekly_decision(
                 "schedule_rearrangement_model": rearrangement["model_path"],
                 "schedule_rearrangement_model_sha256": rearrangement["model_sha256"],
                 "schedule_rearrangement_episodes": rearrangement["episode_path"],
-                "schedule_rearrangement_episodes_sha256": rearrangement[
-                    "episode_sha256"
-                ],
+                "schedule_rearrangement_episodes_sha256": rearrangement["episode_sha256"],
             }
         )
-    squad_chip_retention = result.get("squad_chip_shadow", {}).get(
-        "retention_calibration"
-    )
+    squad_chip_retention = result.get("squad_chip_shadow", {}).get("retention_calibration")
     if squad_chip_retention and squad_chip_retention.get("receipt_path"):
         result["source_artifacts"].update(
             {
                 "squad_chip_retention_replay": squad_chip_retention["receipt_path"],
-                "squad_chip_retention_replay_sha256": squad_chip_retention[
-                    "receipt_sha256"
-                ],
+                "squad_chip_retention_replay_sha256": squad_chip_retention["receipt_sha256"],
             }
         )
     team_chip_retention = result.get("chip_shadow", {}).get("retention_calibration")
@@ -1409,9 +1373,7 @@ def run_weekly_decision(
         result["source_artifacts"].update(
             {
                 "team_chip_retention_replay": team_chip_retention["receipt_path"],
-                "team_chip_retention_replay_sha256": team_chip_retention[
-                    "receipt_sha256"
-                ],
+                "team_chip_retention_replay_sha256": team_chip_retention["receipt_sha256"],
             }
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)

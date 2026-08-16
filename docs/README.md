@@ -127,6 +127,9 @@ with the deeper research log in the
   evidence gates and honest state-of-the-art claim boundary.
 - [State-of-the-art readiness audit](../reports/fplagent-sota-readiness-audit.md): machine-derived
   production and research-frontier gates behind the white paper.
+- [SOTA evidence framework](sota-evidence-framework.md): implementation and promotion contracts
+  for independent player-event data, the matched OpenFPL benchmark, untouched 2026/27 outcomes,
+  predicted lineups, full-distribution calibration and price/liquidity scenarios.
 - [Legacy algorithm technical whitepaper](../reports/fplagent-algorithm-technical-whitepaper.md)
 
 The canonical training and command reference remains in [the LLM workspace README](../llm/README.md).

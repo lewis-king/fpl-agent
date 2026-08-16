@@ -18,12 +18,13 @@ from .artifact_lineage import (
 )
 from .deadline_pipeline import WEEKLY_DECISION_ARCHIVE_ROOT
 from .decision_synthesis import DECISION_JSON as SYNTHESIZED_DECISION
+from .distribution_calibration import RESIDUAL_CALIBRATION, empirical_points_pmf
 from .horizon_audit import RESULTS_JSON as HORIZON_RESULTS
 from .models import CURRENT_FORECAST
 from .robust_search import RESULTS_JSON as ROBUST_RESULTS
 from .robust_search import SHORTLIST_JSON as ROBUST_SHORTLIST
 
-VERSION = "prospective_decision_contract_v1"
+VERSION = "prospective_decision_contract_v2"
 
 
 class ProspectiveContractError(ValueError):
@@ -80,7 +81,9 @@ def build_gw1_prospective_contract(
         starters = list(map(int, lineup["starters"]))
         bench = list(map(int, lineup["bench_order"]))
         if len({*starters, *bench}) != 15:
-            raise ProspectiveContractError(f"GW1 candidate {candidate_id} is not a 15-player partition")
+            raise ProspectiveContractError(
+                f"GW1 candidate {candidate_id} is not a 15-player partition"
+            )
         relevant_players.update(starters)
         relevant_players.update(bench)
         action_summaries.append(
@@ -111,9 +114,7 @@ def build_gw1_prospective_contract(
             }
         )
     event_rows = {
-        int(row["element"]): row
-        for row in forecast_rows
-        if int(row["event_number"]) == 1
+        int(row["element"]): row for row in forecast_rows if int(row["event_number"]) == 1
     }
     if not relevant_players <= set(event_rows):
         raise ProspectiveContractError("GW1 candidate player is missing from the frozen forecast")
@@ -133,6 +134,15 @@ def build_gw1_prospective_contract(
                 if event_rows[element].get("expected_minutes") is not None
                 else None
             ),
+            "points_pmf": empirical_points_pmf(
+                float(event_rows[element]["expected_points"]),
+                position=str(event_rows[element]["position"]),
+                p_dnp=float(event_rows[element].get("p_dnp") or 0.0),
+            ),
+            "distribution_source": (
+                "pre-2026 position residual distribution plus explicit DNP mass"
+            ),
+            "distribution_calibration_sha256": sha256_file(RESIDUAL_CALIBRATION),
         }
         for element in sorted(relevant_players)
     }
@@ -229,7 +239,9 @@ def freeze_gw1_prospective_contract(
     rendered = json.dumps(contract, indent=2, sort_keys=True) + "\n"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.read_text(encoding="utf-8") != rendered:
-        raise ProspectiveContractError(f"immutable GW1 prospective contract collision: {output_path}")
+        raise ProspectiveContractError(
+            f"immutable GW1 prospective contract collision: {output_path}"
+        )
     if not output_path.exists():
         temporary = output_path.with_suffix(".json.tmp")
         temporary.write_text(rendered, encoding="utf-8")

@@ -36,6 +36,9 @@ ROBUST_REPORT = REPORTS / "gw1-global-robust-search.md"
 HORIZON_REPORT = REPORTS / "gw1-horizon-adequacy-audit.md"
 EXTERNAL_BENCHMARK = MODEL_DATA / "external_forecast_benchmark_v1" / "results.json"
 EXTERNAL_PLAYER_DATA = MODEL_DATA / "external_player_data_v1" / "receipt.json"
+PROSPECTIVE_2026_RESULTS = MODEL_DATA / "prospective_2026_27_scoreboard_v1" / "results.json"
+DISTRIBUTION_RESULTS = MODEL_DATA / "full_distribution_calibration_v1" / "results.json"
+PRICE_LIQUIDITY_RESULTS = MODEL_DATA / "price_liquidity_scenarios_v1" / "results.json"
 
 
 def _load(path: Path, label: str) -> dict[str, Any]:
@@ -85,14 +88,16 @@ def _external_player_data_state(path: Path) -> tuple[str, str]:
     providers = set(map(str, receipt.get("providers") or []))
     current = bool(receipt.get("current"))
     historical = bool(receipt.get("historical_time_forward_backtest"))
-    if current and historical and len(providers) >= 2:
+    legal_lift = bool(receipt.get("legal_policy_lift"))
+    passed = bool(receipt.get("passed"))
+    if current and historical and legal_lift and passed and len(providers) >= 2:
         return "pass", f"Current and time-forward validated: {', '.join(sorted(providers))}."
     if current and historical and providers:
         return (
             "partial",
             (
-                f"{', '.join(sorted(providers))} is current and has a time-forward legal-decision "
-                "replay, but a second independently mapped provider is still missing."
+                f"{', '.join(sorted(providers))} is current and has time-forward replay, "
+                "but the independent signals have not yet earned positive legal-policy lift."
             ),
         )
     return (
@@ -121,6 +126,9 @@ def build_sota_readiness_audit(
     horizon_report_path: Path = HORIZON_REPORT,
     external_benchmark_path: Path = EXTERNAL_BENCHMARK,
     external_player_data_path: Path = EXTERNAL_PLAYER_DATA,
+    prospective_2026_path: Path = PROSPECTIVE_2026_RESULTS,
+    distribution_results_path: Path = DISTRIBUTION_RESULTS,
+    price_liquidity_results_path: Path = PRICE_LIQUIDITY_RESULTS,
     results_path: Path = RESULTS_JSON,
     report_path: Path = REPORT,
 ) -> dict[str, Any]:
@@ -364,14 +372,23 @@ def build_sota_readiness_audit(
             scope="research_frontier",
         )
     )
-    completed_events = int(prospective.get("completed_events") or 0)
+    prospective_2026 = (
+        _load(prospective_2026_path, "2026/27 prospective scoreboard")
+        if prospective_2026_path.is_file()
+        else prospective
+    )
+    completed_events = int(prospective_2026.get("completed_events") or 0)
+    prospective_claim_pass = bool((prospective_2026.get("sota_claim_gate") or {}).get("passed"))
     checks.append(
         _check(
             "prospective_2026_27",
             "Untouched prospective 2026/27 evidence",
-            "pass" if completed_events >= 6 else "not_ready",
-            f"{completed_events} final events; six are required for the first diagnostic review.",
-            requirement="Score frozen pre-deadline forecasts and decisions after at least six final events.",
+            "pass" if prospective_claim_pass else "not_ready",
+            (
+                f"{completed_events} final events; six trigger diagnosis and 19 are required "
+                "for the first SOTA evidence gate."
+            ),
+            requirement="Score frozen pre-deadline forecasts and decisions after six events for diagnosis and at least half a season for a claim.",
             scope="research_frontier",
         )
     )
@@ -386,6 +403,43 @@ def build_sota_readiness_audit(
                 "current consensus remains zero-authority role evidence."
             ),
             requirement="At least six completed events and two-source coverage before any production weight.",
+            scope="research_frontier",
+        )
+    )
+    distribution = (
+        _load(distribution_results_path, "distribution calibration")
+        if distribution_results_path.is_file()
+        else {}
+    )
+    distribution_gate = dict(distribution.get("promotion_gate") or {})
+    checks.append(
+        _check(
+            "full_distribution_calibration",
+            "Forecast tails are time-forward calibrated",
+            "pass" if distribution_gate.get("passed") else "not_ready",
+            (
+                f"{distribution.get('completed_events', 0)} events; CRPS, p10/p90, "
+                "captain and bench tails remain shadow until every gate passes."
+            ),
+            requirement="Time-forward CRPS and interval/tail coverage must pass overall, by position and decision role.",
+            scope="research_frontier",
+        )
+    )
+    price = (
+        _load(price_liquidity_results_path, "price/liquidity calibration")
+        if price_liquidity_results_path.is_file()
+        else {}
+    )
+    checks.append(
+        _check(
+            "future_price_liquidity",
+            "Price and affordability policy wins net points",
+            "pass" if price.get("passed") else "not_ready",
+            (
+                f"{(price.get('price_forecast') or {}).get('nights', 0)} price nights; "
+                f"{(price.get('net_points_policy') or {}).get('events', 0)} prospective timing decisions."
+            ),
+            requirement="Timestamp-safe price probabilities must improve realized net points; team value alone cannot promote.",
             scope="research_frontier",
         )
     )

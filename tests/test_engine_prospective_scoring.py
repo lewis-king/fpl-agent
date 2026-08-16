@@ -155,9 +155,10 @@ def test_final_event_scores_selected_roll_and_every_considered_action(tmp_path: 
 
     by_id = {row["action_id"]: row for row in result["actions"]}
     assert result["selected_action_id"] == "move"
-    assert by_id["move"]["realized_decision_net_points"] > by_id["roll"][
-        "realized_decision_net_points"
-    ]
+    assert (
+        by_id["move"]["realized_decision_net_points"]
+        > by_id["roll"]["realized_decision_net_points"]
+    )
     assert result["selected_comparison"]["realized_rank"] == 1
     assert result["selected_comparison"]["realized_opportunity_cost"] == 0.0
     assert Path(result["receipt_path"]).is_file()
@@ -165,12 +166,8 @@ def test_final_event_scores_selected_roll_and_every_considered_action(tmp_path: 
     assert len(result["selected_squad_player_outcomes"]) == 15
     assert result["version"] == "prospective_weekly_scoring_v2"
     assert result["decision_attribution"]["action_selection_regret"] == 0.0
-    assert result["decision_attribution"]["forecast_diagnostics"][
-        "appearance_brier"
-    ] >= 0.0
-    assert result["decision_attribution"]["configuration"][
-        "configuration_regret"
-    ] >= 0.0
+    assert result["decision_attribution"]["forecast_diagnostics"]["appearance_brier"] >= 0.0
+    assert result["decision_attribution"]["configuration"]["configuration_regret"] >= 0.0
 
     repeated = score_weekly_event(
         2,
@@ -211,6 +208,23 @@ def test_latest_archive_selects_last_valid_predeadline_receipt(tmp_path: Path) -
     late.write_text(json.dumps(_decision(created_at="2026-08-28T16:00:00+00:00")))
 
     assert latest_archived_weekly_decision(2, archive_root=tmp_path / "archive") == late
+
+
+def test_latest_archive_prefers_newer_contract_schema_on_same_decision(
+    tmp_path: Path,
+) -> None:
+    event_dir = tmp_path / "archive" / "event-2"
+    event_dir.mkdir(parents=True)
+    old = event_dir / "z-old.json"
+    new = event_dir / "a-new.json"
+    old_decision = _decision()
+    old_decision["version"] = "prospective_decision_contract_v1"
+    new_decision = _decision()
+    new_decision["version"] = "prospective_decision_contract_v2"
+    old.write_text(json.dumps(old_decision), encoding="utf-8")
+    new.write_text(json.dumps(new_decision), encoding="utf-8")
+
+    assert latest_archived_weekly_decision(2, archive_root=tmp_path / "archive") == new
 
 
 def test_score_weekly_event_command_is_exposed() -> None:

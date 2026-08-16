@@ -34,6 +34,7 @@ source-prefixed, such as `vaastav_player_gameweeks`, `solio_manager_outcomes`,
 | Soong seven-manager histories | 2025/26 |
 | Official FPL preseason snapshot and rules | 2026/27 |
 | SofaScore confirmed preseason lineups (third-party advisory) | 2026/27, refreshed during preseason |
+| SofaScore independent player-event feed | 2023/24–2025/26 complete; 2026/27 live collector armed |
 | Vaastav deadline-proxy snapshots | 2023/24: 37 GWs; 2024/25: 35 GWs; 2025/26: 11 GWs |
 | Football-Data pre-closing market odds | 2019/20–2025/26 historical; upcoming-fixture feed polled for 2026/27 |
 
@@ -61,6 +62,8 @@ source-prefixed, such as `vaastav_player_gameweeks`, `solio_manager_outcomes`,
 | `processed/supporting/sofascore/2026-27/preseason_events.parquet` | club/friendly | Confirmed preseason team-event coverage |
 | `processed/supporting/sofascore/2026-27/preseason_lineups.parquet` | club/friendly/source player | Confirmed lineup, starter and nullable minute evidence |
 | `processed/supporting/sofascore/2026-27/preseason_role_evidence.parquet` | current FPL player | Join-date-aware listing/start/appearance evidence; advisory only |
+| `processed/supporting/sofascore/player-events/<season>/player_events.parquet` | source player/match | Independent role, chance and defensive events with post-match availability timestamps |
+| `processed/supporting/sofascore/player-events/<season>/player_mapping.parquet` | source player/season | Club-restricted, fail-closed FPL identity mapping |
 | `processed/vaastav_deadlines/player_snapshots.parquet` | player/decision GW | Latest public commit observed before the inferred deadline |
 | `processed/vaastav_deadlines/fixture_snapshots.parquet` | fixture/decision GW | Point-in-time schedule and FDR proxy |
 | `model/features/player_deadlines.parquet` | player/GW | Leakage-gated historical training rows |
@@ -84,6 +87,9 @@ source-prefixed, such as `vaastav_player_gameweeks`, `solio_manager_outcomes`,
 | `model/market_transfer_policy_v1/results.json` | season path | Continuous validation/test replay with bank, purchase/selling prices, carried transfers and hits |
 | `model/return_distribution_v1/rolling-return-distribution.parquet` | player/GW/fold | Season-forward probabilities for under-five, 5–9 return and 10+ haul outcomes |
 | `model/return_distribution_v1/results.json` | forecast/policy receipt | Frozen blend selection, legal independent-squad tests and continuous validation/test transfer paths |
+| `model/external_forecast_benchmark_v1/rolling-forecasts.parquet` | player/deadline/fold | Matched OpenFPL-method reproduction forecasts on the champion's exact outer folds |
+| `model/full_distribution_calibration_v1/results.json` | prospective player/decision role | CRPS, interval, p10/p90, CVaR and haul-tail calibration gate |
+| `model/price_liquidity_scenarios_v1/results.json` | price night/decision | Timestamp-safe price-direction and realized net-points timing gate |
 | `decisions/2026-27-gw1-component-candidates.json` | candidate/policy | Legal component-native squads generated on the selection seed |
 | `model/tournament_v2/component-gw1-5-candidate-metrics.parquet` | candidate | Raw and xP-anchored match-component tournament metrics |
 | `model/tournament_v2/component-player-calibration.parquet` | player/GW | Full point-component decomposition and xP anchor audit |

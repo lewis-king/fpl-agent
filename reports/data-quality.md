@@ -1,6 +1,6 @@
 # Model data quality gate
 
-Status: **PASS** · generated 2026-08-15T16:53:46.193403+00:00
+Status: **PASS** · generated 2026-08-15T19:20:01.860065+00:00
 
 | Check | Result | Value | Expectation |
 | --- | --- | --- | --- |
@@ -25,7 +25,7 @@ Status: **PASS** · generated 2026-08-15T16:53:46.193403+00:00
 | official_difficulty_excluded_from_challenger | PASS | `false` | false |
 | ownership_scale | PASS | `{"min": 0.0, "max": 1.0}` | within [0,1] for every season |
 | feature_allowlist_has_no_targets | PASS | `0` | 0 |
-| selectable_position_pool | PASS | `{"MID": 254, "GK": 61, "DEF": 187, "FWD": 66}` | at least 2/5/5/3 |
+| selectable_position_pool | PASS | `{"GK": 61, "MID": 254, "DEF": 187, "FWD": 66}` | at least 2/5/5/3 |
 
 ## Legacy raw-form gaps (diagnostic only)
 

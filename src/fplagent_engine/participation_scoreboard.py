@@ -16,6 +16,7 @@ from fplagent_data.http import sha256_file
 from fplagent_data.live_snapshots import SnapshotValidationError
 from fplagent_data.participation_consensus import SNAPSHOT_DIR
 
+from .matched_policy import matched_legal_policy_replay
 from .paths import MODEL_DATA, REPORTS, ensure_engine_layout
 
 VERSION = "participation_prospective_scoreboard_v1"
@@ -94,6 +95,85 @@ def _actual_starts(live: Mapping[str, Any]) -> dict[int, bool]:
         result[int(row["id"])] = int(stats["starts"]) > 0
     return result
 
+
+def _actual_points(live: Mapping[str, Any]) -> dict[int, float]:
+    values = live.get("elements")
+    if not isinstance(values, list) or not values:
+        raise ParticipationScoreboardError("event outcome contains no players")
+    return {
+        int(row["id"]): float((row.get("stats") or {}).get("total_points") or 0.0)
+        for row in values
+        if isinstance(row, Mapping) and row.get("id") is not None
+    }
+
+
+def _consensus_expected_points(row: Mapping[str, Any]) -> float | None:
+    expected = row.get("champion_expected_points")
+    if expected is None:
+        return None
+    expected = float(expected)
+    p_play = float(row.get("champion_p_play") or 0.0)
+    conditional = expected / max(p_play, 0.20)
+    source_count = int(row.get("complete_source_count") or 0)
+    starts = len(row.get("predicted_start_sources") or [])
+    benches = len(row.get("predicted_not_start_sources") or [])
+    if source_count >= 2 and starts == source_count:
+        consensus_play = max(p_play, 0.92)
+    elif source_count >= 2 and benches == source_count:
+        consensus_play = min(p_play, 0.30)
+    else:
+        consensus_play = p_play
+    adjustment = conditional * consensus_play - expected
+    bound = 0.30 * abs(expected)
+    return expected + max(-bound, min(bound, adjustment))
+
+
+def _legal_policy_score(
+    consensus: list[dict[str, Any]], actual_points: Mapping[int, float]
+) -> dict[str, Any] | None:
+    rows = []
+    for row in consensus:
+        challenger = _consensus_expected_points(row)
+        element = int(row["element"])
+        required = (
+            row.get("position"),
+            row.get("market_price"),
+            row.get("champion_expected_points"),
+        )
+        if (
+            challenger is None
+            or any(value in (None, "") for value in required)
+            or element not in actual_points
+        ):
+            continue
+        rows.append(
+            {
+                "season": str(row.get("season") or ""),
+                "event_number": int(row["event"]),
+                "element": element,
+                "player_name": str(row.get("player_name") or element),
+                "position": str(row["position"]),
+                "team_id": int(row["team_id"]),
+                "market_price": float(row["market_price"]),
+                "target_points": float(actual_points[element]),
+                "champion_expected_points": float(row["champion_expected_points"]),
+                "consensus_expected_points": challenger,
+            }
+        )
+    if len(rows) < 100:
+        return None
+    replay = matched_legal_policy_replay(
+        rows,
+        champion_field="champion_expected_points",
+        challenger_field="consensus_expected_points",
+    )
+    return {
+        "delta_to_champion": replay["total_delta"],
+        "matched_events": replay["matched_events"],
+        "contract": replay["contract"],
+    }
+
+
 def _top_eleven(
     rows: list[dict[str, Any]], score: Callable[[dict[str, Any]], tuple[float, float]]
 ) -> set[int]:
@@ -105,6 +185,7 @@ def score_participation_snapshot(
     consensus: list[dict[str, Any]],
     observations: list[dict[str, Any]],
     actual_starts: Mapping[int, bool],
+    actual_points: Mapping[int, float] | None = None,
 ) -> dict[str, Any]:
     """Compare the frozen consensus and each source with the frozen minute champion."""
     by_team: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -169,13 +250,12 @@ def score_participation_snapshot(
         "consensus_mean_hits": mean([row["consensus_hits"] for row in team_rows])
         if team_rows
         else None,
-        "mean_delta_to_champion": mean([row["delta"] for row in team_rows])
-        if team_rows
-        else None,
+        "mean_delta_to_champion": mean([row["delta"] for row in team_rows]) if team_rows else None,
         "source_mean_hits": {
             source: mean(values) for source, values in sorted(source_hits.items()) if values
         },
         "teams": team_rows,
+        "legal_policy": _legal_policy_score(consensus, actual_points or {}),
     }
 
 
@@ -190,6 +270,11 @@ def _promotion_gate(events: list[dict[str, Any]]) -> dict[str, Any]:
     aggregate = mean(deltas) if deltas else None
     standard_error = stdev(deltas) / math.sqrt(len(deltas)) if len(deltas) >= 2 else None
     lower = aggregate - 1.96 * standard_error if standard_error is not None else None
+    legal_deltas = [
+        float(row["legal_policy"]["delta_to_champion"])
+        for row in qualifying
+        if isinstance(row.get("legal_policy"), Mapping)
+    ]
     checks = {
         "minimum_six_completed_events": len(qualifying) >= MINIMUM_EVENTS,
         "two_independent_sources_on_ten_teams_per_event": len(qualifying) == len(events)
@@ -197,19 +282,24 @@ def _promotion_gate(events: list[dict[str, Any]]) -> dict[str, Any]:
         "positive_mean_lineup_hit_lift": aggregate is not None and aggregate > 0.0,
         "non_negative_event_floor": bool(deltas) and min(deltas) >= 0.0,
         "confidence_lower_bound_non_negative": lower is not None and lower >= 0.0,
+        "legal_policy_scored_for_every_qualifying_event": len(legal_deltas) == len(qualifying)
+        and bool(qualifying),
+        "positive_aggregate_legal_policy_lift": bool(legal_deltas) and sum(legal_deltas) > 0.0,
+        "non_negative_legal_policy_event_floor": bool(legal_deltas) and min(legal_deltas) >= 0.0,
     }
     passed = all(checks.values())
     return {
         "passed": passed,
-        "state": "ready_for_exact_legal_replay" if passed else "awaiting_prospective_evidence",
+        "state": "prospectively_validated" if passed else "awaiting_prospective_evidence",
         "checks": checks,
         "qualifying_events": len(qualifying),
         "mean_delta_to_champion": aggregate,
         "ci95_low": lower,
+        "legal_policy_total_delta": sum(legal_deltas) if legal_deltas else None,
         "production_changed": False,
         "authority": (
-            "Even a passed prospective gate authorizes only an exact legal decision replay; "
-            "it cannot directly change production forecasts."
+            "A pass confirms both role accuracy and legal-decision lift. It authorizes a bounded "
+            "production challenger, not an unreviewed forecast replacement."
         ),
     }
 
@@ -278,9 +368,12 @@ def build_participation_scoreboard(
                 consensus,
                 observations,
                 _actual_starts(live),
+                _actual_points(live),
             )
             if not score["teams_scored"]:
-                raise ParticipationScoreboardError("no single-fixture covered teams could be scored")
+                raise ParticipationScoreboardError(
+                    "no single-fixture covered teams could be scored"
+                )
             events.append(
                 {
                     "event": event,

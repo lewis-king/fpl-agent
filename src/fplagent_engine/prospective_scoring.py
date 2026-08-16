@@ -41,6 +41,11 @@ def latest_archived_weekly_decision(
 ) -> Path:
     event_dir = archive_root / f"event-{event}"
     candidates = []
+    version_rank = {
+        "prospective_decision_contract_v1": 1,
+        "prospective_decision_contract_v2": 2,
+        "weekly_decision_synthesis_v3": 3,
+    }
     for path in sorted(event_dir.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -49,10 +54,12 @@ def latest_archived_weekly_decision(
             created = _aware(str(payload["created_at"]), "decision created_at")
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-        candidates.append((created, path.name, path))
+        candidates.append(
+            (created, version_rank.get(str(payload.get("version")), 0), path.name, path)
+        )
     if not candidates:
         raise ProspectiveScoringError(f"no archived weekly decision exists for event {event}")
-    return max(candidates)[2]
+    return max(candidates)[3]
 
 
 def _load_decision(path: Path, *, event: int, deadline_time: str) -> dict[str, Any]:
@@ -60,7 +67,11 @@ def _load_decision(path: Path, *, event: int, deadline_time: str) -> dict[str, A
         decision = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ProspectiveScoringError(f"weekly decision is unreadable: {path}") from exc
-    accepted_versions = {"weekly_decision_synthesis_v3", "prospective_decision_contract_v1"}
+    accepted_versions = {
+        "weekly_decision_synthesis_v3",
+        "prospective_decision_contract_v1",
+        "prospective_decision_contract_v2",
+    }
     if decision.get("version") not in accepted_versions:
         raise ProspectiveScoringError("decision lacks a supported prospective-scoring contract")
     if int(decision.get("decision_event", -1)) != event:
@@ -86,7 +97,9 @@ def _lineup_for_event(summary: dict[str, Any], event: int) -> dict[str, Any]:
         raise ProspectiveScoringError("weekly action lacks event lineup projections")
     matches = [row for row in rows if isinstance(row, dict) and row.get("event") == event]
     if len(matches) != 1:
-        raise ProspectiveScoringError(f"weekly action must contain exactly one lineup for event {event}")
+        raise ProspectiveScoringError(
+            f"weekly action must contain exactly one lineup for event {event}"
+        )
     return matches[0]
 
 
@@ -102,7 +115,9 @@ def _action_candidates(
         bench = list(map(int, lineup["bench_player_ids"]))
         selected = starters + bench
         if len(selected) != 15 or len(set(selected)) != 15:
-            raise ProspectiveScoringError("weekly action lineup does not partition 15 unique players")
+            raise ProspectiveScoringError(
+                "weekly action lineup does not partition 15 unique players"
+            )
         candidates.append(
             {
                 "candidate_id": str(summary["action_id"]),
@@ -121,9 +136,7 @@ def _action_candidates(
     return candidates, summaries
 
 
-def _captain_bonus(
-    lineup: dict[str, Any], live_by_player: dict[int, dict[str, Any]]
-) -> int:
+def _captain_bonus(lineup: dict[str, Any], live_by_player: dict[int, dict[str, Any]]) -> int:
     captain = live_by_player[int(lineup["captain_player_id"])]
     vice = live_by_player[int(lineup["vice_captain_player_id"])]
     if int(captain["minutes"]) > 0:
@@ -142,9 +155,7 @@ def _hindsight_configuration(
 ) -> dict[str, Any]:
     best: tuple[float, tuple[int, ...], int | None] | None = None
     for starters in enumerate_legal_xis(selected, meta):
-        appeared = [
-            element for element in starters if int(live_by_player[element]["minutes"]) > 0
-        ]
+        appeared = [element for element in starters if int(live_by_player[element]["minutes"]) > 0]
         captain = (
             max(
                 appeared,
@@ -309,7 +320,9 @@ def score_weekly_event(
         and outcome_manifest.get("finished")
         and outcome_manifest.get("data_checked")
     ):
-        raise ProspectiveScoringError("official event outcome is not final, checked and publishable")
+        raise ProspectiveScoringError(
+            "official event outcome is not final, checked and publishable"
+        )
     chosen_decision = decision_path or latest_archived_weekly_decision(
         event, archive_root=decision_archive_root
     )
@@ -326,7 +339,9 @@ def score_weekly_event(
         meta = {int(element): dict(row) for element, row in forecast_meta.items()}
         live_by_player = {int(row["id"]): row["stats"] for row in live["elements"]}
     except (KeyError, TypeError, ValueError) as exc:
-        raise ProspectiveScoringError("decision or official outcome player metadata is invalid") from exc
+        raise ProspectiveScoringError(
+            "decision or official outcome player metadata is invalid"
+        ) from exc
     player_ids = sorted({element for candidate in candidates for element in candidate["selected"]})
     missing_meta = set(player_ids) - set(meta)
     missing_outcomes = set(player_ids) - set(live_by_player)
@@ -354,9 +369,7 @@ def score_weekly_event(
     selected_id = str(decision["selected_action_id"])
     if decision["version"] == "weekly_decision_synthesis_v3":
         reference_ids = [
-            str(summary["action_id"])
-            for summary in summaries
-            if summary["route_type"] == "roll"
+            str(summary["action_id"]) for summary in summaries if summary["route_type"] == "roll"
         ]
         reference_label = "roll"
         if len(reference_ids) != 1:
@@ -393,14 +406,10 @@ def score_weekly_event(
     by_id = {row["action_id"]: row for row in action_rows}
     reference_net = by_id[reference_id]["realized_decision_net_points"]
     for row in action_rows:
-        row["realized_delta_to_reference"] = (
-            row["realized_decision_net_points"] - reference_net
-        )
+        row["realized_delta_to_reference"] = row["realized_decision_net_points"] - reference_net
         if roll_id is not None:
             row["realized_delta_to_roll"] = row["realized_delta_to_reference"]
-    action_rows.sort(
-        key=lambda row: (-row["realized_decision_net_points"], row["action_id"])
-    )
+    action_rows.sort(key=lambda row: (-row["realized_decision_net_points"], row["action_id"]))
     for rank, row in enumerate(action_rows, start=1):
         row["realized_rank"] = rank
     selected = by_id[selected_id]
@@ -410,6 +419,10 @@ def score_weekly_event(
     selected_summary = next(
         summary for summary in summaries if str(summary["action_id"]) == selected_id
     )
+    selected_lineup = selected_summary["scored_lineup"]
+    selected_starters = set(map(int, selected_lineup["starter_player_ids"]))
+    selected_bench = set(map(int, selected_lineup["bench_player_ids"]))
+    selected_captain = int(selected_lineup["captain_player_id"])
     player_rows = []
     for element in sorted(selected_players):
         forecast = meta[element]
@@ -420,6 +433,15 @@ def score_weekly_event(
                 "element": element,
                 "player_name": str(forecast.get("player_name") or f"#{element}"),
                 "position": str(forecast["position"]),
+                "decision_role": (
+                    "captain"
+                    if element == selected_captain
+                    else "starter"
+                    if element in selected_starters
+                    else "bench"
+                    if element in selected_bench
+                    else "squad"
+                ),
                 "expected_points": float(forecast["expected_points"]),
                 "robust_points": float(forecast["robust_points"]),
                 "actual_points": int(actual["total_points"]),
@@ -431,6 +453,13 @@ def score_weekly_event(
                 ),
                 "actual_minutes": int(actual["minutes"]),
                 "appeared": int(actual["minutes"]) > 0,
+                "actual_bps": int(actual.get("bps") or 0),
+                "actual_defensive_contribution": int(actual.get("defensive_contribution") or 0),
+                "actual_expected_goals": float(actual.get("expected_goals") or 0.0),
+                "actual_expected_assists": float(actual.get("expected_assists") or 0.0),
+                "points_pmf": forecast.get("points_pmf"),
+                "distribution_source": forecast.get("distribution_source"),
+                "distribution_calibration_sha256": forecast.get("distribution_calibration_sha256"),
             }
         )
     all_player_rows = []
@@ -444,8 +473,7 @@ def score_weekly_event(
                 "player_name": str(forecast.get("player_name") or f"#{element}"),
                 "expected_points": float(forecast["expected_points"]),
                 "actual_points": int(actual["total_points"]),
-                "points_error": int(actual["total_points"])
-                - float(forecast["expected_points"]),
+                "points_error": int(actual["total_points"]) - float(forecast["expected_points"]),
                 "p_play": float(forecast["p_play"]),
                 "appeared": appeared,
             }
@@ -454,12 +482,10 @@ def score_weekly_event(
     play_errors = np.asarray(
         [float(row["p_play"]) - float(row["appeared"]) for row in all_player_rows]
     )
-    worst_under = sorted(
-        all_player_rows, key=lambda row: (-row["points_error"], row["element"])
-    )[:5]
-    worst_over = sorted(
-        all_player_rows, key=lambda row: (row["points_error"], row["element"])
-    )[:5]
+    worst_under = sorted(all_player_rows, key=lambda row: (-row["points_error"], row["element"]))[
+        :5
+    ]
+    worst_over = sorted(all_player_rows, key=lambda row: (row["points_error"], row["element"]))[:5]
     configuration = _hindsight_configuration(
         list(map(int, selected_candidate["selected"])),
         selected_summary["scored_lineup"],
@@ -495,12 +521,10 @@ def score_weekly_event(
         "expected_points_bias_actual_minus_forecast": float(np.mean(point_errors)),
         "appearance_brier": float(np.mean(np.square(play_errors))),
         "high_confidence_dnp_count": sum(
-            float(row["p_play"]) >= 0.75 and not bool(row["appeared"])
-            for row in all_player_rows
+            float(row["p_play"]) >= 0.75 and not bool(row["appeared"]) for row in all_player_rows
         ),
         "surprise_appearance_count": sum(
-            float(row["p_play"]) <= 0.25 and bool(row["appeared"])
-            for row in all_player_rows
+            float(row["p_play"]) <= 0.25 and bool(row["appeared"]) for row in all_player_rows
         ),
         "largest_underforecasts": worst_under,
         "largest_overforecasts": worst_over,
@@ -523,8 +547,7 @@ def score_weekly_event(
         "actions": action_rows,
         "selected_squad_player_outcomes": player_rows,
         "decision_attribution": {
-            "action_selection_regret": best_net
-            - selected["realized_decision_net_points"],
+            "action_selection_regret": best_net - selected["realized_decision_net_points"],
             "configuration": configuration,
             "forecast_diagnostics": forecast_diagnostics,
             "overlap_warning": (

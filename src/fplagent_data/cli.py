@@ -26,6 +26,7 @@ from .market_telemetry import (
 from .participation_consensus import collect_participation_consensus
 from .paths import ensure_layout
 from .preseason_lineups import collect_preseason_lineups, upgrade_role_receipt_mapping
+from .sofascore_events import collect_sofascore_player_events
 from .understat import collect_understat_season
 from .validate import validate
 
@@ -97,6 +98,9 @@ def parser() -> argparse.ArgumentParser:
     understat.add_argument("--season-start", type=int, required=True)
     understat.add_argument("--observed-at")
     understat.add_argument("--force", action="store_true")
+    sofascore = commands.add_parser("collect-sofascore-player-events")
+    sofascore.add_argument("--season", default="2026-27")
+    sofascore.add_argument("--observed-at")
     return root
 
 
@@ -171,6 +175,18 @@ def main() -> None:
                     args.season_start,
                     observed_at=args.observed_at,
                     force=args.force,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return
+    if args.command == "collect-sofascore-player-events":
+        print(
+            json.dumps(
+                collect_sofascore_player_events(
+                    season=args.season,
+                    observed_at=args.observed_at,
                 ),
                 indent=2,
                 sort_keys=True,

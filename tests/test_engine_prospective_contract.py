@@ -67,14 +67,12 @@ def test_gw1_contract_freezes_selected_and_rejected_squads_with_player_evidence(
         deadline_time="2026-08-21T17:30:00+00:00",
     )
 
-    assert contract["version"] == "prospective_decision_contract_v1"
+    assert contract["version"] == "prospective_decision_contract_v2"
     assert contract["selected_action_id"] == "best"
     assert contract["reference_action_id"] == "other"
     assert len(contract["action_summaries"]) == 2
     assert len(contract["event_player_forecasts"]) == 15
-    assert contract["action_summaries"][0]["event_lineups"][0][
-        "projected_points"
-    ] == 55.0
+    assert contract["action_summaries"][0]["event_lineups"][0]["projected_points"] == 55.0
 
 
 def test_gw1_contract_rejects_post_deadline_synthesis() -> None:

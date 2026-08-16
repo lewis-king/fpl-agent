@@ -441,6 +441,8 @@ class MarketTelemetryView(StrictModel):
     feature_sha256: str | None = None
     outcome_status: Literal["not_ready", "ready"] | None = None
     outcome_nights: int | None = None
+    price_policy_status: Literal["not_ready", "shadow", "passed"] | None = None
+    price_policy_events: int | None = None
     next_collection_at: str | None = None
     message: str
 

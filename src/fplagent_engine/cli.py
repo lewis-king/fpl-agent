@@ -38,6 +38,8 @@ from .deadline_evidence import audit_deadline_evidence
 from .deadline_pack import build_deadline_pack
 from .deadline_pipeline import run_weekly_deadline_pipeline
 from .decision_synthesis import run_decision_synthesis
+from .distribution_calibration import build_distribution_scoreboard
+from .external_player_data import build_external_player_data_receipt
 from .features import build as build_features
 from .fixture_ablation import run_fixture_ablation
 from .form_reversion import run_form_reversion_challenger
@@ -55,13 +57,16 @@ from .market_transfer_replay import run_market_transfer_replay
 from .mini_league import run_mini_league_shadow
 from .models import forecast, require_cuda, train
 from .one_swap_audit import run_one_swap_audit
+from .openfpl_benchmark import run_openfpl_matched_benchmark
 from .optimizer import select_initial_squad
 from .participation_scoreboard import build_participation_scoreboard
 from .picker_backtest import evaluate_picker
 from .preseason_pipeline import run_gw1_deadline_pipeline
 from .preseason_role_scenario import run_preseason_role_scenario_audit
 from .preseason_role_threshold import run_preseason_role_threshold_audit
+from .price_liquidity import run_price_liquidity_calibration
 from .promotion import promote_gw1_squad
+from .prospective_2026 import build_2026_prospective_scoreboard
 from .prospective_contract import freeze_gw1_prospective_contract
 from .prospective_dashboard import build_prospective_scoreboard
 from .prospective_scoring import score_weekly_event
@@ -71,6 +76,7 @@ from .role_residual_challenger import run_role_residual_challenger
 from .rules_audit import audit_2026_27_rules
 from .schedule_rearrangement import build_rearrangement_model
 from .schedule_scenarios import build_schedule_receipt
+from .sofascore_event_challenger import run_sofascore_event_policy_replay
 from .sota_readiness import build_sota_readiness_audit
 from .squad_chip_replay import run_squad_chip_retention_replay
 from .structure_stress import run_structure_stress
@@ -106,6 +112,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("backtest-market-features")
     commands.add_parser("backtest-attacking-chance")
     commands.add_parser("backtest-understat")
+    commands.add_parser("backtest-sofascore-events")
     commands.add_parser("backtest-return-distribution")
     commands.add_parser("replay-captain-returns")
     commands.add_parser("replay-form-reversion")
@@ -114,6 +121,13 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("audit-structure-stress")
     commands.add_parser("build-deadline-pack")
     commands.add_parser("audit-sota-readiness")
+    commands.add_parser("audit-external-player-data")
+    openfpl = commands.add_parser("benchmark-openfpl")
+    openfpl.add_argument("--rebuild", action="store_true")
+    openfpl.add_argument("--top-models", type=int, default=10)
+    commands.add_parser("prospective-2026-scoreboard")
+    commands.add_parser("distribution-scoreboard")
+    commands.add_parser("calibrate-price-liquidity")
     commands.add_parser("build-algorithm-whitepaper")
     commands.add_parser("backtest-role-residual")
     commands.add_parser("backtest-lead-time")
@@ -163,12 +177,8 @@ def parser() -> argparse.ArgumentParser:
     preseason_role.add_argument("--holdout-seed", type=int, default=20260813)
     preseason_role.add_argument("--maximum-candidates", type=int)
     preseason_threshold = commands.add_parser("audit-preseason-threshold")
-    preseason_threshold.add_argument(
-        "--selection-simulations", type=int, default=5_000
-    )
-    preseason_threshold.add_argument(
-        "--holdout-simulations", type=int, default=25_000
-    )
+    preseason_threshold.add_argument("--selection-simulations", type=int, default=5_000)
+    preseason_threshold.add_argument("--holdout-simulations", type=int, default=25_000)
     preseason_threshold.add_argument("--selection-seed", type=int, default=20260814)
     preseason_threshold.add_argument("--holdout-seed", type=int, default=20260815)
     one_swap = commands.add_parser("audit-one-swaps")
@@ -194,13 +204,9 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("audit-role-appearance")
     commands.add_parser("replay-role-appearance")
     appearance_replay = commands.add_parser("replay-appearance-policy")
-    appearance_replay.add_argument(
-        "--position", choices=("GK", "DEF", "MID", "FWD"), default="FWD"
-    )
+    appearance_replay.add_argument("--position", choices=("GK", "DEF", "MID", "FWD"), default="FWD")
     appearance_retire = commands.add_parser("retire-appearance-calibration")
-    appearance_retire.add_argument(
-        "--position", choices=("GK", "DEF", "MID", "FWD"), required=True
-    )
+    appearance_retire.add_argument("--position", choices=("GK", "DEF", "MID", "FWD"), required=True)
     commands.add_parser("promote-gw1")
     robust = commands.add_parser("robust-search")
     robust.add_argument("--discovery-candidates", type=int, default=10_000)
@@ -386,9 +392,7 @@ def main() -> None:
                 "results": "data/model/market_feature_v1/results.json",
                 "verdict": result["verdict"],
                 "production_policy": result["production_policy"],
-                "unbounded_independent_test_gate": result["independent_policy"][
-                    "test_gate"
-                ],
+                "unbounded_independent_test_gate": result["independent_policy"]["test_gate"],
                 "bounded_deployment_independent": {
                     key: result["deployment_independent"][key]
                     for key in ("weight", "total_delta", "gate")
@@ -431,6 +435,28 @@ def main() -> None:
                 "production_policy": result["production_policy"],
             }
         )
+    elif args.command == "backtest-sofascore-events":
+        result = run_sofascore_event_policy_replay(
+            progress=lambda message: print(message, flush=True)
+        )
+        _print(
+            {
+                "passed": result["gate"]["passed"],
+                "checks": result["gate"]["checks"],
+                "selected_weight": result["selected_weight"],
+                "frozen_test": {
+                    "mapping_coverage": result["frozen_test"]["mapping_coverage"],
+                    "player_deadline_feature_coverage": result["frozen_test"][
+                        "player_deadline_feature_coverage"
+                    ],
+                    "champion_mae": result["frozen_test"]["champion_mae"],
+                    "challenger_mae": result["frozen_test"]["challenger_mae"],
+                    "legal_policy_delta": result["frozen_test"]["legal_policy"]["total_delta"],
+                },
+                "results": "data/model/sofascore_event_policy_v1/results.json",
+                "report": "reports/sofascore-player-event-challenger.md",
+            }
+        )
     elif args.command == "backtest-return-distribution":
         result = run_return_distribution_challenger()
         _print(
@@ -462,13 +488,9 @@ def main() -> None:
                 "results": "data/model/form_reversion_v1/results.json",
                 "verdict": result["verdict"],
                 "reused": result.get("reused", False),
-                "historical_classification": result["historical_audit"][
-                    "classification"
-                ],
+                "historical_classification": result["historical_audit"]["classification"],
                 "selected_score_field": replay["selected_score_field"],
-                "selected_correction_weight": replay[
-                    "selected_correction_weight"
-                ],
+                "selected_correction_weight": replay["selected_correction_weight"],
                 "gate": replay["gate"],
             }
         )
@@ -531,9 +553,7 @@ def main() -> None:
                 "production_changed": result["production_changed"],
                 "leader": tournament["leader"]["candidate_id"],
                 "incumbent": tournament["incumbent"]["candidate_id"],
-                "full_pipeline_request_gate": tournament[
-                    "full_pipeline_request_gate"
-                ],
+                "full_pipeline_request_gate": tournament["full_pipeline_request_gate"],
             }
         )
     elif args.command == "squad":
@@ -619,6 +639,31 @@ def main() -> None:
         )
     elif args.command == "audit-sota-readiness":
         _print(build_sota_readiness_audit())
+    elif args.command == "audit-external-player-data":
+        _print(build_external_player_data_receipt())
+    elif args.command == "benchmark-openfpl":
+        result = run_openfpl_matched_benchmark(
+            rebuild=args.rebuild,
+            top_models=args.top_models,
+            progress=lambda message: print(message, flush=True),
+        )
+        _print(
+            {
+                "passed": result["passed"],
+                "summary": result["summary"],
+                "checks": result["checks"],
+                "matched_events": result["legal_policy"]["matched_events"],
+                "legal_policy_total_delta": result["legal_policy"]["total_delta"],
+                "results": "data/model/external_forecast_benchmark_v1/results.json",
+                "report": "reports/openfpl-matched-benchmark.md",
+            }
+        )
+    elif args.command == "prospective-2026-scoreboard":
+        _print(build_2026_prospective_scoreboard())
+    elif args.command == "distribution-scoreboard":
+        _print(build_distribution_scoreboard())
+    elif args.command == "calibrate-price-liquidity":
+        _print(run_price_liquidity_calibration())
     elif args.command == "build-algorithm-whitepaper":
         _print(build_algorithm_whitepaper())
     elif args.command == "forecast-components":
@@ -684,15 +729,11 @@ def main() -> None:
                 "verdict": result["verdict"],
                 "active": result["current"]["candidate_id"],
                 "targeted_winner": result["targeted_winner"]["candidate_id"],
-                "best_historical_band": result["best_historical_band_challenger"][
-                    "candidate_id"
-                ],
+                "best_historical_band": result["best_historical_band_challenger"]["candidate_id"],
             }
         )
     elif args.command == "audit-bench-history":
-        result = run_historical_bench_depth_audit(
-            refresh_forecasts=args.refresh_forecasts
-        )
+        result = run_historical_bench_depth_audit(refresh_forecasts=args.refresh_forecasts)
         _print(
             {
                 "report": "reports/historical-bench-depth-audit.md",
@@ -738,15 +779,9 @@ def main() -> None:
                 "results": "data/model/preseason_role_scenario_v1/results.json",
                 "verdict": result["verdict"],
                 "production_changed": result["production_changed"],
-                "supported_configuration_scenarios": result[
-                    "supported_configuration_scenarios"
-                ],
-                "supported_squad_screen_scenarios": result[
-                    "supported_squad_screen_scenarios"
-                ],
-                "supported_deep_squad_scenarios": result[
-                    "supported_deep_squad_scenarios"
-                ],
+                "supported_configuration_scenarios": result["supported_configuration_scenarios"],
+                "supported_squad_screen_scenarios": result["supported_squad_screen_scenarios"],
+                "supported_deep_squad_scenarios": result["supported_deep_squad_scenarios"],
             }
         )
     elif args.command == "audit-preseason-threshold":
@@ -888,9 +923,7 @@ def main() -> None:
             {
                 "report": "reports/appearance-role-challenger.md",
                 "metrics": "data/model/appearance_role_v1/metrics.json",
-                "positions_pending_policy_replay": result[
-                    "positions_pending_policy_replay"
-                ],
+                "positions_pending_policy_replay": result["positions_pending_policy_replay"],
                 "production_changed": result["production_changed"],
             }
         )
@@ -1031,9 +1064,7 @@ def main() -> None:
             "status": availability["status"],
             "current": availability["current"],
             "decision_action": availability["decision_action"],
-            "decision_change_authorized": availability[
-                "decision_change_authorized"
-            ],
+            "decision_change_authorized": availability["decision_change_authorized"],
             "summary": availability.get("summary", {}),
             "issues": availability["issues"],
             "warnings": availability["warnings"],
@@ -1097,7 +1128,16 @@ def main() -> None:
             }
         )
     elif args.command == "score-weekly-event":
-        _print(score_weekly_event(args.event, decision_path=args.decision))
+        scored = score_weekly_event(args.event, decision_path=args.decision)
+        _print(
+            {
+                "event_score": scored,
+                "season_scoreboard": build_prospective_scoreboard(),
+                "prospective_2026": build_2026_prospective_scoreboard(),
+                "distribution_calibration": build_distribution_scoreboard(),
+                "participation_calibration": build_participation_scoreboard(),
+            }
+        )
     elif args.command == "prospective-scoreboard":
         result = build_prospective_scoreboard()
         _print(
@@ -1135,9 +1175,7 @@ def main() -> None:
             }
         )
     elif args.command == "freeze-gw1-prospective":
-        contract = freeze_gw1_prospective_contract(
-            maximum_candidates=args.maximum_candidates
-        )
+        contract = freeze_gw1_prospective_contract(maximum_candidates=args.maximum_candidates)
         _print(
             {
                 "contract_path": contract["contract_path"],

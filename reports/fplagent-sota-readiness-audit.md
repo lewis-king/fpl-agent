@@ -1,8 +1,8 @@
 # FPLAgent state-of-the-art readiness audit
 
-**Built:** 2026-08-15T16:53:51.887874+00:00
-**Verdict:** `DEADLINE_GRADE_RESEARCH_SYSTEM_NOT_SOTA_PROVEN`
-**Current candidate:** `R-083607ec8c`
+**Built:** 2026-08-15T21:04:53.944900+00:00  
+**Verdict:** `DEADLINE_GRADE_RESEARCH_SYSTEM_NOT_SOTA_PROVEN`  
+**Current candidate:** `R-92c8534bfc`
 
 ## Claim boundary
 
@@ -17,16 +17,18 @@
 | Point-in-time data and leakage controls | production | **PASS** | 22 checks; 0 failures. |
 | Player forecast beats the declared form baseline | production | **PASS** | MAE wins 11/12; top-k wins 11/12; mean top-k lift +0.512. |
 | Exact legal GW1 replay | production | **PASS** | 3 seasons; model 2 wins, 1 ties, 0 losses; +18.0 points. |
-| Global and local roster challenge | production | **PASS** | 554,062 legal candidates; 533,836 local two-swap; 256 distant MILP and 19,970 evolutionary squads. |
+| Global and local roster challenge | production | **PASS** | 552,528 legal candidates; 532,367 local two-swap; 256 distant MILP and 19,905 evolutionary squads. |
 | Correlated simulation and exact FPL mechanics | production | **PASS** | Exact formation-valid autosubs, captain fallback, scoring-rule ablations and independent holdout paths passed; any supported GW1-only alternative was explicitly reconciled against the declared multiweek selector. |
 | Transfer-aware multi-horizon policy | production | **PASS** | 48 finalists across GW1–3/5/8, decay sensitivity, fixed/open/rolled-GW2 policies. |
 | Bookmaker market is validated and bounded | production | **PASS** | Betfair 1X2/O2.5 covers 10/10 GW1 fixtures; 20% DEF-only blend; weekly authority remains zero. |
 | Current decision is lineage-locked and publishable | production | **PASS** | Verdict DEADLINE_READY; 11 declared gates. |
 | Human reports match machine artifacts | production | **PASS** | Canonical robust and horizon reports contain the active candidate IDs and timestamps. |
-| Independent event-data enrichment | research frontier | **PARTIAL** | Understat is current and has a time-forward legal-decision replay, but a second independently mapped provider is still missing. |
-| Strong external forecast benchmark | research frontier | **NOT_READY** | No matched time-forward OpenFPL/strong-public-baseline reproduction exists yet. |
-| Untouched prospective 2026/27 evidence | research frontier | **NOT_READY** | 0 final events; six are required for the first diagnostic review. |
+| Independent event-data enrichment | research frontier | **PARTIAL** | SofaScore, Understat is current and has time-forward replay, but the independent signals have not yet earned positive legal-policy lift. |
+| Strong external forecast benchmark | research frontier | **PASS** | FPLAgent MAE 0.978 vs OpenFPL-method 0.993; OpenFPL legal-policy delta -69.0. |
+| Untouched prospective 2026/27 evidence | research frontier | **NOT_READY** | 0 final events; six trigger diagnosis and 19 are required for the first SOTA evidence gate. |
 | Predicted-lineup consensus is prospectively validated | research frontier | **NOT_READY** | 0 qualifying events; current consensus remains zero-authority role evidence. |
+| Forecast tails are time-forward calibrated | research frontier | **NOT_READY** | 0 events; CRPS, p10/p90, captain and bench tails remain shadow until every gate passes. |
+| Price and affordability policy wins net points | research frontier | **NOT_READY** | 0 price nights; 0 prospective timing decisions. |
 
 ## Priority gaps
 

@@ -9,18 +9,11 @@ This checksum-bound audit applies declared conditional-DNP perturbations to the 
 
 | Player | Team | Flag | Eligible | Listed | Starts | Recent start share | Latest start |
 | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Watkins | Aston Villa | not_listed_three_plus | 7 | 0 | 0 | 0% | n/a |
-| Adams | Bournemouth | not_listed_three_plus | 3 | 0 | 0 | 0% | n/a |
-| Enzo | Chelsea | not_listed_three_plus | 5 | 0 | 0 | 0% | n/a |
-| McAteer | Ipswich Town | low_recent_start_share | 5 | 4 | 2 | 40% | no |
-| Calvert-Lewin | Leeds | low_recent_start_share | 5 | 3 | 1 | 24% | no |
-| Mukasa | Man City | low_recent_start_share | 3 | 3 | 0 | 0% | no |
+| Watkins | Aston Villa | not_listed_three_plus | 8 | 0 | 0 | 0% | n/a |
+| McAteer | Ipswich Town | low_recent_start_share | 6 | 5 | 2 | 27% | no |
+| Tanaka | Leeds | low_recent_start_share | 6 | 6 | 3 | 47% | no |
 | Haaland | Man City | not_listed_three_plus | 3 | 0 | 0 | 0% | n/a |
-| Bruno Fernandes | Man Utd | low_recent_start_share | 5 | 2 | 0 | 0% | no |
-| Yates | Nott'm Forest | low_recent_start_share | 6 | 4 | 3 | 34% | no |
-| Senesi | Spurs | not_listed_three_plus | 5 | 0 | 0 | 0% | n/a |
-| Bentancur | Spurs | not_listed_three_plus | 5 | 0 | 0 | 0% | n/a |
-| Xhaka | Sunderland | not_listed_three_plus | 4 | 0 | 0 | 0% | n/a |
+| Florentino | Ipswich Town | not_listed_three_plus | 3 | 0 | 0 | 0% | n/a |
 
 Uncovered clubs receive no negative factor. A player missing from a friendly lineup is not labelled injured or unavailable.
 
@@ -32,10 +25,10 @@ The configuration column exhaustively reoptimizes the published 15. The squad co
 
 | Scenario | Configuration leader | Config residual | Config component | Frozen-config squad screen | Squad residual | Squad component |
 | --- | --- | ---: | ---: | --- | ---: | ---: |
-| baseline | 3-4-3 · Bruno Fernandes | -0.039 [-0.048, -0.030] | +0.022 [+0.002, +0.043] | R-1ca68907f5 | +0.879 [+0.847, +0.911] | +1.169 [+1.095, +1.244] |
-| moderate_role_stress | 3-4-3 · Bruno Fernandes | +0.000 [+0.000, +0.000] | +0.000 [+0.000, +0.000] | R-0aec115e14 | +0.901 [+0.865, +0.937] | +1.083 [+0.999, +1.168] |
-| severe_role_stress | 4-3-3 · Bruno Fernandes | -0.003 [-0.010, +0.004] | -0.012 [-0.030, +0.007] | R-0aec115e14 | +0.945 [+0.906, +0.984] | +1.159 [+1.071, +1.247] |
-| not_listed_dnp_boundary | 4-4-2 · Bruno Fernandes | -0.039 [-0.048, -0.030] | +0.022 [+0.001, +0.042] | R-0aec115e14 | +0.992 [+0.955, +1.030] | +1.199 [+1.113, +1.285] |
+| baseline | 3-4-3 · Bruno Fernandes | +0.034 [+0.023, +0.045] | -0.008 [-0.034, +0.019] | R-1ced0705f3 | +0.687 [+0.655, +0.720] | +0.922 [+0.847, +0.998] |
+| moderate_role_stress | 3-4-3 · Bruno Fernandes | +0.040 [+0.028, +0.052] | -0.011 [-0.039, +0.018] | R-1ced0705f3 | +0.611 [+0.576, +0.645] | +0.871 [+0.794, +0.948] |
+| severe_role_stress | 3-4-3 · Bruno Fernandes | +0.040 [+0.028, +0.052] | -0.021 [-0.051, +0.009] | R-1ca68907f5 | +0.549 [+0.512, +0.585] | +0.761 [+0.684, +0.839] |
+| not_listed_dnp_boundary | 3-4-3 · Bruno Fernandes | +0.000 [+0.000, +0.000] | +0.000 [+0.000, +0.000] | R-1ced0705f3 | +0.588 [+0.551, +0.625] | +0.858 [+0.778, +0.939] |
 
 ## Exhaustive challenger configuration replay
 
@@ -43,10 +36,10 @@ Every non-incumbent squad that wins the frozen-configuration screen is then give
 
 | Scenario | Challenger | Challenger shape/captain | Incumbent shape/captain | Residual delta | Component delta | Supported |
 | --- | --- | --- | --- | ---: | ---: | --- |
-| baseline | R-1ca68907f5 | 5-3-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.952 [+0.919, +0.985] | +1.184 [+1.108, +1.260] | True |
-| moderate_role_stress | R-0aec115e14 | 4-4-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.950 [+0.914, +0.986] | +1.083 [+0.997, +1.169] | True |
-| severe_role_stress | R-0aec115e14 | 4-4-2 · Bruno Fernandes | 4-3-3 · Bruno Fernandes | +0.977 [+0.938, +1.016] | +1.173 [+1.084, +1.263] | True |
-| not_listed_dnp_boundary | R-0aec115e14 | 4-3-3 · Bruno Fernandes | 4-4-2 · Bruno Fernandes | +0.981 [+0.943, +1.019] | +1.179 [+1.090, +1.267] | True |
+| baseline | R-1ced0705f3 | 4-4-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.653 [+0.621, +0.685] | +0.930 [+0.855, +1.005] | True |
+| moderate_role_stress | R-1ced0705f3 | 4-4-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.571 [+0.537, +0.605] | +0.882 [+0.805, +0.958] | True |
+| severe_role_stress | R-1ca68907f5 | 5-3-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.539 [+0.502, +0.575] | +0.768 [+0.691, +0.845] | True |
+| not_listed_dnp_boundary | R-1ced0705f3 | 4-4-2 · Bruno Fernandes | 3-4-3 · Bruno Fernandes | +0.588 [+0.551, +0.625] | +0.858 [+0.778, +0.939] | True |
 
 ## Scenario details
 
@@ -55,10 +48,10 @@ Every non-incumbent squad that wins the frozen-configuration screen is then give
 Production appearance worlds unchanged.
 
 - XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo
-- Bench: N.Williams, Hill, Groß, Verbruggen
-- Captain / vice: Bruno Fernandes / Mbeumo
-- Squad leader: `R-1ca68907f5`
-- Squad changes: Hill, Groß, N.Williams out; Collins, McAteer, Senesi in
+- Bench: N.Williams, Xhaka, Hill, Verbruggen
+- Captain / vice: Bruno Fernandes / Tarkowski
+- Squad leader: `R-1ced0705f3`
+- Squad changes: Hill, Truffert, Xhaka out; Collins, Tanaka, Senesi in
 - Cross-family configuration support: False
 - Frozen-config squad screen support: True
 - Deep squad support: True
@@ -68,10 +61,10 @@ Production appearance worlds unchanged.
 Retain 75% of simulated appearances for three-plus-lineup absences and 90% for low-recent-start flags.
 
 - XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo
-- Bench: N.Williams, Hill, Groß, Verbruggen
+- Bench: N.Williams, Xhaka, Hill, Verbruggen
 - Captain / vice: Bruno Fernandes / Tarkowski
-- Squad leader: `R-0aec115e14`
-- Squad changes: Hill, Groß, N.Williams out; Collins, Justin, E.Le Fée in
+- Squad leader: `R-1ced0705f3`
+- Squad changes: Hill, Truffert, Xhaka out; Collins, Tanaka, Senesi in
 - Cross-family configuration support: False
 - Frozen-config squad screen support: True
 - Deep squad support: True
@@ -80,11 +73,11 @@ Retain 75% of simulated appearances for three-plus-lineup absences and 90% for l
 
 Retain 50% of simulated appearances for three-plus-lineup absences and 75% for low-recent-start flags.
 
-- XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo, N.Williams
-- Bench: Szoboszlai, Hill, Groß, Verbruggen
+- XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo
+- Bench: N.Williams, Xhaka, Hill, Verbruggen
 - Captain / vice: Bruno Fernandes / Tarkowski
-- Squad leader: `R-0aec115e14`
-- Squad changes: Hill, Groß, N.Williams out; Collins, Justin, E.Le Fée in
+- Squad leader: `R-1ca68907f5`
+- Squad changes: Hill, N.Williams, Xhaka out; Collins, McAteer, Senesi in
 - Cross-family configuration support: False
 - Frozen-config squad screen support: True
 - Deep squad support: True
@@ -93,11 +86,11 @@ Retain 50% of simulated appearances for three-plus-lineup absences and 75% for l
 
 Force three-plus-lineup absence flags to DNP while leaving role-watch players at production appearance rates.
 
-- XI: Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo, N.Williams
-- Bench: Hill, Groß, Watkins, Verbruggen
-- Captain / vice: Bruno Fernandes / Mbeumo
-- Squad leader: `R-0aec115e14`
-- Squad changes: Hill, Groß, N.Williams out; Collins, Justin, E.Le Fée in
+- XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo, Xhaka
+- Bench: Szoboszlai, N.Williams, Hill, Verbruggen
+- Captain / vice: Bruno Fernandes / Tarkowski
+- Squad leader: `R-1ced0705f3`
+- Squad changes: Hill, Truffert, Xhaka out; Collins, Tanaka, Senesi in
 - Cross-family configuration support: False
 - Frozen-config squad screen support: True
 - Deep squad support: True

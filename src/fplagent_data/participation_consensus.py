@@ -463,6 +463,17 @@ def build_consensus_rows(
                 "player_name": str(player.get("web_name") or player.get("second_name") or ""),
                 "team_id": team_id,
                 "team_name": team_name.get(team_id, str(team_id)),
+                "position": str(forecast.get("position") or ""),
+                "market_price": (
+                    float(forecast["market_price"])
+                    if forecast.get("market_price") is not None
+                    else None
+                ),
+                "champion_expected_points": (
+                    float(forecast["expected_points"])
+                    if forecast.get("expected_points") is not None
+                    else None
+                ),
                 "official_status": official,
                 "official_chance": chance,
                 "official_news": str(player.get("news") or ""),

@@ -1,7 +1,7 @@
 # Price-change and early-transfer policy
 
 **Status:** prospective shadow, zero decision authority  
-**Updated:** 8 August 2026
+**Updated:** 15 August 2026
 
 FPLAgent now measures whether waiting until the deadline could make an already-selected transfer
 route unaffordable. It does **not** recommend an early transfer yet. Price is useful only when it
@@ -23,7 +23,7 @@ it, allowing no more than four hours between the pair. It records the actual £0
 the official `price_change_percent` threshold separately for rises and falls. The percentage is
 treated as progress towards the official threshold, not as a calibrated probability.
 
-The weekly decision engine then evaluates the selected transfer route under a one-step threshold
+The weekly decision engine evaluates the selected transfer route under a one-step threshold
 stress:
 
 1. add £0.1m if an incoming player is at or beyond the rise threshold before the next update;
@@ -40,6 +40,13 @@ price stress.
 Even a stable, fully available incoming player and a route that becomes unaffordable can currently
 produce only `shadow_preference: move_now_candidate`. The operational recommendation remains
 `wait`, and `decision_authority` remains `false`.
+
+Once three clean midnight outcomes exist, a chronological multinomial model also forecasts each
+player's rise/flat/fall probabilities from price progress, ownership, transfer velocity, current
+price and availability. The immediate route distribution is enumerated exactly. A seeded
+three-night simulation reports forced-affordability probability and p10/p50/p90 future bank while
+clearly declaring its stationary, independent-transition assumption. These probabilistic fields
+are evidence only and cannot override the operational wait policy.
 
 ## Why the apparent historical shortcut was rejected
 
@@ -58,12 +65,12 @@ a large leaked sample that creates false confidence.
 
 ## Frozen prospective promotion gates
 
-The 2026/27 stream starts with the new official predictor and scores every sufficiently tight
-midnight pair. The first calibration gate requires:
+The 2026/27 stream scores every sufficiently tight midnight pair. The price-direction gate
+requires:
 
 - at least 14 independently observed price-change nights;
-- at least 30 threshold predictions for rises and 30 for falls; and
-- at least 75% precision in each direction.
+- chronological folds in which every training midnight predates the scored midnight; and
+- better multiclass Brier score and log loss than the rolling class-frequency prior.
 
 Passing this only validates the official indicator at its declared threshold. It does not authorize
 early moves. A second policy replay must compare `move now` with `wait` and measure:
@@ -74,9 +81,10 @@ early moves. A second policy replay must compare `move now` with `wait` and meas
 - exact bank and selling-value effects; and
 - realised net FPL points, with team value reported only as a diagnostic.
 
-The policy can be promoted only if the net-points benefit is positive with a defensible downside
-bound and no material increase in invalidated transfers. Until then, the app should explain the
-affordability risk while advising the manager to wait for more information.
+The policy can be promoted only after at least six prospectively frozen timing decisions deliver
+positive realised net-points lift with no negative event. Team value never counts toward that
+gate. Until then, the app explains affordability risk while advising the manager to wait for more
+information.
 
 ## Current state
 
@@ -88,7 +96,8 @@ Implementation:
 
 - `src/fplagent_data/market_telemetry.py`
 - `src/fplagent_engine/early_transfer.py`
+- `src/fplagent_engine/price_liquidity.py`
 - `src/fplagent_web/market_telemetry_scheduler.py`
 - `tests/test_data_market_telemetry.py`
 - `tests/test_engine_early_transfer.py`
-
+- `tests/test_engine_price_liquidity.py`

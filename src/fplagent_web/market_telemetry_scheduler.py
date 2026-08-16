@@ -12,6 +12,7 @@ from fplagent_data.market_telemetry import (
     build_market_evidence,
     collect_market_observation,
 )
+from fplagent_engine.price_liquidity import run_price_liquidity_calibration
 from fplagent_llm.paths import ROOT
 
 from .models import MarketTelemetryView
@@ -28,6 +29,7 @@ class MarketTelemetryScheduler:
         *,
         collector: Callable[..., Mapping[str, Any]] = collect_market_observation,
         feature_builder: Callable[..., Mapping[str, Any]] = build_market_evidence,
+        policy_builder: Callable[..., Mapping[str, Any]] = run_price_liquidity_calibration,
         state_path: Path = DEFAULT_STATE,
         interval: timedelta = DEFAULT_INTERVAL,
         clock: Callable[[], datetime] | None = None,
@@ -37,6 +39,7 @@ class MarketTelemetryScheduler:
             raise ValueError("market telemetry interval must be positive")
         self.collector = collector
         self.feature_builder = feature_builder
+        self.policy_builder = policy_builder
         self.state_path = state_path
         self.interval = interval
         self.clock = clock or (lambda: datetime.now(tz=UTC))
@@ -99,6 +102,10 @@ class MarketTelemetryScheduler:
                 receipt = dict(self.collector(observed_at=now.isoformat()))
                 receipt_path = Path(str(receipt["receipt_path"]))
                 features = dict(self.feature_builder(as_of=now.isoformat()))
+                outcome_nights = int(
+                    (features.get("price_outcomes") or {}).get("outcome_nights", 0)
+                )
+                policy = dict(self.policy_builder()) if outcome_nights >= 3 else None
                 feature_path = (
                     Path(str(features["output_path"]))
                     if features.get("status") == "ready"
@@ -114,18 +121,22 @@ class MarketTelemetryScheduler:
                         "receipt_sha256": sha256_file(receipt_path),
                         "feature_status": str(features["status"]),
                         "feature_path": str(feature_path) if feature_path else None,
-                        "feature_sha256": (
-                            sha256_file(feature_path) if feature_path else None
-                        ),
+                        "feature_sha256": (sha256_file(feature_path) if feature_path else None),
                         "outcome_status": str(
-                            (features.get("price_outcomes") or {}).get(
-                                "status", "not_ready"
-                            )
+                            (features.get("price_outcomes") or {}).get("status", "not_ready")
                         ),
                         "outcome_nights": int(
-                            (features.get("price_outcomes") or {}).get(
-                                "outcome_nights", 0
-                            )
+                            (features.get("price_outcomes") or {}).get("outcome_nights", 0)
+                        ),
+                        "price_policy_status": (
+                            "passed"
+                            if policy and policy.get("passed")
+                            else "shadow"
+                            if policy
+                            else "not_ready"
+                        ),
+                        "price_policy_events": int(
+                            ((policy or {}).get("net_points_policy") or {}).get("events", 0)
                         ),
                         "message": (
                             f"Captured {int(receipt['rows'])} player market observations; "
