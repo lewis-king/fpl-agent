@@ -1,6 +1,6 @@
 # GW1 horizon-adequacy audit
 
-**Built:** 2026-08-15T18:50:25.977945+00:00<br>
+**Built:** 2026-08-16T06:43:59.836820+00:00<br>
 **Verdict:** long_horizon_challenger_promoted<br>
 **Leader:** R-1ca68907f5 · 4-4-2 · Bruno Fernandes captain · £20.5m bench
 
@@ -10,7 +10,7 @@
 
 This audit does not assume that five equal gameweeks are the correct outset. It re-simulates GW1–8 and evaluates short, medium, decayed long, late-fixture, fixed-squad and forced-GW2-bank views.
 
-The eight-week leader is **R-1ca68907f5**. Against the five-week incumbent **R-083607ec8c**, its paired central delta is +1.162 points (95% CI +1.025 to +1.299).
+The eight-week leader is **R-1ca68907f5**. Against the five-week incumbent **R-92c8534bfc**, its paired central delta is +1.045 points (95% CI +0.910 to +1.180).
 
 ## Evaluation funnel
 
@@ -27,15 +27,15 @@ The eight-week leader is **R-1ca68907f5**. Against the five-week incumbent **R-0
 
 | Scenario | Leader | Incumbent | Leader regret | Weight |
 |---|---:|---:|---:|---:|
-| gw1 3 open d088 | 165.47 | 164.96 | 0.00 | 10% |
-| gw1 5 open d088 | 243.49 | 242.85 | 0.00 | 15% |
-| gw1 8 open d070 | 195.33 | 194.48 | 0.00 | 10% |
-| gw1 8 open d080 | 258.60 | 257.64 | 0.00 | 10% |
-| gw1 8 open d088 | 331.61 | 330.45 | 0.00 | 15% |
-| gw1 8 open d094 | 404.43 | 403.03 | 0.00 | 10% |
-| gw6 8 open equal | 188.64 | 187.53 | 0.32 | 10% |
-| gw1 8 fixed d088 | 327.52 | 327.36 | 0.87 | 5% |
-| gw1 8 roll gw2 d088 | 331.19 | 330.31 | 0.00 | 15% |
+| gw1 3 open d088 | 165.36 | 164.96 | 0.00 | 10% |
+| gw1 5 open d088 | 243.37 | 242.80 | 0.00 | 15% |
+| gw1 8 open d070 | 195.21 | 194.45 | 0.00 | 10% |
+| gw1 8 open d080 | 258.45 | 257.59 | 0.00 | 10% |
+| gw1 8 open d088 | 331.41 | 330.37 | 0.00 | 15% |
+| gw1 8 open d094 | 404.18 | 402.92 | 0.00 | 10% |
+| gw6 8 open equal | 188.49 | 187.48 | 0.00 | 10% |
+| gw1 8 fixed d088 | 327.36 | 327.26 | 0.80 | 5% |
+| gw1 8 roll gw2 d088 | 331.01 | 330.27 | 0.00 | 15% |
 
 ## What strong managers historically did
 

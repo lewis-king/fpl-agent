@@ -8,6 +8,7 @@ Markdown package or the network.
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import hashlib
 import html
 import json
@@ -222,11 +223,23 @@ def render_markdown(source: str, visuals: dict[str, str]) -> RenderedMarkdown:
     return RenderedMarkdown(body="\n".join(output), headings=headings)
 
 
-def pipeline_visual(robust: dict, horizon: dict, synthesis: dict) -> str:
+def captain_name(synthesis: dict) -> str:
+    return next(
+        player["name"]
+        for player in synthesis["decision"]["squad"]["starters"]
+        if player["captain"]
+    )
+
+
+def pipeline_visual(robust: dict, horizon: dict, synthesis: dict, forecast: dict) -> str:
     funnel = robust["funnel"]
+    player_count = horizon["holdout_diagnostics"]["players"]
+    event_count = len(horizon["events"])
+    decision = synthesis["decision"]
+    captain = captain_name(synthesis)
     stages = [
-        ("01", "Historical rows", "244,425", "deadline-safe player-GWs"),
-        ("02", "Forecast grid", "559 × 8", "players across events"),
+        ("01", "Historical rows", f"{forecast['training_rows']:,}", "deadline-safe player-GWs"),
+        ("02", "Forecast grid", f"{player_count} × {event_count}", "players across events"),
         ("03", "Search universe", f"{funnel['combined_universe']:,}", "legal squads"),
         ("04", "Robust holdout", f"{funnel['finalists']}", "five-week finalists"),
         ("05", "Horizon holdout", f"{horizon['funnel']['deep_finalists']}", "eight-week finalists"),
@@ -236,7 +249,7 @@ def pipeline_visual(robust: dict, horizon: dict, synthesis: dict) -> str:
             str(synthesis["candidate_coverage"]["common_finalists"]),
             "shared finalists",
         ),
-        ("07", "Decision", "4–3–3", "Bruno captain"),
+        ("07", "Decision", decision["formation"].replace("-", "–"), f"{captain} captain"),
     ]
     cards = "".join(
         f'<div class="flow-card"><span>{number}</span><div><small>{label}</small>'
@@ -252,7 +265,7 @@ def pipeline_visual(robust: dict, horizon: dict, synthesis: dict) -> str:
     )
 
 
-def funnel_visual(robust: dict) -> str:
+def funnel_visual(robust: dict, synthesis: dict) -> str:
     funnel = robust["funnel"]
     stages = [
         ("Generated", funnel["combined_universe"], "Local, MILP and evolution"),
@@ -260,7 +273,11 @@ def funnel_visual(robust: dict) -> str:
         ("Residual", funnel["discovery_candidates"], "2,000 worlds"),
         ("Component", funnel["shortlist"], "5,000 worlds"),
         ("Deep holdout", funnel["finalists"], "25k base + 25k stress"),
-        ("Synthesized", 38, "Both audit families"),
+        (
+            "Synthesized",
+            synthesis["candidate_coverage"]["common_finalists"],
+            "Both audit families",
+        ),
         ("Selected", 1, "Decision receipt"),
     ]
     maximum = stages[0][1]
@@ -311,7 +328,7 @@ def synthesis_visual(synthesis: dict) -> str:
   <div class="boundary-track"><span style="width:{boundary['upper'] * 100:.1f}%"></span>
     <b>Current squad remains champion through {boundary['upper'] * 100:.1f}% horizon weight</b>
   </div>
-  <div class="comparison-strip"><span>Selected <b>R-dc7de17def · {final:.3f}</b></span>
+  <div class="comparison-strip"><span>Selected <b>{synthesis['decision']['candidate_id']} · {final:.3f}</b></span>
     <span>Horizon challenger <b>{challenger['candidate_id']} · {challenger_ranking['synthesis_regret']:.3f}</b></span></div>
   <figcaption>The winner is the squad least brittle across model families—not the leader of a
   single preferred forecast.</figcaption>
@@ -319,6 +336,7 @@ def synthesis_visual(synthesis: dict) -> str:
 
 
 def team_visual(synthesis: dict) -> str:
+    decision_id = synthesis["decision"]["candidate_id"]
     squad = synthesis["decision"]["squad"]
     starters = squad["starters"]
     groups = {position: [] for position in ("GK", "DEF", "MID", "FWD")}
@@ -339,28 +357,43 @@ def team_visual(synthesis: dict) -> str:
     )
     return f"""
 <figure class="major-visual team-visual">
-  <div class="visual-kicker">PROVISIONAL GW1 RECEIPT · R-dc7de17def</div>
+  <div class="visual-kicker">CURRENT GW1 RECEIPT · {decision_id}</div>
   <div class="pitch"><div class="centre-circle"></div>{rows}</div>
   <div class="bench"><strong>BENCH ORDER</strong>{bench}</div>
   <div class="team-meta"><span>£{squad['budget_spent']:.1f}m spent</span><span>£{squad['bank']:.1f}m bank</span>
-    <span>{squad['formation']}</span><span>provisional</span></div>
-  <figcaption>The squad must be regenerated after final prices, availability, transfers and team
-  news—not manually patched around this snapshot.</figcaption>
+    <span>{squad['formation']}</span><span>Watkins role watch</span></div>
+  <figcaption>The current 15 passed the atomic publication gate. It remains conditional on a final
+  attributable role check and a checksum-coherent refresh before the deadline.</figcaption>
 </figure>"""
 
 
-def validation_visual(forecast: dict, component: dict, bps: dict, appearance: dict) -> str:
+def validation_visual(
+    forecast: dict,
+    component: dict,
+    bps: dict,
+    appearance: dict,
+    robust: dict,
+    readiness: dict,
+) -> str:
     gate = forecast["backtest_gate"]
     blend = component["blend_selection"]
     cards = [
-        ("DATA", "20 / 20", "leakage & integrity contracts"),
+        ("DATA", "22 / 22", "leakage & integrity contracts"),
         ("XGBOOST", f"{gate['mae_wins_vs_form5']} / {gate['slices']}", "MAE slices beat form5"),
         ("SHORTLIST", f"+{gate['mean_top_k_lift']:.3f}", "actual-point lift per player-GW"),
         ("COMPONENTS", f"{blend['selected_raw_weight']:.0%}", "raw-model weight after freeze"),
         ("BONUS", f"{bps['control']['fixtures']} / {bps['control']['fixtures']}", "historical control fixtures exact"),
         ("APPEARANCE", ", ".join(appearance["promoted_positions"]), "only position clearing both slices"),
-        ("ROBUSTNESS", "8 / 8", "leave-one-scenario-out wins"),
-        ("CODE", "60 / 60", "automated tests at publication"),
+        (
+            "ROBUSTNESS",
+            f"{len(robust['decision_sensitivity']['leave_one_scenario_out'])} / 8",
+            "leave-one-scenario-out wins",
+        ),
+        (
+            "READINESS",
+            f"{readiness['summary']['production_pass']} / {readiness['summary']['production_total']}",
+            "production gates; SOTA remains unproven",
+        ),
     ]
     body = "".join(
         f'<article><span>{label}</span><strong>{value}</strong><p>{note}</p></article>'
@@ -382,17 +415,54 @@ def build() -> str:
     component = read_json(DATA / "model" / "component_backtest_v1" / "metrics.json")
     bps = read_json(DATA / "model" / "bps_2026_27_v1" / "metrics.json")
     appearance = read_json(DATA / "model" / "appearance_audit_v1" / "metrics.json")
+    readiness = read_json(DATA / "model" / "sota_readiness_v1" / "results.json")
+    pipeline = read_json(DATA / "manifests" / "fpl-gw1-deadline-pipeline.json")
+    bench = read_json(DATA / "model" / "bench_allocation_audit_v2" / "results.json")
+    market = read_json(DATA / "model" / "market_feature_v1" / "results.json")
+    external = read_json(DATA / "model" / "external_forecast_benchmark_v1" / "results.json")
+    structure = read_json(DATA / "model" / "gw1_structure_stress_v1" / "results.json")
+    role = read_json(DATA / "model" / "preseason_role_scenario_v1" / "results.json")
 
-    expected_leader = "R-dc7de17def"
+    expected_leader = synthesis["decision"]["candidate_id"]
+    expected_universe = robust["funnel"]["combined_universe"]
+    expected_common = synthesis["candidate_coverage"]["common_finalists"]
     if robust["leader"]["candidate_id"] != expected_leader:
-        raise RuntimeError("Robust leader changed; revise the whitepaper before rebuilding HTML")
-    if synthesis["decision"]["candidate_id"] != expected_leader:
-        raise RuntimeError("Synthesized decision changed; revise the whitepaper before rebuilding HTML")
-    if robust["funnel"]["combined_universe"] != 562_498:
-        raise RuntimeError("Search universe changed; revise the whitepaper before rebuilding HTML")
-    if synthesis["candidate_coverage"]["common_finalists"] != 38:
-        raise RuntimeError("Joint finalist count changed; revise the whitepaper before rebuilding HTML")
-    for required in (expected_leader, "562,498", "79.2%"):
+        raise RuntimeError("Robust and synthesis leaders disagree; do not publish the whitepaper")
+    if not pipeline["published"] or pipeline["status"] != "published":
+        raise RuntimeError("The deadline pipeline is not published; do not publish the whitepaper")
+    if readiness["selected_candidate_id"] != expected_leader:
+        raise RuntimeError("The readiness audit does not describe the published candidate")
+    if bench["current"]["candidate_id"] != expected_leader:
+        raise RuntimeError("The bench audit does not describe the published candidate")
+    if structure["published_candidate_id"] != expected_leader or not structure["publishable"]:
+        raise RuntimeError("The structure audit does not authorize the published candidate")
+    if role["production_changed"]:
+        raise RuntimeError("The role audit changed production; rebuild the canonical decision first")
+    if len(pipeline["stages"]) != 12 or any(
+        stage["status"] != "completed" for stage in pipeline["stages"]
+    ):
+        raise RuntimeError("The canonical deadline pipeline is incomplete")
+    market_policy = pipeline["refresh"]["direct_forecast"]["market_feature_policy"]
+    if market_policy["weight"] != market["production_policy"]["preseason_weight"]:
+        raise RuntimeError("The current forecast and promoted market policy disagree")
+    external_test_rows = sum(fold["test_rows"] for fold in external["build"]["folds"])
+    external_events = len(external["legal_policy"]["events"])
+    for required in (
+        expected_leader,
+        f"{expected_universe:,}",
+        f"{expected_common}",
+        pipeline["input_fingerprint"],
+        f"{forecast['backtest_gate']['mean_top_k_lift']:+.3f}",
+        f"{synthesis['decision']['synthesis_regret']:.3f}",
+        f"{synthesis['selected_family_metrics']['five_week_robust']['robust_regret']:.3f}",
+        f"{synthesis['selected_family_metrics']['eight_week_horizon']['robust_regret']:.3f}",
+        f"{market_policy['weight']:.0%}",
+        f"{external_test_rows:,}",
+        f"{external_events}",
+        str(bench["coverage"]["targeted_unique_candidates"]),
+        structure["stress_leader_id"],
+        role["verdict"],
+    ):
         if required not in markdown:
             raise RuntimeError(f"Canonical Markdown is missing expected snapshot marker: {required}")
 
@@ -400,13 +470,15 @@ def build() -> str:
     abstract_offset = markdown.index("## Abstract")
     article_source = markdown[abstract_offset:]
     visuals = {
-        "funnel": funnel_visual(robust),
+        "funnel": funnel_visual(robust, synthesis),
         "synthesis": synthesis_visual(synthesis),
         "team": team_visual(synthesis),
-        "validation": validation_visual(forecast, component, bps, appearance),
+        "validation": validation_visual(
+            forecast, component, bps, appearance, robust, readiness
+        ),
     }
     rendered = render_markdown(article_source, visuals)
-    overview = pipeline_visual(robust, horizon, synthesis)
+    overview = pipeline_visual(robust, horizon, synthesis, forecast)
     word_count = len(re.findall(r"\b[\w’'-]+\b", markdown))
     read_minutes = max(1, round(word_count / 230))
     source_sha = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
@@ -431,6 +503,11 @@ def build() -> str:
         robust_sha=robust_sha,
         horizon_sha=horizon_sha,
         section_count=sum(level == 2 for level, _, _ in rendered.headings),
+        decision_id=expected_leader,
+        formation=synthesis["decision"]["formation"],
+        captain=captain_name(synthesis),
+        snapshot_at=pipeline["checked_at"],
+        evidence_fingerprint=pipeline["input_fingerprint"],
     )
 
 
@@ -445,7 +522,13 @@ def document(
     robust_sha: str,
     horizon_sha: str,
     section_count: int,
+    decision_id: str,
+    formation: str,
+    captain: str,
+    snapshot_at: str,
+    evidence_fingerprint: str,
 ) -> str:
+    snapshot_label = datetime.fromisoformat(snapshot_at).strftime("%d %b %Y · %H:%M UTC")
     fonts = {
         "manrope400": font_data("manrope-400.ttf"),
         "manrope500": font_data("manrope-500.ttf"),
@@ -471,8 +554,8 @@ def document(
 @font-face{{font-family:Newsreader;src:url('{fonts['news400']}') format('truetype');font-weight:400}}
 @font-face{{font-family:Newsreader;src:url('{fonts['news500']}') format('truetype');font-weight:500}}
 @font-face{{font-family:Newsreader;src:url('{fonts['news600']}') format('truetype');font-weight:600}}
-:root{{--paper:#f4f0e7;--surface:#fbf8f1;--ink:#122126;--muted:#65706f;--line:#c9c4b7;
- --blue:#244ee7;--blue-soft:#e5eafa;--coral:#e46647;--green:#173d35;--pitch:#174d3c;
+:root{{--paper:#f1f0e9;--surface:#fbfaf5;--ink:#14231c;--muted:#667169;--line:#c8c9be;
+ --blue:#2d6449;--blue-soft:#dce9df;--coral:#2d6449;--green:#244f3b;--pitch:#295f43;
  --serif:Newsreader,Georgia,serif;--sans:Manrope,"Trebuchet MS",sans-serif}}
 *{{box-sizing:border-box}}
 html{{scroll-behavior:smooth;background:var(--paper)}}
@@ -534,7 +617,7 @@ h1{{max-width:840px;margin:26px 0 28px;font:500 clamp(58px,7vw,108px)/.91 var(--
 .paper p{{margin:0 0 22px}}
 .paper h2+p{{font:400 20px/1.58 var(--serif);color:#394644}}
 .paper strong{{font-weight:700}}
-.paper code{{padding:.14em .35em;border-radius:4px;background:#e8e3d8;font:500 .88em ui-monospace,"Cascadia Mono","Courier New",monospace}}
+.paper code{{padding:.14em .35em;border-radius:4px;background:#e8e3d8;font:500 .88em ui-monospace,"Cascadia Mono","Courier New",monospace;overflow-wrap:anywhere;word-break:break-word}}
 .paper blockquote{{margin:36px 0;padding:8px 0 8px 28px;border-left:3px solid var(--coral)}}
 .paper blockquote p{{margin:0;font:500 23px/1.45 var(--serif)}}
 .paper ul,.paper ol{{margin:18px 0 28px;padding-left:24px}}
@@ -543,9 +626,9 @@ h1{{max-width:840px;margin:26px 0 28px;font:500 clamp(58px,7vw,108px)/.91 var(--
 .code-panel{{margin:32px 0;border:1px solid #38494d;background:var(--ink);color:#e8efed;overflow:hidden}}
 .code-panel figcaption{{margin:0;padding:10px 16px;border:0;border-bottom:1px solid #38494d;color:#8ea19e;font-size:9px;font-weight:700;letter-spacing:.13em}}
 .code-panel pre{{margin:0;padding:22px;overflow:auto;font:500 12px/1.7 ui-monospace,"Cascadia Mono","Courier New",monospace}}
-.code-panel code{{padding:0;background:transparent;color:inherit}}
+.code-panel code{{padding:0;background:transparent;color:inherit;overflow-wrap:normal;word-break:normal}}
 .code-panel.formula{{background:#1e3e37;border-color:#376157}}
-.table-scroll{{margin:30px 0;overflow:auto;border-top:2px solid var(--ink);border-bottom:1px solid var(--line)}}
+.table-scroll{{max-width:100%;margin:30px 0;overflow:auto;border-top:2px solid var(--ink);border-bottom:1px solid var(--line)}}
 table{{width:100%;border-collapse:collapse;font-size:12px;line-height:1.5}}
 th{{padding:14px 12px;text-align:left;background:#eae5da;font-size:9px;letter-spacing:.08em;text-transform:uppercase}}
 td{{padding:12px;border-top:1px solid #d9d3c7;vertical-align:top}}
@@ -591,8 +674,8 @@ th:last-child,td:last-child{{text-align:right}}
 .validation-grid span{{font-size:8px;font-weight:700;letter-spacing:.1em;color:var(--blue)}}
 .validation-grid strong{{display:block;margin:19px 0 8px;font:500 28px var(--serif)}}
 .validation-grid p{{margin:0;color:var(--muted);font-size:9px;line-height:1.45}}
-.reveal{{opacity:0;transform:translateY(18px);transition:opacity .65s ease,transform .65s ease}}
-.reveal.visible{{opacity:1;transform:translateY(0)}}
+.reveal{{opacity:1;transform:none}}
+.reveal.visible{{opacity:1;transform:none}}
 .footer{{padding:70px max(24px,calc((100vw - 1180px)/2));color:#b5c0bd;background:var(--ink)}}
 .footer-grid{{display:grid;grid-template-columns:1fr 1fr;gap:80px}}
 .footer h2{{margin:0;color:white;font:500 43px var(--serif)}}
@@ -609,22 +692,28 @@ th:last-child,td:last-child{{text-align:right}}
 <nav class="topbar" aria-label="Whitepaper controls"><div class="brand"><span class="brand-mark">F</span>FPLAgent</div>
   <div class="top-meta"><span>{section_count} sections · {read_minutes} min read</span><button class="print-button" type="button" onclick="window.print()">Print / PDF</button></div></nav>
 <header class="hero">
-  <div class="hero-grid"><div><div class="eyebrow">Technical whitepaper · Version 1.0</div>
-    <h1>The engine behind the opening move.</h1>
-    <p class="hero-copy">How deadline-safe public data, opponent-adjusted forecasting, exact FPL
-    constraints and 50,000-world stress tests produce the current 2026/27 initial squad.</p></div>
-    <aside class="hero-side"><dl><dt>Prepared</dt><dd>03 Aug 2026</dd><dt>Snapshot</dt><dd>02 Aug · 10:02 UTC</dd>
+  <div class="hero-grid"><div><div class="eyebrow">Technical whitepaper · Version 2.0</div>
+    <h1>Evidence before instinct.</h1>
+    <p class="hero-copy">How point-in-time data, independent forecasting, bookmaker calibration,
+    exact FPL mechanics and adversarial decision audits produced the current 2026/27 squad.</p></div>
+    <aside class="hero-side"><dl><dt>Prepared</dt><dd>16 Aug 2026</dd><dt>Snapshot</dt><dd>{snapshot_label}</dd>
       <dt>Words</dt><dd>{word_count:,}</dd><dt>Reading time</dt><dd>{read_minutes} minutes</dd><dt>Format</dt><dd>Self-contained HTML</dd></dl></aside></div>
-  <div class="decision-banner"><div><small>Current decision</small><strong>R-dc7de17def</strong></div>
-    <div><small>Shape & captain</small><strong>4–3–3 · Bruno</strong></div><span class="status">Provisional · refresh before deadline</span></div>
+  <div class="decision-banner"><div><small>Current decision</small><strong>{decision_id}</strong></div>
+    <div><small>Shape & captain</small><strong>{formation} · {captain}</strong></div><span class="status">Published · role verification open</span></div>
 </header>
 <div class="overview-wrap">{overview}</div>
 <main class="paper-layout"><aside class="toc" aria-label="Contents"><span class="toc-title">Contents</span>{toc}</aside>
   <article class="paper">{article}</article></main>
 <footer class="footer"><div class="footer-grid"><div><h2>A receipt, not a prophecy.</h2><p>This document describes the algorithm at one versioned preseason snapshot. The engine must ingest
 new information, rerun its gates and issue a new receipt before the Gameweek 1 lock.</p></div>
-<div class="hashes">MARKDOWN SHA-256 · {source_sha}<br>ROBUST AUDIT SHA-256 · {robust_sha}<br>HORIZON AUDIT SHA-256 · {horizon_sha}<br><br>Fonts, CSS, diagrams and interactions are embedded. No network connection is required.</div></div></footer>
+<div class="hashes">EVIDENCE FINGERPRINT · {evidence_fingerprint}<br>MARKDOWN SHA-256 · {source_sha}<br>ROBUST AUDIT SHA-256 · {robust_sha}<br>HORIZON AUDIT SHA-256 · {horizon_sha}<br><br>Fonts, CSS, diagrams and interactions are embedded. No network connection is required.</div></div></footer>
 <script>
+document.fonts.ready.then(()=>{{
+  if(location.hash){{
+    const target=document.getElementById(decodeURIComponent(location.hash.slice(1)));
+    if(target) target.scrollIntoView();
+  }}
+}});
 const sections=[...document.querySelectorAll('.paper-section')];
 sections.forEach(section=>section.classList.add('reveal'));
 document.querySelectorAll('.paper .major-visual').forEach(visual=>visual.classList.add('reveal'));

@@ -122,14 +122,17 @@ with the deeper research log in the
 - [V3 fine-tuning report](../reports/fpl-llm-training-v3.md)
 - [V4 correction experiment](../reports/fpl-llm-training-v4.md)
 - [V5-V9 application-conversation experiments and pause hand-off](../reports/fpl-llm-v5-experiment.md)
-- [GW1 2026/27 algorithm white paper](../reports/fplagent-gw1-2026-27-whitepaper.html):
-  self-contained, printable account of the current squad, forecast, simulation, global search,
-  evidence gates and honest state-of-the-art claim boundary.
+- [Canonical 2026/27 decision-engine whitepaper](../reports/fplagent-algorithm-technical-whitepaper-standalone.html):
+  self-contained, printable version 2.0 account of the published squad, source authority,
+  point-in-time forecast, bookmaker calibration, simulation, legal global search, season-long
+  engine, evidence ledger and honest state-of-the-art claim boundary. The maintainable source is
+  [Markdown](../reports/fplagent-algorithm-technical-whitepaper.md).
+- [Earlier generated GW1 paper](../reports/fplagent-gw1-2026-27-whitepaper.html): retained as a
+  historical presentation artifact; it is no longer the canonical methodology receipt.
 - [State-of-the-art readiness audit](../reports/fplagent-sota-readiness-audit.md): machine-derived
   production and research-frontier gates behind the white paper.
 - [SOTA evidence framework](sota-evidence-framework.md): implementation and promotion contracts
   for independent player-event data, the matched OpenFPL benchmark, untouched 2026/27 outcomes,
   predicted lineups, full-distribution calibration and price/liquidity scenarios.
-- [Legacy algorithm technical whitepaper](../reports/fplagent-algorithm-technical-whitepaper.md)
 
 The canonical training and command reference remains in [the LLM workspace README](../llm/README.md).
