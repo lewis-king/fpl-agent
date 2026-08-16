@@ -32,16 +32,18 @@ The Fantasy Football Scout page exposes `dateModified`; that source timestamp mu
 seven days old. RotoWire does not expose an equivalent update timestamp, so its evidence is marked
 `observation_timestamp_only`. A capture timestamp never masquerades as a publisher update time.
 
-The 10 August capture found:
+The latest pre-deadline capture on 16 August found:
 
 - both pages reachable and all 20 clubs parsed;
 - 16 complete, fully matched FFScout XIs and 17 complete RotoWire XIs;
-- FFScout's advertised 20 July modification timestamp is stale, so it is archived but ineligible;
-- RotoWire is the only currently eligible provider; and
-- all 15 players in the active GW1 squad appear in RotoWire's predicted XI.
+- FFScout's advertised source timestamp is current and RotoWire's capture is eligible under its
+  explicit observation-timestamp-only contract;
+- 215 of 220 FFScout names and 217 of 220 RotoWire names map conservatively to FPL players; and
+- both sources are therefore available to the shadow consensus, with source disagreement retained
+  rather than averaged away.
 
-That final point is useful reassurance, not proof. The UI says `15/15` with `1 of 2` captured
-providers eligible and retains production weight zero.
+This is useful deadline evidence, not proof. The layer retains production weight zero until the
+prospective gate is resolved from actual starts and legal FPL points.
 
 ## Normalized contract
 
@@ -103,6 +105,11 @@ The GW1 and weekly deadline pipelines recollect the feed after refreshing offici
 failure is fail-soft because the layer has zero authority: official evidence and the last validated
 decision stay usable. The participation receipt is intentionally excluded from the expensive
 decision fingerprint, so an advisory page update does not launch a complete squad tournament.
+
+The separate SofaScore preseason-friendly archive is not part of this live consensus. Normal
+deadline runs only validate its existing checksum-bound lineage; they do not recollect it. That
+keeps a zero-weight stress input from becoming a Cloudflare/browser dependency. Understat and FBref
+are performance-stat candidates rather than predicted-XI substitutes.
 
 The availability watch validates predicted-lineup hashes against the exact official players and
 forecast generation. Its UI projection can show start support, a two-source bench flag or provider

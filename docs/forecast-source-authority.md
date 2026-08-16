@@ -36,6 +36,16 @@ FBref's automated page returned HTTP 403 during this research run. FPLAgent does
 response, count it as a provider or substitute an undocumented scraper. A permitted second source
 with a point-in-time archive remains a research-frontier gate.
 
+SofaScore was subsequently tested as that second historical event source. Its bounded challenger
+slightly improved frozen player MAE but lost 15 realised points in the untouched 2025/26 legal
+policy replay, so its production weight is zero. Cloudflare or another access failure is therefore
+not a reason to add browser-evasion infrastructure: the source has not earned decision authority.
+
+These event sources are distinct from predicted lineups. Understat and FBref describe realised
+performance; neither supplies a dependable next-match XI. The separate participation layer uses
+deadline-bound Fantasy Football Scout and RotoWire captures, but remains at zero weight until its
+prospective lineup and legal-policy gate passes.
+
 ## Promotion rule
 
 Any new data source must:

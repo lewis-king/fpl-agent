@@ -110,7 +110,9 @@ The deadline refresh collects market evidence after the official FPL snapshot is
 Its status and content hashes form part of both the GW1 and weekly pipeline identities. Between
 scheduled full runs, the decision-change probe separates raw exchange movement from material
 football movement; a small price tick is archived without launching a roughly 40-minute search.
-The scheduled T-72h/T-24h/T-6h/T-60m/T-10m windows still validate the complete generation.
+The scheduled six-hour cadence, tightening to two hours inside T-24h and 30 minutes inside T-3h,
+still validates the complete generation. Content-addressed stages reuse unchanged expensive search
+work; a material semantic change invalidates the affected generation.
 
 The first live comparison on 10 August observed a maximum `0.0493` team-goal move and `0.0131`
 clean-sheet-probability move. Official FPL semantics were unchanged, so the probe correctly

@@ -38,8 +38,8 @@ source and staleness contract is in the
 | Order | Capability | Why it can win points | Current state | Promotion evidence |
 | --- | --- | --- | --- | --- |
 | 0 | Freeze the bounded V9 LLM experiment | Prevents an unreliable chat layer from contradicting the engine | **Complete: rejected; app defaults unchanged and further LoRA work parked** | Locked evaluation rejected V9 despite better routing and screenshot extraction |
-| 1 | App-open refresh and decision receipt | Makes every visible recommendation current and internally consistent | **Cached-first lifecycle, MCP sync, persisted single flight, deadline windows and semantic official-change triggers implemented** | Repeated-input byte identity, stale-source rejection, atomic UI switch |
-| 2 | Fresh GW1 evidence and final squad tournament | A wrong availability assumption or stale fixture can sink the opening squad for weeks | **Reproducible staged GW1 funnel, rollback gate, live scheduled runner and complete 10/10 Betfair evidence implemented; defender-only feature authority is capped at 20%** | Live runs at T-72h, T-24h, T-6h, T-60m and T-10m; independent simulation seed |
+| 1 | App-open refresh and decision receipt | Makes every visible recommendation current and internally consistent | **Cached-first lifecycle, MCP sync, persisted single flight, tightening 6h/2h/30m deadline cadence and semantic official-change triggers implemented** | Repeated-input byte identity, stale-source rejection, atomic UI switch |
+| 2 | Fresh GW1 evidence and final squad tournament | A wrong availability assumption or stale fixture can sink the opening squad for weeks | **Reproducible staged GW1 funnel, rollback gate, live scheduled runner, authoritative incumbent/challenger UI contract and complete 10/10 Betfair evidence implemented; defender-only feature authority is capped at 20%** | Live cadence coverage through deadline; independent simulation seed |
 | 3 | Preseason minutes, role and availability | Participation error is the largest avoidable GW1 failure mode | **Official status/minute bands plus two attributable predicted-XI adapters, immutable pre-deadline capture and a zero-authority prospective scoreboard are operational** | Six live events, two-source lineup-hit lift and then exact legal squad/captain replay |
 | 4 | First real weekly manager-state run | Converts the picker into roll/transfer/XI/bench/captain decisions | **State machine, optimiser and event handoff implemented; a zero-authority GW2–GW6 rehearsal now runs the real path, awaiting actual post-GW1 FPL state** | Exact authenticated state, legal transitions and published roll comparator |
 | 5 | Price-change and early-transfer policy | Team value creates future feasible moves, but early transfers sacrifice information | **Official threshold/outcome calibration and exact affordability shadow implemented; operational advice remains wait** | Prospective midnight calibration plus move-now-versus-wait net-points replay; team value is diagnostic only |
@@ -59,9 +59,10 @@ but they must not displace the deadline-critical GW1 work.
 
 - Capture official bootstrap and fixtures, authenticated squad state, forecast inputs and attributable
   availability evidence on app open and at scheduled deadline windows.
-- Every genuinely fresh GW1 run now recollects the preseason lineup feed before simulation. Explicit
-  official-snapshot reuse may reuse checksum-aligned role evidence for controlled research, but the
-  normal app/scheduler path cannot hide a new friendly behind an older valid receipt.
+- Normal GW1 runs validate the immutable preseason-friendly role archive without recollecting
+  SofaScore. That zero-weight research input cannot block a deadline run merely because its public
+  endpoint rejects automation; explicit research collection remains available. The independent
+  FFScout/RotoWire predicted-XI consensus continues to refresh fail-soft after official data.
 - Between those windows, probe decision-relevant official semantics on a deadline-sensitive cadence.
   Status/news, prices, set-piece orders, rules and fixture allocation trigger the full pipeline;
   transfer-counter noise is reserved for the cheaper price telemetry path.

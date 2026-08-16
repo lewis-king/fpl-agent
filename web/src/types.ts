@@ -246,6 +246,24 @@ export interface Workspace {
   }
   decision: {
     status: 'provisional' | 'confirmed'
+    comparison: {
+      status: 'aligned' | 'adopt_recommendation' | 'awaiting_refresh' | 'unavailable'
+      authoritative_squad: 'current' | 'model' | 'weekly'
+      incumbent_candidate_id: string
+      recommendation_candidate_id: string | null
+      current_expected_points: number
+      recommended_expected_points: number | null
+      expected_points_delta: number | null
+      change_count: number
+      incoming: SquadChangePlayer[]
+      outgoing: SquadChangePlayer[]
+      validation_gates_passed: number
+      validation_gates_total: number
+      churn_protected: boolean
+      headline: string
+      detail: string
+      reasons: string[]
+    }
     captain: {
       captain_player_id: number
       captain_name: string
@@ -337,6 +355,37 @@ export interface WorkspaceRefresh {
   progress_percent: number | null
   failure_code: string | null
   message: string
+}
+
+export interface DeadlineSchedule {
+  schema_version: 'deadline-refresh-schedule-v1'
+  status: 'waiting' | 'running' | 'covered' | 'deadline_passed' | 'error'
+  checked_at: string
+  event: number | null
+  deadline: string | null
+  active_window: string | null
+  active_window_at: string | null
+  next_window: string | null
+  next_window_at: string | null
+  cadence_minutes: number | null
+  cadence_label: string | null
+  last_validated_at: string | null
+  last_attempt_window: string | null
+  last_attempt_at: string | null
+  material_checked_at: string | null
+  material_local_fingerprint: string | null
+  material_remote_fingerprint: string | null
+  material_change_detected: boolean
+  refresh_run_id: string | null
+  message: string
+}
+
+export interface SquadChangePlayer {
+  player_id: number
+  name: string
+  position: Position
+  team: string
+  price: number
 }
 
 export interface CritiqueItem {

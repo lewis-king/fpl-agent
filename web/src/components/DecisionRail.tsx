@@ -43,7 +43,7 @@ export function DecisionRail({
     .join('')
     .slice(0, 2)
   const receiptStatus = modelPreview
-    ? 'Model preview'
+    ? 'Validated recommendation'
     : !workspace.squad.confirmed
     ? 'Provisional'
     : workspace.squad.source === 'connected'
@@ -59,7 +59,7 @@ export function DecisionRail({
       <div className="decision-heading">
         <span className="module-kicker">Decision receipt</span>
         <div className="heading-with-status">
-          <h2 id="decision-title">{modelPreview ? 'Model squad preview' : 'Your squad analysis'}</h2>
+          <h2 id="decision-title">{modelPreview ? 'Why this is the recommendation' : 'Your squad analysis'}</h2>
           <span className={`provisional-pill is-${workspace.freshness.status}`}>
             {workspace.freshness.status === 'stale' ? 'Model stale' : receiptStatus}
           </span>
@@ -91,7 +91,7 @@ export function DecisionRail({
         <div>
           <span>
             {modelPreview
-              ? 'Published squad armband'
+              ? 'Recommended armband'
               : workspace.decision.captain.recommendation_aligned
               ? 'Armband matches model'
               : `${workspace.decision.captain.lineup_recommendation_aligned ? '1' : '2'}. Armband change suggested`}
@@ -171,10 +171,10 @@ export function DecisionRail({
 
       {modelPreview ? (
         <div className="model-preview-receipt">
-          <span>15-player model build</span>
+          <span>Authoritative 15-player decision</span>
           <strong>{modelPreview.formation} · £{modelPreview.budget_spent.toFixed(1)}m</strong>
           <p>{modelPreview.selection_basis}</p>
-          <small>This is a comparison preview. Your synced FPL squad remains unchanged.</small>
+          <small>This is the squad to enter in FPL. The app remains read-only, so your synced team is unchanged until you make the moves there.</small>
         </div>
       ) : (
         <SquadAssessment workspace={workspace} onSelectPlayer={onSelectPlayer} />

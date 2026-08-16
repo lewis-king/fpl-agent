@@ -38,6 +38,8 @@ from .models import (
     PlayerParticipationView,
     PlayerView,
     RecommendedSquadView,
+    SquadChangePlayerView,
+    SquadComparisonView,
     SquadView,
     UserView,
     WeeklyActionView,
@@ -54,6 +56,7 @@ DEFAULT_DEADLINE_STATUS = ROOT / "data" / "manifests" / "fpl-deadline-evidence-s
 DEFAULT_WEEKLY_DECISION = ROOT / "data" / "decisions" / "2026-27-weekly-current.json"
 DEFAULT_REFRESH_STATE = ROOT / "data" / "web" / "state" / "workspace-refresh.json"
 DEFAULT_AVAILABILITY_WATCH = ROOT / "data" / "manifests" / "fpl-availability-watch.json"
+DEFAULT_DEADLINE_PACK = ROOT / "data" / "manifests" / "gw1-deadline-pack.json"
 
 
 class WorkspaceBuildError(RuntimeError):
@@ -76,6 +79,7 @@ class WorkspaceBuilder:
         refresh_state_path: Path | None = None,
         availability_watch_path: Path | None = DEFAULT_AVAILABILITY_WATCH,
         participation_consensus_path: Path | None = None,
+        deadline_pack_path: Path | None = DEFAULT_DEADLINE_PACK,
     ) -> None:
         self.decision_path = decision_path
         self.forecast_path = forecast_path
@@ -89,6 +93,7 @@ class WorkspaceBuilder:
         self.refresh_state_path = refresh_state_path
         self.availability_watch_path = availability_watch_path
         self.participation_consensus_path = participation_consensus_path
+        self.deadline_pack_path = deadline_pack_path
         if (
             self.participation_consensus_path is None
             and availability_watch_path == DEFAULT_AVAILABILITY_WATCH
@@ -304,6 +309,24 @@ class WorkspaceBuilder:
                 )
             ]
 
+        current_expected_points = round(
+            sum(
+                forecasts[int(row["element"])]["expected_points"]
+                for row in squad_payload["starters"]
+            )
+            + forecasts[int(lineup["captain"])]["expected_points"],
+            2,
+        )
+        comparison = self._squad_comparison(
+            phase=phase,
+            incumbent_candidate_id=str(payload["decision"]["candidate"]["candidate_id"]),
+            current_expected_points=current_expected_points,
+            current_players=[*starters, *bench],
+            model_squad=model_squad,
+            recommended_squad=recommended_squad,
+            evidence_blocked=evidence_blocked,
+        )
+
         return WorkspaceView(
             generated_at=current.isoformat(),
             user=UserView(
@@ -337,11 +360,7 @@ class WorkspaceBuilder:
                 formation=str(squad_payload["formation"]),
                 budget_spent=float(squad_payload["budget_spent"]),
                 bank=float(squad_payload["bank"]),
-                expected_points=round(
-                    sum(forecasts[int(row["element"])]["expected_points"] for row in squad_payload["starters"])
-                    + forecasts[int(lineup["captain"])]["expected_points"],
-                    2,
-                ),
+                expected_points=current_expected_points,
                 candidate_id=str(payload["decision"]["candidate"]["candidate_id"]),
                 source_label=str(
                     candidate_meta.get("source_label") or "Published robust recommendation"
@@ -408,6 +427,7 @@ class WorkspaceBuilder:
                     ),
                     main_risk=str(captain_result["main_risk"]),
                 ),
+                comparison=comparison,
                 recommended_squad=recommended_squad,
                 model_squad=model_squad,
                 horizon=horizon,
@@ -418,6 +438,154 @@ class WorkspaceBuilder:
             ),
             capabilities=CapabilityView(),
         )
+
+    def _squad_comparison(
+        self,
+        *,
+        phase: PhaseView,
+        incumbent_candidate_id: str,
+        current_expected_points: float,
+        current_players: list[PlayerView],
+        model_squad: ModelSquadView | None,
+        recommended_squad: RecommendedSquadView,
+        evidence_blocked: bool,
+    ) -> SquadComparisonView:
+        if phase.phase == "preseason" and model_squad is not None:
+            authority = "model"
+            recommendation_id = model_squad.candidate_id
+            recommended_points = model_squad.expected_points
+            recommendation_players = [*model_squad.starters, *model_squad.bench]
+            selection_reason = model_squad.selection_basis
+        elif recommended_squad.source == "weekly_decision":
+            authority = "weekly"
+            recommendation_id = recommended_squad.action_id
+            recommended_points = recommended_squad.expected_points
+            recommendation_players = [
+                *recommended_squad.starters,
+                *recommended_squad.bench,
+            ]
+            selection_reason = (
+                "The weekly policy beat the roll route after transfer costs and scenario stress."
+            )
+        else:
+            return SquadComparisonView(
+                status="aligned",
+                authoritative_squad="current",
+                incumbent_candidate_id=incumbent_candidate_id,
+                recommendation_candidate_id=incumbent_candidate_id,
+                current_expected_points=current_expected_points,
+                recommended_expected_points=current_expected_points,
+                expected_points_delta=0.0,
+                headline="The active squad is the decision baseline",
+                detail="No separate 15-player recommendation is available for this phase.",
+                reasons=["Lineup and captaincy advice still use the complete active squad."],
+            )
+
+        current_ids = {player.player_id for player in current_players}
+        recommendation_ids = {player.player_id for player in recommendation_players}
+        incoming = [
+            self._change_player(player)
+            for player in recommendation_players
+            if player.player_id not in current_ids
+        ]
+        outgoing = [
+            self._change_player(player)
+            for player in current_players
+            if player.player_id not in recommendation_ids
+        ]
+        change_count = max(len(incoming), len(outgoing))
+        points_delta = round(recommended_points - current_expected_points, 2)
+        pack = self._deadline_pack()
+        gates = pack.get("gates") if isinstance(pack.get("gates"), dict) else {}
+        passed_gates = sum(
+            bool(gate.get("passed"))
+            for gate in gates.values()
+            if isinstance(gate, dict)
+        )
+        total_gates = sum(isinstance(gate, dict) for gate in gates.values())
+        churn_protected = bool(
+            gates
+            and isinstance(gates.get("historical_selector"), dict)
+            and gates["historical_selector"].get("passed")
+            and isinstance(gates.get("global_search"), dict)
+            and gates["global_search"].get("passed")
+        )
+        aligned = not incoming and not outgoing
+        if aligned:
+            status = "aligned"
+            headline = "Your 15 players match the recommendation"
+            detail = "No squad transfer is needed; use the recommended XI, bench order and armband."
+        elif evidence_blocked:
+            status = "awaiting_refresh"
+            headline = "Keep the last valid recommendation on screen"
+            detail = (
+                "A newer evidence run has not passed publication, so no unvalidated change is "
+                "being promoted."
+            )
+        else:
+            status = "adopt_recommendation"
+            headline = (
+                f"Make {change_count} squad change{'s' if change_count != 1 else ''}"
+            )
+            detail = (
+                "This is the validated 15-player decision. The app will not replace it for a "
+                "small unvalidated fluctuation."
+            )
+        delta_reason = (
+            f"The recommendation adds {points_delta:.2f} modelled points in the decision event."
+            if points_delta >= 0
+            else (
+                f"It accepts {abs(points_delta):.2f} fewer opening-event points for the stronger "
+                "validated multiweek policy."
+            )
+        )
+        reasons = [delta_reason, selection_reason]
+        if total_gates:
+            reasons.append(
+                f"{passed_gates} of {total_gates} deadline publication gates currently pass."
+            )
+        if churn_protected:
+            reasons.append(
+                "The historical selector and global search gates protect against changing squads "
+                "for a marginal re-run fluctuation."
+            )
+        return SquadComparisonView(
+            status=status,
+            authoritative_squad=authority,
+            incumbent_candidate_id=incumbent_candidate_id,
+            recommendation_candidate_id=recommendation_id,
+            current_expected_points=current_expected_points,
+            recommended_expected_points=recommended_points,
+            expected_points_delta=points_delta,
+            change_count=change_count,
+            incoming=incoming,
+            outgoing=outgoing,
+            validation_gates_passed=passed_gates,
+            validation_gates_total=total_gates,
+            churn_protected=churn_protected,
+            headline=headline,
+            detail=detail,
+            reasons=reasons,
+        )
+
+    @staticmethod
+    def _change_player(player: PlayerView) -> SquadChangePlayerView:
+        return SquadChangePlayerView(
+            player_id=player.player_id,
+            name=player.name,
+            position=player.position,
+            team=player.team,
+            price=player.price,
+        )
+
+    def _deadline_pack(self) -> dict[str, Any]:
+        if self.deadline_pack_path is None or not self.deadline_pack_path.is_file():
+            return {}
+        try:
+            value = json.loads(self.deadline_pack_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     @staticmethod
     def _freshness_status(age_seconds: float) -> str:

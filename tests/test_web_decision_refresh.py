@@ -9,7 +9,10 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from fplagent_web.app import create_app
-from fplagent_web.decision_refresh import WorkspaceRefreshCoordinator
+from fplagent_web.decision_refresh import (
+    WorkspaceRefreshCoordinator,
+    decision_refresh_interval,
+)
 from fplagent_web.models import WorkspaceRefreshView
 from fplagent_web.profile import ManagerProfileStore
 from fplagent_web.workspace import WorkspaceBuilder
@@ -18,6 +21,20 @@ from fplagent_web.workspace import WorkspaceBuilder
 class DeterministicPipelineError(ValueError):
     code = "stale_preseason_role_evidence"
     retryable = False
+
+
+def test_refresh_cadence_tightens_at_the_agreed_deadline_boundaries() -> None:
+    deadline = datetime(2026, 8, 21, 17, 30, tzinfo=UTC)
+
+    assert decision_refresh_interval(
+        now=deadline - timedelta(days=2), deadline_at=deadline
+    ) == timedelta(hours=6)
+    assert decision_refresh_interval(
+        now=deadline - timedelta(hours=12), deadline_at=deadline
+    ) == timedelta(hours=2)
+    assert decision_refresh_interval(
+        now=deadline - timedelta(hours=2), deadline_at=deadline
+    ) == timedelta(minutes=30)
 
 
 def _wait_for_terminal(
@@ -186,7 +203,7 @@ def test_app_open_reuses_recent_terminal_refresh_but_manual_bypasses(
 
     assert cached.status == "reused"
     assert cached.reused is True
-    assert "6-hour app-open window" in cached.message
+    assert "6-hour deadline cadence" in cached.message
     assert calls == 1
 
     coordinator.request(
@@ -484,6 +501,7 @@ def test_workspace_get_is_fast_read_only_and_refresh_has_explicit_start_contract
             "reason": "app_open",
             "manager_entry_id": None,
             "event": 1,
+            "deadline_at": "2026-08-21T17:30:00+00:00",
         }
     ]
     assert started.status_code == 202

@@ -116,11 +116,14 @@ vice-captain. A chat request naming two players creates an additional pairwise c
 winner cannot replace the full-squad recommendation. Open questions such as “Who should I captain?”
 do not apply a candidate filter.
 
-The pitch therefore has an explicit `Current` / `Recommended` state control. `Current` preserves
-the authenticated FPL XI, bench order and badges; `Recommended` previews the best legal XI from all
-15, including visible `IN`/`OUT` swaps and the recommended armband. The UI also separates the FPL
-squad sync time from forecast observation and model-build times, so syncing an account cannot make
-older decision evidence appear fresh.
+The pitch therefore has an explicit `Your FPL squad` / `Recommendation` state control.
+`Your FPL squad` preserves the authenticated XI, bench order and badges. In preseason,
+`Recommendation` is the validated 15-player optimiser result and is the default, authoritative
+view; in-season it is the selected legal transfer/XI/captain action. The deadline cockpit reports
+the exact incoming and outgoing players, same-event xP delta, publication-gate count, candidate ID,
+churn-protection state and next automatic validation time. The UI also separates the FPL squad sync
+time from forecast observation and model-build times, so syncing an account cannot make older
+decision evidence appear fresh.
 
 The application now renders the last validated read model first, silently syncs the authenticated
 squad when MCP is connected, and requests one persisted single-flight decision refresh. That daemon

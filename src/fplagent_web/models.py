@@ -205,6 +205,33 @@ class ModelSquadView(StrictModel):
     bench: list[PlayerView]
 
 
+class SquadChangePlayerView(StrictModel):
+    player_id: int
+    name: str
+    position: Literal["GK", "DEF", "MID", "FWD"]
+    team: str
+    price: float
+
+
+class SquadComparisonView(StrictModel):
+    status: Literal["aligned", "adopt_recommendation", "awaiting_refresh", "unavailable"]
+    authoritative_squad: Literal["current", "model", "weekly"]
+    incumbent_candidate_id: str
+    recommendation_candidate_id: str | None = None
+    current_expected_points: float
+    recommended_expected_points: float | None = None
+    expected_points_delta: float | None = None
+    change_count: int = 0
+    incoming: list[SquadChangePlayerView] = Field(default_factory=list)
+    outgoing: list[SquadChangePlayerView] = Field(default_factory=list)
+    validation_gates_passed: int = 0
+    validation_gates_total: int = 0
+    churn_protected: bool = False
+    headline: str
+    detail: str
+    reasons: list[str] = Field(default_factory=list)
+
+
 class CritiqueItem(StrictModel):
     code: str
     title: str
@@ -339,6 +366,7 @@ class EvidenceItem(StrictModel):
 class DecisionView(StrictModel):
     status: Literal["provisional", "confirmed"]
     captain: CaptainInsight
+    comparison: SquadComparisonView
     recommended_squad: RecommendedSquadView
     model_squad: ModelSquadView | None = None
     horizon: list[HorizonEvent]
@@ -416,6 +444,9 @@ class DeadlineScheduleView(StrictModel):
     active_window_at: str | None = None
     next_window: str | None = None
     next_window_at: str | None = None
+    cadence_minutes: int | None = None
+    cadence_label: str | None = None
+    last_validated_at: str | None = None
     last_attempt_window: str | None = None
     last_attempt_at: str | None = None
     material_checked_at: str | None = None

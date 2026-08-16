@@ -170,6 +170,10 @@ def create_app(
                 reason=request.reason,
                 manager_entry_id=profile.fpl_entry_id,
                 event=current.phase.decision_event or current.phase.event,
+                deadline_at=(
+                    getattr(current.phase, "decision_deadline", None)
+                    or getattr(current.phase, "deadline", None)
+                ),
             )
         except WorkspaceBuildError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

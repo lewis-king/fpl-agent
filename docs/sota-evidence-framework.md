@@ -42,6 +42,11 @@ The first SofaScore signal challenger slightly improved frozen player MAE but lo
 points in the 2025/26 legal-policy replay. It therefore remains shadow-only. This is the intended
 behaviour: source breadth is not evidence of decision lift.
 
+Because it has zero decision authority, SofaScore is not an operational deadline dependency and
+the project does not attempt to evade its bot controls. Its archived research artifacts remain
+reproducible; normal squad refreshes use official evidence and independently captured FFScout /
+RotoWire predicted lineups instead.
+
 Commands:
 
 ```bash

@@ -4,6 +4,7 @@ import type {
   GenerateSquadRequest,
   GenerateSquadResult,
   ManagerProfile,
+  DeadlineSchedule,
   McpConnection,
   McpLoginStarted,
   McpLoginStatus,
@@ -41,6 +42,19 @@ function normalizeWorkspace(workspace: Workspace): Workspace {
   const currentViceCaptainId = captain.current_vice_captain_player_id ?? currentViceCaptain?.player_id
     ?? captain.vice_captain_player_id
   const freshness = workspace.freshness
+  const modelPlayers = workspace.decision.model_squad
+    ? [
+        ...workspace.decision.model_squad.starters,
+        ...workspace.decision.model_squad.bench,
+      ]
+    : []
+  const currentIds = new Set(players.map((player) => player.player_id))
+  const modelIds = new Set(modelPlayers.map((player) => player.player_id))
+  const fallbackIncoming = modelPlayers.filter((player) => !currentIds.has(player.player_id))
+  const fallbackOutgoing = players.filter((player) => !modelIds.has(player.player_id))
+  const fallbackDelta = workspace.decision.model_squad
+    ? workspace.decision.model_squad.expected_points - workspace.squad.expected_points
+    : 0
 
   return {
     ...workspace,
@@ -54,6 +68,30 @@ function normalizeWorkspace(workspace: Workspace): Workspace {
     },
     decision: {
       ...workspace.decision,
+      comparison: workspace.decision.comparison ?? {
+        status: fallbackIncoming.length || fallbackOutgoing.length
+          ? 'adopt_recommendation'
+          : 'aligned',
+        authoritative_squad: workspace.decision.model_squad ? 'model' : 'current',
+        incumbent_candidate_id: workspace.squad.candidate_id,
+        recommendation_candidate_id: workspace.decision.model_squad?.candidate_id
+          ?? workspace.squad.candidate_id,
+        current_expected_points: workspace.squad.expected_points,
+        recommended_expected_points: workspace.decision.model_squad?.expected_points
+          ?? workspace.squad.expected_points,
+        expected_points_delta: fallbackDelta,
+        change_count: Math.max(fallbackIncoming.length, fallbackOutgoing.length),
+        incoming: fallbackIncoming,
+        outgoing: fallbackOutgoing,
+        validation_gates_passed: 0,
+        validation_gates_total: 0,
+        churn_protected: false,
+        headline: fallbackIncoming.length || fallbackOutgoing.length
+          ? 'A separate model squad is available'
+          : 'Your squad matches the recommendation',
+        detail: 'Restart the local Python service to load the complete comparison receipt.',
+        reasons: [],
+      },
       model_squad: workspace.decision.model_squad ?? null,
       weekly: workspace.decision.weekly ?? {
         status: 'not_available',
@@ -133,6 +171,11 @@ export async function startWorkspaceRefresh(
 export async function getWorkspaceRefresh(signal?: AbortSignal): Promise<WorkspaceRefresh> {
   const response = await fetch('/api/v1/workspace/refresh', { signal })
   return parseResponse<WorkspaceRefresh>(response)
+}
+
+export async function getDeadlineSchedule(signal?: AbortSignal): Promise<DeadlineSchedule> {
+  const response = await fetch('/api/v1/workspace/refresh/schedule', { signal })
+  return parseResponse<DeadlineSchedule>(response)
 }
 
 export async function getPreseasonOptions(signal?: AbortSignal): Promise<PreseasonOptions> {

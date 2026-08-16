@@ -332,13 +332,28 @@ def _ensure_role_evidence_current(
         )
         try:
             refresh = dict(refresher())
-        except Exception as refresh_error:
-            raise PreseasonPipelineError(
-                "Fresh preseason role evidence could not be collected before any tournament "
-                f"started: {refresh_error}",
-                code="preseason_role_evidence_refresh_failed",
-                retryable=True,
-            ) from refresh_error
+        except (OSError, RuntimeError, ValueError) as refresh_error:
+            try:
+                current = dict(
+                    validator(
+                        role_receipt_path=role_receipt_path,
+                        role_evidence_path=role_evidence_path,
+                    )
+                )
+            except (KeyError, OSError, ValueError) as validation_error:
+                raise PreseasonPipelineError(
+                    "Fresh preseason role evidence could not be collected and the prior "
+                    f"snapshot is incoherent: {refresh_error}; {validation_error}",
+                    code="preseason_role_evidence_refresh_failed",
+                    retryable=True,
+                ) from refresh_error
+            return {
+                "refreshed": False,
+                "refresh_attempted": True,
+                "refresh_reason": "valid_advisory_fallback",
+                "refresh_error": f"{type(refresh_error).__name__}: {refresh_error}",
+                **current,
+            }
         try:
             current = dict(
                 validator(
@@ -477,11 +492,23 @@ def run_gw1_deadline_pipeline(
         role_evidence_path=role_evidence_path,
         validator=role_lineage_validator,
         refresher=role_evidence_refresher,
-        refresh_first=not reuse_latest_official,
+        # This friendly-lineup archive is an advisory, zero-weight stress
+        # input. Validate its immutable lineage without turning an unpromoted
+        # web source into a live dependency of every deadline run. Explicit
+        # research collection and the stale-evidence repair path remain.
+        refresh_first=False,
+    )
+    role_preflight_message = (
+        "refreshed and passed preflight"
+        if role_preflight["refreshed"]
+        else (
+            "source unavailable; checksum-valid advisory snapshot retained"
+            if role_preflight.get("refresh_reason") == "valid_advisory_fallback"
+            else "passed preflight"
+        )
     )
     print(
-        "GW1 pipeline: preseason role evidence "
-        + ("refreshed and passed preflight" if role_preflight["refreshed"] else "passed preflight"),
+        "GW1 pipeline: preseason role evidence " + role_preflight_message,
         flush=True,
     )
     try:
@@ -610,6 +637,7 @@ def run_gw1_deadline_pipeline(
             }
             previous["checked_at"] = checked_text
             previous["participation_evidence"] = participation_refresh
+            previous["role_evidence_preflight"] = role_preflight
             _atomic_json(pipeline_receipt_path, previous)
             print("GW1 pipeline: reusing the current publishable generation", flush=True)
             return {
@@ -976,6 +1004,7 @@ def run_gw1_deadline_pipeline(
         "input_fingerprint": input_fingerprint,
         "input_identity": input_identity,
         "refresh": refresh,
+        "role_evidence_preflight": role_preflight,
         "participation_evidence": participation_refresh,
         "stages": stages,
         "staged_decision": str(staged_decision),

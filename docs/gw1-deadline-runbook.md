@@ -55,11 +55,13 @@ The independent gates mean:
 
 ## Deadline cadence
 
-Run the full path at T-72h, T-24h and after the final manager press conferences. Run again at T-6h,
-T-60m and T-10m when practical. A material official status/news, price, fixture, forecast or market
-semantic change invalidates the previous pack even inside that cadence.
+While the local API is running, validate on a six-hour cadence until T-24h, every two hours from
+T-24h to T-3h, and every 30 minutes inside T-3h. A material official status/news, price, fixture,
+forecast or market semantic change starts an immediate run between cadence slots. An app open
+reuses the last validated receipt inside the same deadline-aware interval; a manual check bypasses
+that reuse window.
 
-The final ten-minute run should favour freshness and deterministic reuse over starting research
+The final 30-minute runs should favour freshness and deterministic reuse over starting research
 experiments. Do not change model code, weights or rule assumptions between the last completed
 calibration and the final transaction.
 
@@ -72,3 +74,8 @@ staged candidate around a failed role, lineage, market or scoring gate.
 Predicted lineups and preseason friendlies remain advisory even when fresh. An official FPL or
 attributable club/manager update can justify a full rerun; a third-party disagreement alone cannot
 silently rewrite production minutes.
+
+The SofaScore friendly-lineup archive is checksum-validated but is not recollected by a normal
+deadline run. It is an optional, zero-weight research stress input, not an operational dependency.
+The separate FFScout/RotoWire predicted-lineup consensus is refreshed fail-soft after official
+data and remains shadow-only until its prospective legal-policy gate passes.

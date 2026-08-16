@@ -420,7 +420,7 @@ def test_stale_role_evidence_is_repaired_before_expensive_stages(tmp_path: Path)
     ]
 
 
-def test_fresh_official_run_always_refreshes_role_evidence_before_tournaments(
+def test_fresh_official_run_reuses_valid_advisory_role_evidence(
     tmp_path: Path,
 ) -> None:
     kwargs, calls, _ = _kwargs(tmp_path)
@@ -443,12 +443,42 @@ def test_fresh_official_run_always_refreshes_role_evidence_before_tournaments(
 
     assert result["status"] == "published"
     assert validation_calls == 1
+    assert calls[:3] == ["refresh", "participation_consensus", "initial_squad"]
+    assert result["role_evidence_preflight"]["refreshed"] is False
+
+
+def test_stale_advisory_roles_still_attempt_an_explicit_repair(
+    tmp_path: Path,
+) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+    validation_calls = 0
+
+    def validator(**_: Any) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        if validation_calls == 1:
+            raise ValueError("stale FPL mapping generation")
+        return {"status": "current", "role_evidence_sha256": "repaired"}
+
+    def repair() -> dict[str, Any]:
+        calls.append("role_evidence_refresh")
+        return {"created_at": "2026-08-07T11:30:01+00:00"}
+
+    kwargs["reuse_latest_official"] = False
+    kwargs["role_lineage_validator"] = validator
+    kwargs["role_evidence_refresher"] = repair
+
+    result = run_gw1_deadline_pipeline(**kwargs)
+
+    assert result["status"] == "published"
+    assert validation_calls == 2
     assert calls[:4] == [
         "refresh",
         "role_evidence_refresh",
         "participation_consensus",
         "initial_squad",
     ]
+    assert result["role_evidence_preflight"]["refreshed"] is True
 
 
 def test_role_evidence_refresh_failure_stops_before_tournaments(tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ export function SquadPitch({
     ? { kicker: 'Current FPL team', title: `Your GW${workspace.phase.event} starting XI` }
     : { kicker: 'Current proposal', title: `GW${workspace.phase.event} starting XI` }
   const phaseCopy = squadMode === 'model' && modelSquad
-    ? { kicker: 'Published model squad', title: `Best 15-player GW${modelSquad.event} build` }
+    ? { kicker: 'Validated recommendation', title: `Recommended 15-player GW${modelSquad.event} squad` }
     : squadMode === 'recommended'
     ? { kicker: 'Best XI from your squad', title: `Modelled GW${decisionEvent} lineup` }
     : workspace.phase.phase === 'live_gameweek'
@@ -92,7 +92,7 @@ export function SquadPitch({
                 aria-pressed={squadMode === 'model'}
                 onClick={() => onSquadModeChange('model')}
               >
-                Model squad
+                Recommendation
                 {modelOnlyIds.size ? <span aria-label={`${modelOnlyIds.size} changes available`} /> : null}
               </button>
             ) : null}

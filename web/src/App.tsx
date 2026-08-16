@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowClockwiseIcon,
   ArrowRightIcon,
-  ArrowsLeftRightIcon,
   ChartDonutIcon,
   ChatCircleDotsIcon,
   CheckCircleIcon,
@@ -15,6 +14,7 @@ import {
 
 import {
   ApiError,
+  getDeadlineSchedule,
   getMcpConnection,
   getWorkspace,
   getWorkspaceRefresh,
@@ -24,6 +24,7 @@ import {
 import { AppRail } from './components/AppRail'
 import { ChatPanel } from './components/ChatPanel'
 import { DecisionRail } from './components/DecisionRail'
+import { DeadlineCockpit } from './components/DeadlineCockpit'
 import { EvidenceDialog } from './components/EvidenceDialog'
 import { GenerateSquadDialog } from './components/GenerateSquadDialog'
 import { ImportTeamDialog } from './components/ImportTeamDialog'
@@ -32,7 +33,7 @@ import { PreseasonEntry } from './components/PreseasonEntry'
 import { SquadPitch } from './components/SquadPitch'
 import { WorkspaceSkeleton } from './components/WorkspaceSkeleton'
 import { formatObservedAt } from './lib'
-import type { Player, Workspace, WorkspaceRefresh } from './types'
+import type { DeadlineSchedule, Player, Workspace, WorkspaceRefresh } from './types'
 
 type LoadState = 'loading' | 'ready' | 'error'
 type SyncState = 'idle' | 'syncing' | 'success' | 'attention' | 'error'
@@ -60,6 +61,25 @@ function squadDecisionSignature(workspace: Workspace): string {
   )
 }
 
+function authoritativeSquadMode(workspace: Workspace): SquadMode {
+  if (workspace.decision.comparison.authoritative_squad === 'model' && workspace.decision.model_squad) {
+    return 'model'
+  }
+  if (workspace.decision.comparison.authoritative_squad === 'weekly') return 'recommended'
+  return 'current'
+}
+
+function authoritativeCaptainId(workspace: Workspace): number {
+  const mode = authoritativeSquadMode(workspace)
+  const players = mode === 'model' && workspace.decision.model_squad
+    ? [...workspace.decision.model_squad.starters, ...workspace.decision.model_squad.bench]
+    : mode === 'recommended'
+      ? [...workspace.decision.recommended_squad.starters, ...workspace.decision.recommended_squad.bench]
+      : [...workspace.squad.starters, ...workspace.squad.bench]
+  return players.find((player) => player.captain)?.player_id
+    ?? workspace.decision.captain.captain_player_id
+}
+
 function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null)
   const [loadState, setLoadState] = useState<LoadState>('loading')
@@ -75,6 +95,7 @@ function App() {
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncMessage, setSyncMessage] = useState('')
   const [refreshRun, setRefreshRun] = useState<WorkspaceRefresh | null>(null)
+  const [deadlineSchedule, setDeadlineSchedule] = useState<DeadlineSchedule | null>(null)
   const connectionCheckedRef = useRef(false)
   const workspaceSquadSignatureRef = useRef<string | null>(null)
 
@@ -85,8 +106,10 @@ function App() {
       const next = await getWorkspace(signal)
       workspaceSquadSignatureRef.current = squadDecisionSignature(next)
       setWorkspace(next)
-      setSelectedPlayerId(next.decision.captain.captain_player_id)
+      setSquadMode(authoritativeSquadMode(next))
+      setSelectedPlayerId(authoritativeCaptainId(next))
       setLoadState('ready')
+      void getDeadlineSchedule(signal).then(setDeadlineSchedule).catch(() => undefined)
     } catch (error) {
       if (signal?.aborted) return
       setLoadError(error instanceof ApiError ? error.message : 'The workspace could not be loaded.')
@@ -105,6 +128,7 @@ function App() {
       return stillPresent ? current : next.decision.captain.captain_player_id
     })
     setLoadState('ready')
+    void getDeadlineSchedule(signal).then(setDeadlineSchedule).catch(() => undefined)
   }, [])
 
   const runDecisionRefresh = useCallback(async (
@@ -126,6 +150,7 @@ function App() {
     }
     if (signal?.aborted) return
     await refreshWorkspace(signal)
+    void getDeadlineSchedule(signal).then(setDeadlineSchedule).catch(() => undefined)
     if (run.status === 'published') {
       setSyncState('success')
       setSyncMessage('Fresh evidence produced a new validated decision receipt.')
@@ -159,7 +184,6 @@ function App() {
         await refreshWorkspace()
       }
       await runDecisionRefresh('manual')
-      setSquadMode('current')
     } catch (error) {
       setSyncMessage(error instanceof ApiError ? error.message : 'The FPL squad could not be synced.')
       setSyncState('error')
@@ -172,8 +196,10 @@ function App() {
       .then((next) => {
         workspaceSquadSignatureRef.current = squadDecisionSignature(next)
         setWorkspace(next)
-        setSelectedPlayerId(next.decision.captain.captain_player_id)
+        setSquadMode(authoritativeSquadMode(next))
+        setSelectedPlayerId(authoritativeCaptainId(next))
         setLoadState('ready')
+        void getDeadlineSchedule(controller.signal).then(setDeadlineSchedule).catch(() => undefined)
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return
@@ -181,6 +207,19 @@ function App() {
         setLoadState('error')
       })
     return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const timer = window.setInterval(() => {
+      void getDeadlineSchedule(controller.signal)
+        .then(setDeadlineSchedule)
+        .catch(() => undefined)
+    }, 30_000)
+    return () => {
+      controller.abort()
+      window.clearInterval(timer)
+    }
   }, [])
 
   useEffect(() => {
@@ -284,7 +323,8 @@ function App() {
   }
 
   function showModelSquad() {
-    changeSquadMode(workspace?.decision.model_squad ? 'model' : 'recommended')
+    if (!workspace) return
+    changeSquadMode(authoritativeSquadMode(workspace))
     requestAnimationFrame(() => document.getElementById('squad')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
@@ -346,7 +386,7 @@ function App() {
       ? workspace.decision.recommended_squad.formation
       : workspace.squad.formation)
   const summaryTitle = modelPreview
-    ? `Model squad · GW${modelPreview.event}`
+    ? `Recommendation · GW${modelPreview.event}`
     : recommendedPreview
       ? `Best XI · GW${decisionEvent}`
       : `Your squad · GW${decisionEvent}`
@@ -356,19 +396,12 @@ function App() {
       ? recommendationLabel
       : 'GW1 xP incl. captain'
   const summaryBuildLabel = modelPreview
-    ? 'Published 15-player optimiser result'
+    ? 'Validated 15-player optimiser result'
     : recommendedPreview
       ? (workspace.decision.recommended_squad.source === 'weekly_decision'
         ? 'Selected transfer route and legal XI'
         : 'Best legal XI from your full squad')
       : workspace.squad.source_label
-  const currentSquadPlayers = [...workspace.squad.starters, ...workspace.squad.bench]
-  const currentSquadIds = new Set(currentSquadPlayers.map((player) => player.player_id))
-  const modelSquadPlayers = modelSquad ? [...modelSquad.starters, ...modelSquad.bench] : []
-  const modelSquadIds = new Set(modelSquadPlayers.map((player) => player.player_id))
-  const modelIncoming = modelSquadPlayers.filter((player) => !currentSquadIds.has(player.player_id))
-  const modelOutgoing = currentSquadPlayers.filter((player) => !modelSquadIds.has(player.player_id))
-  const modelGw1Delta = modelSquad ? modelSquad.expected_points - workspace.squad.expected_points : 0
   const intelligenceMode = activeSection === 'chat' ? 'chat' : 'analysis'
 
   return (
@@ -396,7 +429,7 @@ function App() {
                     </button>
                     <button className="primary-button" type="button" onClick={showModelSquad}>
                       <SparkleIcon size={16} aria-hidden="true" />
-                      Compare model squad
+                      View recommendation
                       <span className="button-island"><ArrowRightIcon size={14} aria-hidden="true" /></span>
                     </button>
                   </>
@@ -479,6 +512,14 @@ function App() {
           </div>
         ) : null}
 
+        <DeadlineCockpit
+          workspace={workspace}
+          schedule={deadlineSchedule}
+          refreshing={syncState === 'syncing'}
+          onViewRecommendation={showModelSquad}
+          onRefresh={() => void runDecisionRefresh('manual')}
+        />
+
         {workspace.phase.phase === 'preseason' && !connectedPreseason ? (
           <PreseasonEntry
             workspace={workspace}
@@ -492,35 +533,8 @@ function App() {
           <div><span>{summaryTitle}</span><strong>{summaryProjection.toFixed(1)}</strong><small>{summaryProjectionLabel}</small></div>
           <div><span>Squad cost</span><strong>£{summaryCost.toFixed(1)}</strong><small>£{summaryBank.toFixed(1)}m bank</small></div>
           <div><span>Build</span><strong>{summaryFormation}</strong><small>{summaryBuildLabel}</small></div>
-          <div className="summary-warning"><ShieldWarningIcon size={18} aria-hidden="true" /><span><strong>{modelPreview ? 'Preview only' : stateLabel.strong}</strong><small>{modelPreview ? 'No changes sent to FPL' : stateLabel.small}</small></span></div>
+          <div className="summary-warning"><ShieldWarningIcon size={18} aria-hidden="true" /><span><strong>{modelPreview ? 'Recommended' : stateLabel.strong}</strong><small>{modelPreview ? 'Enter manually in FPL' : stateLabel.small}</small></span></div>
         </div>
-
-        {modelPreview ? (
-          <section className="model-squad-comparison" aria-label="Model squad comparison">
-            <div className="comparison-heading">
-              <span className="comparison-icon"><ArrowsLeftRightIcon size={18} aria-hidden="true" /></span>
-              <div>
-                <span className="module-kicker">What changes</span>
-                <strong>{modelIncoming.length} player{modelIncoming.length === 1 ? '' : 's'} differ from your FPL squad</strong>
-              </div>
-            </div>
-            <div className="comparison-swaps">
-              <p><span>In</span>{modelIncoming.length ? modelIncoming.map((player) => player.name).join(', ') : 'No player changes'}</p>
-              <p><span>Out</span>{modelOutgoing.length ? modelOutgoing.map((player) => player.name).join(', ') : 'No player changes'}</p>
-            </div>
-            <div className="comparison-reason">
-              <strong className={modelGw1Delta < 0 ? 'is-tradeoff' : 'is-positive'}>
-                {modelGw1Delta >= 0 ? '+' : '−'}{Math.abs(modelGw1Delta).toFixed(1)} GW1 xP
-              </strong>
-              <p>
-                {modelGw1Delta < 0
-                  ? `The model accepts a ${Math.abs(modelGw1Delta).toFixed(1)}-point GW1 trade-off because this squad wins the multi-gameweek robustness tests.`
-                  : 'The model improves GW1 projection and also wins the multi-gameweek robustness tests.'}
-              </p>
-              <small>{modelPreview.selection_basis} · {modelPreview.candidate_id}</small>
-            </div>
-          </section>
-        ) : null}
 
         <SquadPitch
           workspace={workspace}
@@ -580,7 +594,7 @@ function App() {
               selectedPlayer={selectedPlayer}
               onSelectPlayer={selectPlayer}
               onOpenEvidence={() => setEvidenceOpen(true)}
-              onPreviewRecommendation={() => setSquadMode('recommended')}
+              onPreviewRecommendation={showModelSquad}
             />
           </div>
           <div className="intelligence-pane" hidden={intelligenceMode !== 'chat'}>

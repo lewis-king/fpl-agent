@@ -388,6 +388,7 @@ def test_live_gameweek_manual_refresh_targets_next_decision_event() -> None:
         "reason": "manual",
         "manager_entry_id": 123,
         "event": 2,
+        "deadline_at": None,
     }
 
 

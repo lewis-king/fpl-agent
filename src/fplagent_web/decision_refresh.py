@@ -42,6 +42,30 @@ STAGE_LABELS = {
 }
 
 
+def decision_refresh_interval(
+    *,
+    now: datetime,
+    deadline_at: str | datetime | None,
+    fallback: timedelta = DEFAULT_APP_OPEN_MAX_AGE,
+) -> timedelta:
+    """Return the points-first refresh cadence for the actionable deadline."""
+    if deadline_at is None:
+        return fallback
+    deadline = (
+        datetime.fromisoformat(deadline_at)
+        if isinstance(deadline_at, str)
+        else deadline_at
+    )
+    if deadline.tzinfo is None:
+        raise ValueError("decision deadline must include a timezone")
+    remaining = deadline.astimezone(UTC) - now.astimezone(UTC)
+    if remaining <= timedelta(hours=3):
+        return timedelta(minutes=30)
+    if remaining <= timedelta(hours=24):
+        return timedelta(hours=2)
+    return timedelta(hours=6)
+
+
 class WorkspaceRefreshCoordinator:
     """Run one deadline pipeline at a time without blocking the web read model.
 
@@ -80,6 +104,7 @@ class WorkspaceRefreshCoordinator:
         reason: RefreshReason,
         manager_entry_id: int | None,
         event: int,
+        deadline_at: str | datetime | None = None,
     ) -> WorkspaceRefreshView:
         with self._lock:
             if self._active_run_id is not None:
@@ -92,6 +117,7 @@ class WorkspaceRefreshCoordinator:
                 reason=reason,
                 manager_entry_id=manager_entry_id,
                 event=event,
+                deadline_at=deadline_at,
             )
             if recent is not None:
                 return recent
@@ -334,6 +360,7 @@ class WorkspaceRefreshCoordinator:
         reason: RefreshReason,
         manager_entry_id: int | None,
         event: int,
+        deadline_at: str | datetime | None,
     ) -> WorkspaceRefreshView | None:
         if reason != "app_open" or previous.status not in {
             "published",
@@ -355,8 +382,14 @@ class WorkspaceRefreshCoordinator:
             return None
         if completed_at.tzinfo is None:
             return None
-        age = self._now() - completed_at.astimezone(UTC)
-        if age < timedelta(0) or age >= self.app_open_max_age:
+        now = self._now()
+        max_age = decision_refresh_interval(
+            now=now,
+            deadline_at=deadline_at,
+            fallback=self.app_open_max_age,
+        )
+        age = now - completed_at.astimezone(UTC)
+        if age < timedelta(0) or age >= max_age:
             return None
         receipt_path = (
             self.gw1_receipt_path if mode == "gw1" else self.weekly_receipt_path
@@ -387,7 +420,10 @@ class WorkspaceRefreshCoordinator:
         if external_terminal_result or implementation_changed:
             return None
         if previous.status in {"published", "reused"}:
-            hours = self.app_open_max_age.total_seconds() / 3600
+            minutes = int(max_age.total_seconds() // 60)
+            cadence = (
+                f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
+            )
             return previous.model_copy(
                 update={
                     "status": "reused",
@@ -395,8 +431,8 @@ class WorkspaceRefreshCoordinator:
                     "reused": True,
                     "message": (
                         f"Decision evidence was checked at {completed_at.astimezone(UTC).isoformat()}; "
-                        f"the validated result is being reused within the {hours:g}-hour "
-                        "app-open window."
+                        f"the validated result is being reused within the {cadence} "
+                        "deadline cadence."
                     ),
                 }
             )

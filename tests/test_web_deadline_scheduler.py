@@ -68,22 +68,20 @@ def _scheduler(
     )
 
 
-def test_scheduler_waits_before_first_window_then_triggers_t72_once(
+def test_scheduler_starts_initial_six_hour_cadence_once(
     tmp_path: Path,
 ) -> None:
     now = [datetime(2026, 8, 18, 16, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     scheduler = _scheduler(tmp_path, now=now, refresh=refresh)
 
-    waiting = scheduler.tick()
-    now[0] = datetime(2026, 8, 18, 18, tzinfo=UTC)
     started = scheduler.tick()
+    now[0] = datetime(2026, 8, 18, 18, tzinfo=UTC)
     joined = scheduler.tick()
 
-    assert waiting.status == "waiting"
-    assert waiting.next_window == "T-72h"
     assert started.status == "running"
-    assert started.active_window == "T-72h"
+    assert started.active_window == "6-hour cadence"
+    assert started.cadence_minutes == 360
     assert refresh.requests[0]["reason"] == "scheduled"
     assert refresh.requests[0]["mode"] == "gw1"
     assert joined.status == "running"
@@ -113,14 +111,15 @@ def test_successful_refresh_after_window_marks_it_covered(tmp_path: Path) -> Non
     covered = scheduler.tick()
 
     assert covered.status == "covered"
-    assert covered.active_window == "T-72h"
+    assert covered.active_window == "6-hour cadence"
+    assert covered.next_window_at == "2026-08-19T00:01:00+00:00"
     assert covered.refresh_run_id == "refresh-1"
 
 
 def test_scheduler_catches_up_only_latest_window_and_throttles_retry(
     tmp_path: Path,
 ) -> None:
-    # The deadline is 21 Aug 17:30 UTC, so 12:30 is inside T-6h but before T-60m.
+    # Five hours remain, so the agreed final-day cadence is two hours.
     now = [datetime(2026, 8, 21, 12, 30, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     scheduler = _scheduler(tmp_path, now=now, refresh=refresh)
@@ -143,7 +142,7 @@ def test_scheduler_catches_up_only_latest_window_and_throttles_retry(
     now[0] += timedelta(minutes=11)
     retried = scheduler.tick()
 
-    assert first.active_window == "T-6h"
+    assert first.active_window == "2-hour cadence"
     assert held.status == "waiting"
     assert "retry is held" in held.message
     assert len(refresh.requests) == 2
@@ -186,16 +185,16 @@ def test_scheduler_moves_to_next_event_after_current_deadline(tmp_path: Path) ->
 
     result = scheduler.tick()
 
-    assert result.status == "waiting"
+    assert result.status == "running"
     assert result.event == 2
-    assert result.next_window == "T-72h"
-    assert not refresh.requests
+    assert result.next_window == "6-hour cadence"
+    assert refresh.requests[0]["event"] == 2
 
 
 def test_live_gameweek_scheduler_targets_the_next_decision_event(
     tmp_path: Path,
 ) -> None:
-    # GW1 is live, but the actionable T-72h window belongs to the GW2 deadline.
+    # GW1 is live, but the actionable cadence belongs to the GW2 deadline.
     now = [datetime(2026, 8, 25, 18, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     scheduler = _scheduler(tmp_path, now=now, refresh=refresh)
@@ -204,7 +203,7 @@ def test_live_gameweek_scheduler_targets_the_next_decision_event(
 
     assert result.status == "running"
     assert result.event == 2
-    assert result.active_window == "T-72h"
+    assert result.active_window == "6-hour cadence"
     assert refresh.requests[0]["mode"] == "weekly"
     assert refresh.requests[0]["event"] == 2
 
@@ -253,6 +252,7 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
             "reason": "material_change",
             "manager_entry_id": 431892,
             "event": 1,
+            "deadline_at": datetime(2026, 8, 21, 17, 30, tzinfo=UTC),
         }
     ]
     assert joined.status == "running"
@@ -275,8 +275,9 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
 
     covered = scheduler.tick()
 
-    assert covered.status == "waiting"
+    assert covered.status == "covered"
     assert covered.material_change_detected is False
+    assert covered.next_window_at == "2026-08-17T02:00:30+00:00"
     assert len(refresh.requests) == 1
 
 

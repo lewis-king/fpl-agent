@@ -204,6 +204,13 @@ def test_workspace_exposes_published_model_squad_separately_from_active_squad(
     }
     assert len(model.starters) == 11
     assert len(model.bench) == 4
+    assert workspace.decision.comparison.status == "adopt_recommendation"
+    assert workspace.decision.comparison.authoritative_squad == "model"
+    assert workspace.decision.comparison.recommendation_candidate_id == model.candidate_id
+    assert workspace.decision.comparison.change_count >= 1
+    assert workspace.decision.comparison.incoming
+    assert workspace.decision.comparison.outgoing
+    assert workspace.decision.comparison.churn_protected is True
 
 
 def test_chat_optimiser_returns_exact_applied_constraints_and_roster(tmp_path: Path) -> None:
