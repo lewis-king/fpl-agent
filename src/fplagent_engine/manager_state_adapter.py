@@ -115,7 +115,39 @@ def manager_state_from_snapshot(
         raise ManagerStateInputError("manager snapshot is not authenticated")
     bank = _required_int(snapshot, "bank")
     free_transfers = _required_int(snapshot, "free_transfers")
-    committed_points_cost = _required_int(snapshot, "transfer_cost")
+    raw_transfer_cost = _required_int(snapshot, "transfer_cost")
+    accounting_version = snapshot.get("transfer_accounting_version")
+    if accounting_version is None:
+        # MCP snapshots captured before transfer-accounting-v2 exposed FPL's
+        # ``transfers.cost`` tariff through this field. It was not a manager's
+        # already-committed hit cost. A positive remaining FT balance proves no
+        # paid transfer has yet been needed; a zero balance is ambiguous and
+        # must be refreshed through the v2 contract rather than guessed.
+        if raw_transfer_cost and free_transfers == 0:
+            raise ManagerStateInputError(
+                "legacy manager snapshot cannot distinguish the transfer tariff from "
+                "committed hit points; reconnect FPL with transfer-accounting-v2"
+            )
+        committed_points_cost = 0
+    elif int(accounting_version) == 2:
+        transfer_limit = _required_int(snapshot, "transfer_limit")
+        transfers_made = _required_int(snapshot, "transfers_made")
+        transfer_tariff = _required_int(snapshot, "transfer_cost_per_additional")
+        expected_free = max(0, transfer_limit - transfers_made)
+        expected_committed = max(0, transfers_made - transfer_limit) * transfer_tariff
+        if free_transfers != expected_free:
+            raise ManagerStateInputError(
+                "manager transfer accounting is incoherent: remaining free transfers do not "
+                "match limit minus transfers made"
+            )
+        if raw_transfer_cost != expected_committed:
+            raise ManagerStateInputError(
+                "manager transfer accounting is incoherent: committed hit points do not match "
+                "the paid-transfer tariff"
+            )
+        committed_points_cost = raw_transfer_cost
+    else:
+        raise ManagerStateInputError("unsupported manager transfer accounting version")
     raw_picks = snapshot.get("picks")
     if not isinstance(raw_picks, list) or len(raw_picks) != rules.squad_size:
         raise ManagerStateInputError("manager snapshot must contain exactly 15 picks")
@@ -172,6 +204,10 @@ def manager_state_from_snapshot(
         previous_chip=previous_chip,
         previous_chip_event=previous_chip_event,
         committed_points_cost=committed_points_cost,
+        club_overflow_allowed=any(
+            sum(h.team_id == candidate.team_id for h in holdings) > rules.club_limit
+            for candidate in holdings
+        ),
     )
     try:
         validate_manager_state(state, rules)

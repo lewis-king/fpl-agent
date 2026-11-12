@@ -18,6 +18,7 @@ from sklearn.metrics import mean_absolute_error, mean_poisson_deviance
 from fplagent_data.arrow import write_table
 from fplagent_data.http import sha256_file
 
+from .acceleration import xgboost_infer
 from .features import CURRENT_FEATURES, MODEL_FEATURES, TRAINING_FEATURES
 from .models import CURRENT_FORECAST, require_cuda
 from .paths import ARTIFACTS, FEATURES, FORECASTS, MODEL_DATA, ensure_engine_layout
@@ -27,9 +28,7 @@ TARGETS_FILE = FEATURES / "player_components.parquet"
 MODEL_FILE = MODEL_DIR / "models.joblib"
 METRICS_FILE = MODEL_DIR / "metrics.json"
 CURRENT_COMPONENT_FORECAST = FORECASTS / "2026-27-preseason-components.parquet"
-CURRENT_COMPONENT_FORECAST_MANIFEST = (
-    FORECASTS / "2026-27-preseason-components-manifest.json"
-)
+CURRENT_COMPONENT_FORECAST_MANIFEST = FORECASTS / "2026-27-preseason-components-manifest.json"
 BPS_PRIORS = MODEL_DATA / "bps_2026_27_v1" / "current-player-bonus-priors.parquet"
 BPS_METRICS = MODEL_DATA / "bps_2026_27_v1" / "metrics.json"
 
@@ -241,7 +240,7 @@ def train_component_models(*, force_targets: bool = False, seed: int = 20260802)
             baseline = np.nan_to_num(baseline_raw, nan=0.0) * availability
             component_model = _model(seed + 100 * offset + int(test_season[:4]))
             component_model.fit(matrix[training], actual[training], verbose=False)
-            predicted = np.clip(component_model.predict(matrix[testing]), 1e-6, 20.0)
+            predicted = np.clip(xgboost_infer(component_model, matrix[testing]), 1e-6, 20.0)
             metrics = _component_metrics(
                 actual[testing], predicted, baseline[testing], events[testing]
             )
@@ -314,6 +313,7 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 def _component_forecast_inputs() -> dict[str, str | None]:
     return {
+        "component_implementation_sha256": sha256_file(Path(__file__)),
         "features_sha256": sha256_file(CURRENT_FEATURES),
         "direct_forecast_sha256": sha256_file(CURRENT_FORECAST),
         "component_model_sha256": sha256_file(MODEL_FILE),
@@ -329,9 +329,7 @@ def _reusable_component_forecast(inputs: dict[str, str | None]) -> dict[str, Any
     ):
         return None
     try:
-        manifest = json.loads(
-            CURRENT_COMPONENT_FORECAST_MANIFEST.read_text(encoding="utf-8")
-        )
+        manifest = json.loads(CURRENT_COMPONENT_FORECAST_MANIFEST.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if manifest.get("manifest_version") != 1 or manifest.get("inputs") != inputs:
@@ -342,6 +340,14 @@ def _reusable_component_forecast(inputs: dict[str, str | None]) -> dict[str, Any
     if not isinstance(result, dict):
         return None
     return {**result, "reused": True}
+
+
+def component_role_ratio(row: dict[str, Any]) -> float:
+    # Zero is evidence, not a missing value. Keep even ungated zero-play rows coherent.
+    if row.get("p_play") == 0:
+        return 0.0
+    value = row.get("live_role_minutes_ratio")
+    return float(value) if value is not None else 1.0
 
 
 def forecast_components(*, force: bool = False) -> dict[str, Any]:
@@ -376,6 +382,7 @@ def forecast_components(*, force: bool = False) -> dict[str, Any]:
     if feature_keys != forecast_keys:
         raise ValueError("Current feature and direct forecast row order does not match")
     matrix = _matrix(features)
+    direct_rows = forecast.to_pylist()
     output = forecast.select(
         [
             "season",
@@ -401,7 +408,7 @@ def forecast_components(*, force: bool = False) -> dict[str, Any]:
     component_model_sha256 = sha256_file(MODEL_FILE)
     component_forecast_created_at = datetime.now(UTC).isoformat()
     predictions = {
-        name: np.clip(model.predict(matrix), 0.0, 20.0)
+        name: np.clip(xgboost_infer(model, matrix), 0.0, 20.0)
         for name, model in bundle["components"].items()
     }
     bps_promoted = False
@@ -417,6 +424,9 @@ def forecast_components(*, force: bool = False) -> dict[str, Any]:
     short_minutes = 28.0
     medium_minutes = 75.0
     for index, row in enumerate(output):
+        direct_row = direct_rows[index]
+        role_ratio = component_role_ratio(direct_row)
+        market_attacking_factor = float(direct_row.get("market_attacking_factor") or 1.0)
         row["component_model_created_at"] = str(bundle["created_at"])
         row["component_model_version"] = str(bundle["version"])
         row["component_forecast_created_at"] = component_forecast_created_at
@@ -427,8 +437,16 @@ def forecast_components(*, force: bool = False) -> dict[str, Any]:
             + row["p_60_89"] * medium_minutes
             + row["p_90_or_more"] * 90.0
         )
+        row["live_role_minutes_ratio"] = role_ratio
+        row["live_participation_applied"] = bool(direct_row.get("live_participation_applied"))
+        row["live_participation_consensus"] = direct_row.get("live_participation_consensus")
+        row["market_attacking_factor"] = market_attacking_factor
         for name in COMPONENTS:
-            prediction = float(predictions[name][index])
+            prediction = float(predictions[name][index]) * role_ratio
+            if name in {"goals", "assists"}:
+                prediction *= market_attacking_factor
+            elif name == "bonus":
+                prediction *= market_attacking_factor**0.5
             if name == "bonus":
                 row["raw_expected_bonus"] = prediction
                 adjustment = (

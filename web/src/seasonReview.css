@@ -1,0 +1,55 @@
+.evidence-shell.season-review { padding: clamp(20px, 4vw, 40px); width: min(1080px, calc(100vw - 32px)); max-width: 1080px; overflow: auto; max-height: 90dvh; background: #f6f7f1; color: #1b2c22; }
+.review-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin: 24px 0 8px; }
+.review-toolbar p { max-width: 58ch; color: var(--muted, #65736a); line-height: 1.6; }
+.review-toolbar button { flex-shrink: 0; display: flex; gap: 8px; align-items: center; }
+.review-observed, .review-table caption { font-size: 12px; color: #65736a; text-align: left; }
+.review-headline { display: flex; justify-content: space-between; align-items: center; margin: 28px 0; gap: 20px; }
+.review-headline strong { display: block; font-size: 48px; letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.review-headline strong small { font-size: 17px; letter-spacing: 0; font-weight: 500; }
+.review-headline p { margin-top: 4px; color: #65736a; }
+.review-headline label { display: grid; gap: 8px; font-size: 12px; font-weight: 600; }
+.review-headline select { padding: 10px 14px; background: #f5f6f0; border: 1px solid #cdd4cb; border-radius: 10px; color: inherit; }
+.review-score-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; border-block: 1px solid #d5dcd2; padding: 20px 0; }
+.review-score-strip div { display: grid; gap: 8px; }
+.review-score-strip span { font-size: 12px; font-weight: 600; }
+.review-score-strip strong { font-size: 28px; font-variant-numeric: tabular-nums; }
+.review-score-strip small { color: #65736a; font-size: 11px; }
+.review-context { display: flex; justify-content: space-between; gap: 16px; padding: 18px 0; font-size: 12px; }
+.review-health { margin-bottom: 24px; border-left: 3px solid #8a7954; padding: 12px 16px; background: #efede3; font-size: 12px; line-height: 1.6; }
+.review-health p { margin-top: 6px; }
+.review-health small { display: block; color: #65736a; margin-top: 6px; }
+.review-table-scroll { overflow-x: auto; }
+.review-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.review-table caption { padding-bottom: 12px; }
+.review-table th, .review-table td { padding: 12px; border-bottom: 1px solid #dfe4dc; text-align: right; font-variant-numeric: tabular-nums; }
+.review-table th:first-child { text-align: left; min-width: 160px; }
+.review-table thead th { color: #65736a; font-size: 11px; font-weight: 500; }
+.review-table tbody th small { display: block; font-size: 10px; color: #65736a; font-weight: 400; margin-top: 4px; }
+.review-benched { background: #e9ede4; }
+.review-captain { display: inline-block; font-size: 10px; border: 1px solid #8ca580; border-radius: 50%; padding: 2px 4px; margin-left: 5px; }
+.review-caveats { margin-top: 24px; font-size: 12px; line-height: 1.7; color: #65736a; }
+.review-caveats summary { font-weight: 600; cursor: pointer; color: #213a2a; }
+.review-caveats p { margin-top: 12px; max-width: 85ch; }
+.review-benchmark { border-top: 1px solid #d5dcd2; padding: 20px 0 24px; }
+.review-benchmark header { display: flex; justify-content: space-between; gap: 24px; align-items: flex-end; }
+.review-benchmark h3 { font-size: 17px; line-height: 1.4; max-width: 44ch; margin-top: 6px; }
+.review-benchmark dl { display: flex; gap: 28px; flex-shrink: 0; }
+.review-benchmark dt { font-size: 11px; color: #65736a; }
+.review-benchmark dd { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 4px 0 0; }
+.benchmark-weeks { list-style: none; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin: 20px 0 12px; padding: 0; }
+.benchmark-weeks li { display: grid; justify-items: center; gap: 4px; font-variant-numeric: tabular-nums; }
+.benchmark-bar { position: relative; width: 100%; height: 72px; background: linear-gradient(#d5dcd2, #d5dcd2) center / 100% 1px no-repeat; }
+.benchmark-bar i { position: absolute; left: 20%; right: 20%; border-radius: 3px; }
+.benchmark-bar i.ahead { bottom: 50%; background: #46694e; }
+.benchmark-bar i.behind { top: 50%; background: #b0664f; }
+.benchmark-weeks b { font-size: 12px; }
+.benchmark-weeks small { font-size: 10px; color: #65736a; }
+.benchmark-note { font-size: 12px; line-height: 1.6; color: #65736a; max-width: 95ch; }
+.review-error { padding: 16px; border-left: 3px solid #9d4b39; background: #f5ece5; margin-block: 16px; }
+.review-empty { padding: 40px 0; line-height: 1.6; }
+.review-skeleton { height: 250px; background: #e8ece3; border-radius: 16px; animation: review-loading 1.6s ease-in-out infinite alternate; }
+@keyframes review-loading { to { opacity: .4; } }
+.season-review button:active { transform: scale(.98); }
+.season-review :focus-visible { outline: 2px solid #46694e; outline-offset: 3px; }
+@media (max-width: 700px) { .review-toolbar, .review-headline, .review-context, .review-benchmark header { flex-direction: column; align-items: flex-start; } .review-score-strip { grid-template-columns: repeat(2, 1fr); } .review-table { min-width: 600px; } }
+@media (prefers-reduced-motion: reduce) { .review-skeleton { animation: none; } }

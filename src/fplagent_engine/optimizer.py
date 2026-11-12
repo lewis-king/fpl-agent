@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ import pyarrow.parquet as pq
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import PROCESSED
 
+from .acceleration import policy_worker_count
 from .paths import ARTIFACTS, DECISIONS, FORECASTS, REPORTS, ensure_engine_layout
 from .rules import SquadRules, load_rules, validate_lineup, validate_squad
 
@@ -60,7 +63,9 @@ def _solve(
     required_players: set[int] | None = None,
     excluded_players: set[int] | None = None,
     club_minimums: dict[int, int] | None = None,
+    initial_club_counts: dict[int, int] | None = None,
     rules: SquadRules | None = None,
+    highs_threads: int | None = None,
 ) -> dict[str, Any]:
     if not 0.0 <= bench_autosub_weight <= 1.0:
         raise ValueError("bench_autosub_weight must be in [0, 1]")
@@ -70,10 +75,18 @@ def _solve(
     required = set(required_players or set())
     excluded = set(excluded_players or set())
     minimums = dict(club_minimums or {})
+    exact_counts = dict(initial_club_counts or {})
     if required & excluded:
         raise ValueError("required_players and excluded_players must not overlap")
     if any(count < 1 or count > 3 for count in minimums.values()):
         raise ValueError("club minimums must be between 1 and 3")
+    if any(count < 0 or count > 3 for count in exact_counts.values()):
+        raise ValueError("initial club counts must be between 0 and 3")
+    if any(
+        team_id in minimums and minimums[team_id] > count
+        for team_id, count in exact_counts.items()
+    ):
+        raise ValueError("initial club counts must satisfy club minimums")
     invalid_forbidden = forbidden_transfers - set(events[1:])
     if invalid_forbidden:
         raise ValueError(
@@ -108,6 +121,10 @@ def _solve(
     highs.setOptionValue("random_seed", 7)
     highs.setOptionValue("mip_rel_gap", 1e-7)
     highs.setOptionValue("time_limit", 120.0)
+    if highs_threads is not None:
+        if highs_threads < 1:
+            raise ValueError("highs_threads must be positive")
+        highs.setOptionValue("threads", int(highs_threads))
     integer = highspy.HighsVarType.kInteger
     squad = highs.addVariables(n_players * n_events, lb=0, ub=1, type=integer, out_array=True)
     start = highs.addVariables(n_players * n_events, lb=0, ub=1, type=integer, out_array=True)
@@ -219,6 +236,18 @@ def _solve(
             )
             >= count,
             name=f"minimum_initial_club_{team_id}",
+        )
+    for team_id, count in exact_counts.items():
+        if team_id not in team_ids:
+            raise ValueError(f"initial club count references unknown team {team_id}")
+        highs.addConstr(
+            sum(
+                squad_var(element, first_event)
+                for element in players
+                if int(player_meta[element]["team_id"]) == team_id
+            )
+            == count,
+            name=f"exact_initial_club_{team_id}",
         )
     if initial_squad is not None:
         if len(initial_squad) != rules.squad_size or not initial_squad <= set(players):
@@ -410,15 +439,39 @@ def _player_item(solution: dict[str, Any], element: int, event: int = 1) -> dict
     }
 
 
+_STABILITY_ROWS: list[dict] | None = None
+_STABILITY_EVENTS: list[int] | None = None
+
+
+def _init_stability_worker(rows: list[dict], events: list[int]) -> None:
+    global _STABILITY_ROWS, _STABILITY_EVENTS
+    _STABILITY_ROWS = rows
+    _STABILITY_EVENTS = events
+
+
+def _solve_stability_sample(score_by_row: np.ndarray) -> tuple[tuple[int, ...], int]:
+    if _STABILITY_ROWS is None or _STABILITY_EVENTS is None:
+        raise RuntimeError("stability worker was not initialized")
+    solution = _solve(
+        _STABILITY_ROWS,
+        _STABILITY_EVENTS,
+        score_by_row=score_by_row,
+        highs_threads=1,
+    )
+    return tuple(solution["selected"]), int(solution["lineups"][1]["captain"])
+
+
 def _stability(
     rows: list[dict], events: list[int], primary: dict[str, Any], samples: int
 ) -> dict[str, Any]:
+    if samples < 1:
+        raise ValueError("stability samples must be positive")
     rng = np.random.default_rng(20260802)
     selection_count: Counter[int] = Counter()
     captain_count: Counter[int] = Counter()
     exact = 0
-    for _ in range(samples):
-        perturbed = np.asarray(
+    perturbations = [
+        np.asarray(
             [
                 float(row["expected_points"])
                 + rng.normal(0.0, max(float(row["epistemic_uncertainty"]), 0.05))
@@ -426,11 +479,37 @@ def _stability(
             ],
             dtype=np.float64,
         )
-        solution = _solve(rows, events, score_by_row=perturbed)
-        selected = set(solution["selected"])
+        for _ in range(samples)
+    ]
+    workers = min(samples, policy_worker_count())
+    if workers == 1:
+        solved = []
+        for perturbed in perturbations:
+            # Reuse the parent process's existing HiGHS scheduler. HiGHS cannot
+            # change its global thread count after a prior solve in-process.
+            solution = _solve(rows, events, score_by_row=perturbed)
+            solved.append(
+                (tuple(solution["selected"]), int(solution["lineups"][1]["captain"]))
+            )
+    else:
+        print(
+            f"Initial squad: solving {samples} stability samples with {workers} workers",
+            flush=True,
+        )
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=get_context("spawn"),
+            initializer=_init_stability_worker,
+            initargs=(rows, events),
+        ) as executor:
+            solved = list(executor.map(_solve_stability_sample, perturbations, chunksize=1))
+
+    primary_selected = set(primary["selected"])
+    for selected_values, captain in solved:
+        selected = set(selected_values)
         selection_count.update(selected)
-        captain_count.update([solution["lineups"][1]["captain"]])
-        exact += selected == set(primary["selected"])
+        captain_count.update([captain])
+        exact += selected == primary_selected
     return {
         "samples": samples,
         "exact_squad_rate": exact / samples,

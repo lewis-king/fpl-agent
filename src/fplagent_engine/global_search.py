@@ -45,9 +45,7 @@ def is_legal_squad(
         return False
     if any(element not in meta for element in selected):
         return False
-    if Counter(str(meta[element]["position"]) for element in selected) != Counter(
-        POSITION_SQUAD
-    ):
+    if Counter(str(meta[element]["position"]) for element in selected) != Counter(POSITION_SQUAD):
         return False
     if sum(float(meta[element]["market_price"]) for element in selected) > budget + 1e-8:
         return False
@@ -104,6 +102,9 @@ def solve_global_proxy_squad(
     distant_from: list[set[int]],
     minimum_seed_distance: int,
     excluded_squads: list[set[int]] | None = None,
+    required_players: set[int] | None = None,
+    excluded_players: set[int] | None = None,
+    exact_club_counts: dict[int, int] | None = None,
     random_seed: int = 2026,
 ) -> Squad:
     if len(objective) != len(player_ids):
@@ -111,6 +112,18 @@ def solve_global_proxy_squad(
     if not 1 <= minimum_seed_distance <= 15:
         raise ValueError("minimum_seed_distance must be in [1, 15]")
     player_index = {element: index for index, element in enumerate(player_ids)}
+    required = set(required_players or set())
+    excluded = set(excluded_players or set())
+    club_counts = dict(exact_club_counts or {})
+    unknown = (required | excluded) - set(player_ids)
+    if unknown or required & excluded:
+        raise ValueError("required/excluded proxy-player constraints are invalid")
+    known_clubs = {int(meta[element]["team_id"]) for element in player_ids}
+    if (
+        set(club_counts) - known_clubs
+        or any(count < 0 or count > club_limit for count in club_counts.values())
+    ):
+        raise ValueError("exact proxy club-count constraints are invalid")
     highs = highspy.Highs()
     highs.setOptionValue("output_flag", False)
     highs.setOptionValue("random_seed", int(random_seed))
@@ -140,16 +153,27 @@ def solve_global_proxy_squad(
     for club in sorted({int(meta[element]["team_id"]) for element in player_ids}):
         highs.addConstr(
             sum(
-                variable(element)
-                for element in player_ids
-                if int(meta[element]["team_id"]) == club
+                variable(element) for element in player_ids if int(meta[element]["team_id"]) == club
             )
             <= club_limit
         )
+        if club in club_counts:
+            highs.addConstr(
+                sum(
+                    variable(element)
+                    for element in player_ids
+                    if int(meta[element]["team_id"]) == club
+                )
+                == club_counts[club]
+            )
     highs.addConstr(
         sum(float(meta[element]["market_price"]) * variable(element) for element in player_ids)
         <= budget
     )
+    for element in required:
+        highs.addConstr(variable(element) == 1)
+    for element in excluded:
+        highs.addConstr(variable(element) == 0)
     maximum_overlap = 15 - minimum_seed_distance
     for reference in distant_from:
         highs.addConstr(
@@ -165,9 +189,7 @@ def solve_global_proxy_squad(
     )
     if highs.getModelStatus() != highspy.HighsModelStatus.kOptimal:
         raise RuntimeError(f"Global proxy solve failed: {highs.getModelStatus()}")
-    solution = squad_key(
-        element for element in player_ids if highs.val(variable(element)) > 0.5
-    )
+    solution = squad_key(element for element in player_ids if highs.val(variable(element)) > 0.5)
     if not is_legal_squad(solution, meta, budget=budget, club_limit=club_limit):
         raise RuntimeError("Global proxy solve returned an illegal squad")
     return solution
@@ -200,16 +222,15 @@ def crossover_squads(
     for _ in range(attempts):
         child: list[int] = []
         for position, count in POSITION_SQUAD.items():
-            eligible = [
-                element for element in union if str(meta[element]["position"]) == position
-            ]
+            eligible = [element for element in union if str(meta[element]["position"]) == position]
             jitter = rng.normal(0.0, 0.65, len(eligible))
-            scores = np.asarray(
-                [utility[player_index[element]] for element in eligible], dtype=np.float64
-            ) + jitter
-            child.extend(
-                _weighted_sample_without_replacement(eligible, scores, count, rng)
+            scores = (
+                np.asarray(
+                    [utility[player_index[element]] for element in eligible], dtype=np.float64
+                )
+                + jitter
             )
+            child.extend(_weighted_sample_without_replacement(eligible, scores, count, rng))
         key = squad_key(child)
         if (
             key != left
@@ -261,10 +282,7 @@ def _proxy_scores(
     player_index: dict[int, int],
 ) -> np.ndarray:
     return np.asarray(
-        [
-            utilities[[player_index[element] for element in squad]].sum(axis=0)
-            for squad in squads
-        ],
+        [utilities[[player_index[element] for element in squad]].sum(axis=0) for squad in squads],
         dtype=np.float64,
     )
 
@@ -285,9 +303,7 @@ def select_evolution_population(
     chosen: set[int] = set()
     per_scenario = max(2, math.ceil(limit / (2 * scores.shape[1])))
     for scenario in range(scores.shape[1]):
-        chosen.update(
-            np.argsort(-scores[:, scenario], kind="stable")[:per_scenario].tolist()
-        )
+        chosen.update(np.argsort(-scores[:, scenario], kind="stable")[:per_scenario].tolist())
     ordered = np.argsort(-aggregate, kind="stable")
     for index in ordered:
         chosen.add(int(index))
@@ -316,11 +332,7 @@ def generate_global_squads(
     player_ids = sorted(meta)
     player_index = {element: index for index, element in enumerate(player_ids)}
     eligible_by_position = {
-        position: [
-            element
-            for element in player_ids
-            if str(meta[element]["position"]) == position
-        ]
+        position: [element for element in player_ids if str(meta[element]["position"]) == position]
         for position in POSITION_SQUAD
     }
     seed_sets = [set(squad) for squad in seeds]

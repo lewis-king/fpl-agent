@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fplagent_engine.deadline_pack import _render
+import json
+from pathlib import Path
+
+from fplagent_data.http import sha256_file
+from fplagent_engine.deadline_pack import _render, deadline_pack_currentness
 
 
 def test_deadline_pack_report_names_failed_gate_and_squad() -> None:
@@ -56,3 +60,63 @@ def test_deadline_pack_report_names_failed_gate_and_squad() -> None:
     assert "FAIL — market" in report
     assert "Example" in report
     assert "Reserve" in report
+
+
+def test_deadline_pack_currentness_rejects_a_superseded_decision(tmp_path: Path) -> None:
+    decision = tmp_path / "decision.json"
+    pipeline = tmp_path / "pipeline.json"
+    pack = tmp_path / "pack.json"
+    decision.write_text('{"decision":{"candidate_id":"new"}}\n', encoding="utf-8")
+    pipeline.write_text('{"status":"published"}\n', encoding="utf-8")
+    pack.write_text(
+        json.dumps(
+            {
+                "verdict": "DEADLINE_READY",
+                "publishable": True,
+                "lineage": {
+                    "decision_sha256": "old-decision",
+                    "pipeline_sha256": sha256_file(pipeline),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = deadline_pack_currentness(
+        pack_path=pack,
+        decision_path=decision,
+        pipeline_path=pipeline,
+    )
+
+    assert result["current"] is False
+    assert result["reasons"] == ["The deadline pack belongs to a superseded decision."]
+
+
+def test_deadline_pack_currentness_accepts_exact_transaction(tmp_path: Path) -> None:
+    decision = tmp_path / "decision.json"
+    pipeline = tmp_path / "pipeline.json"
+    pack = tmp_path / "pack.json"
+    decision.write_text('{"decision":{"candidate_id":"current"}}\n', encoding="utf-8")
+    pipeline.write_text('{"status":"published"}\n', encoding="utf-8")
+    pack.write_text(
+        json.dumps(
+            {
+                "verdict": "DEADLINE_READY",
+                "publishable": True,
+                "lineage": {
+                    "decision_sha256": sha256_file(decision),
+                    "pipeline_sha256": sha256_file(pipeline),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        deadline_pack_currentness(
+            pack_path=pack,
+            decision_path=decision,
+            pipeline_path=pipeline,
+        )["current"]
+        is True
+    )

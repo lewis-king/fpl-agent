@@ -29,24 +29,35 @@ from .bps_reconstruction import reconstruct_2026_27_bps
 from .captain_return_challenger import run_captain_return_replay
 from .challenger_registry import build_challenger_registry
 from .chip_schedule_history import build_historical_chip_schedule_opportunities
+from .chip_strategy import build_chip_strategy_calibration
 from .component_backtest import run_component_player_backtest
 from .component_candidates import generate_component_candidates
 from .component_models import forecast_components, train_component_models
 from .component_simulator import run_component_tournament, train_goal_model
 from .current_squad_audit import run_current_squad_audit
+from .deadline_contingencies import build_deadline_contingencies
 from .deadline_evidence import audit_deadline_evidence
+from .deadline_execution import (
+    build_complete_deadline_handoff,
+    build_deadline_execution_receipt,
+)
 from .deadline_pack import build_deadline_pack
 from .deadline_pipeline import run_weekly_deadline_pipeline
+from .deadline_stability import run_deadline_stability_audit
 from .decision_synthesis import run_decision_synthesis
 from .distribution_calibration import build_distribution_scoreboard
 from .external_player_data import build_external_player_data_receipt
 from .features import build as build_features
 from .fixture_ablation import run_fixture_ablation
 from .form_reversion import run_form_reversion_challenger
+from .gw1_chip_decision import run_gw1_chip_decision
 from .horizon_audit import run_horizon_audit
 from .horizon_decay_replay import run_horizon_decay_replay
 from .lead_time_challenger import run_lead_time_challenger
-from .market_feature_challenger import run_market_feature_challenger
+from .market_feature_challenger import (
+    run_attacker_market_calibration,
+    run_market_feature_challenger,
+)
 from .market_odds import (
     build_current_market_goal_rates,
     build_historical_market_goal_rates,
@@ -56,9 +67,11 @@ from .market_policy_replay import run_market_goal_policy_replay
 from .market_transfer_replay import run_market_transfer_replay
 from .mini_league import run_mini_league_shadow
 from .models import forecast, require_cuda, train
+from .omission_report import build_top_player_omission_report
 from .one_swap_audit import run_one_swap_audit
 from .openfpl_benchmark import run_openfpl_matched_benchmark
 from .optimizer import select_initial_squad
+from .participation_break_even import run_participation_break_even_audit
 from .participation_scoreboard import build_participation_scoreboard
 from .picker_backtest import evaluate_picker
 from .preseason_pipeline import run_gw1_deadline_pipeline
@@ -92,6 +105,9 @@ from .whitepaper import build_algorithm_whitepaper
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="fplagent")
     commands = root.add_subparsers(dest="command", required=True)
+    from fplagent_web.decision_cli import configure_parser
+
+    configure_parser(commands.add_parser("decisions", help="Show the app's weekly plan in the terminal"))
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--horizon", type=int, default=8)
     audit = commands.add_parser("audit")
@@ -110,6 +126,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("replay-market-transfers")
     commands.add_parser("calibrate-betfair-exchange")
     commands.add_parser("backtest-market-features")
+    commands.add_parser("calibrate-attacker-market")
     commands.add_parser("backtest-attacking-chance")
     commands.add_parser("backtest-understat")
     commands.add_parser("backtest-sofascore-events")
@@ -120,6 +137,24 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("calibrate-synthesis-selector")
     commands.add_parser("audit-structure-stress")
     commands.add_parser("build-deadline-pack")
+    break_even = commands.add_parser("audit-participation-break-even")
+    break_even.add_argument("--selection-simulations", type=int, default=5_000)
+    break_even.add_argument("--holdout-simulations", type=int, default=25_000)
+    break_even.add_argument("--finalists", type=int, default=64)
+    break_even.add_argument("--selection-seed", type=int, default=20260821)
+    break_even.add_argument("--holdout-seed", type=int, default=20260822)
+    break_even.add_argument("--player-id", type=int, action="append")
+    chip_decision = commands.add_parser("gw1-chip-decision")
+    chip_decision.add_argument("--simulations", type=int, default=25_000)
+    chip_decision.add_argument("--seed", type=int, default=20260823)
+    commands.add_parser("build-deadline-contingencies")
+    commands.add_parser("build-deadline-execution")
+    handoff = commands.add_parser("build-deadline-handoff")
+    handoff.add_argument("--selection-simulations", type=int, default=5_000)
+    handoff.add_argument("--holdout-simulations", type=int, default=25_000)
+    handoff.add_argument("--chip-simulations", type=int, default=25_000)
+    stability = commands.add_parser("audit-deadline-stability")
+    stability.add_argument("--simulations-per-seed", type=int, default=25_000)
     commands.add_parser("audit-sota-readiness")
     commands.add_parser("audit-external-player-data")
     openfpl = commands.add_parser("benchmark-openfpl")
@@ -129,6 +164,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("distribution-scoreboard")
     commands.add_parser("calibrate-price-liquidity")
     commands.add_parser("build-algorithm-whitepaper")
+    commands.add_parser("build-omission-report")
     commands.add_parser("backtest-role-residual")
     commands.add_parser("backtest-lead-time")
     commands.add_parser("stress-adaptive-preseason")
@@ -194,6 +230,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("build-rearrangement-model")
     commands.add_parser("replay-squad-chips")
     commands.add_parser("replay-team-chips")
+    commands.add_parser("calibrate-chip-strategy")
     bps = commands.add_parser("reconstruct-bps")
     bps.add_argument("--simulations", type=int, default=400)
     bps.add_argument("--seed", type=int, default=20260803)
@@ -274,6 +311,11 @@ def parser() -> argparse.ArgumentParser:
     score_event.add_argument("--event", type=int, required=True)
     score_event.add_argument("--decision", type=Path)
     commands.add_parser("prospective-scoreboard")
+    review = commands.add_parser("review-gameweeks")
+    review.add_argument("--entry-id", type=int, required=True)
+    commands.add_parser("scouting-refresh")
+    score_shapes = commands.add_parser("replay-score-shapes")
+    score_shapes.add_argument("--activate-diagnostics", action="store_true")
     commands.add_parser("participation-scoreboard")
     commands.add_parser("challenger-registry")
     mini_league = commands.add_parser("mini-league-shadow")
@@ -290,7 +332,11 @@ def _print(value: dict) -> None:
 
 def main() -> None:
     args = parser().parse_args()
-    if args.command == "prepare":
+    if args.command == "decisions":
+        from fplagent_web.decision_cli import run
+
+        raise SystemExit(run(args))
+    elif args.command == "prepare":
         catalog = build_catalog()
         features = build_features(args.horizon)
         _print(
@@ -409,6 +455,17 @@ def main() -> None:
                         "interval",
                     )
                 },
+            }
+        )
+    elif args.command == "calibrate-attacker-market":
+        result = run_attacker_market_calibration()
+        _print(
+            {
+                "report": "reports/attacker-market-calibration.md",
+                "results": "data/model/attacker_market_calibration_v1/results.json",
+                "verdict": result["verdict"],
+                "production_weights": result["production_weights"],
+                "checks": result["checks"],
             }
         )
     elif args.command == "backtest-attacking-chance":
@@ -637,6 +694,80 @@ def main() -> None:
                 indent=2,
             )
         )
+    elif args.command == "audit-participation-break-even":
+        result = run_participation_break_even_audit(
+            selection_simulations=args.selection_simulations,
+            holdout_simulations=args.holdout_simulations,
+            finalists=args.finalists,
+            selection_seed=args.selection_seed,
+            holdout_seed=args.holdout_seed,
+            player_ids=args.player_id,
+        )
+        _print(
+            {
+                "decision_candidate_id": result["decision_candidate_id"],
+                "players": {row["name"]: row["boundary"] for row in result["players"].values()},
+                "report": "reports/gw1-participation-break-even.md",
+            }
+        )
+    elif args.command == "gw1-chip-decision":
+        result = run_gw1_chip_decision(simulations=args.simulations, seed=args.seed)
+        _print(
+            {
+                "candidate_id": result["candidate_id"],
+                "recommendation": result["recommendation"],
+                "report": "reports/gw1-chip-decision.md",
+            }
+        )
+    elif args.command == "build-deadline-contingencies":
+        result = build_deadline_contingencies()
+        _print(
+            {
+                "candidate_id": result["decision_candidate_id"],
+                "summary": result["summary"],
+                "report": "reports/gw1-deadline-contingencies.md",
+            }
+        )
+    elif args.command == "build-deadline-execution":
+        result = build_deadline_execution_receipt()
+        _print(
+            {
+                "verdict": result["verdict"],
+                "failed_checks": result["failed_checks"],
+                "report": "reports/gw1-deadline-execution.html",
+            }
+        )
+    elif args.command == "build-deadline-handoff":
+        handoff = build_complete_deadline_handoff(
+            selection_simulations=args.selection_simulations,
+            holdout_simulations=args.holdout_simulations,
+            chip_simulations=args.chip_simulations,
+        )
+        execution = handoff["execution"]
+        _print(
+            {
+                "verdict": execution["verdict"],
+                "candidate_id": execution["decision"]["candidate_id"],
+                "watched_players": handoff["break_even"]["players"],
+                "contingencies": handoff["contingencies"],
+                "chip": handoff["chip"],
+                "stability": handoff["stability"],
+                "deadline_pack": handoff["deadline_pack"],
+                "report": "reports/gw1-deadline-execution.html",
+            }
+        )
+    elif args.command == "audit-deadline-stability":
+        result = run_deadline_stability_audit(
+            simulations_per_seed=args.simulations_per_seed,
+        )
+        _print(
+            {
+                "verdict": result["verdict"],
+                "decision_candidate_id": result["decision_candidate_id"],
+                "gate": result["gate"],
+                "report": "reports/gw1-deadline-stability.md",
+            }
+        )
     elif args.command == "audit-sota-readiness":
         _print(build_sota_readiness_audit())
     elif args.command == "audit-external-player-data":
@@ -678,6 +809,8 @@ def main() -> None:
                 "selection_seed": result["selection_seed"],
             }
         )
+    elif args.command == "build-omission-report":
+        _print(build_top_player_omission_report())
     elif args.command == "backtest-components":
         result = run_component_player_backtest(seed=args.seed)
         _print(
@@ -867,6 +1000,17 @@ def main() -> None:
                 "promotion_gate": result["promotion_gate"],
                 "results": "data/model/team_chip_replay_v1/results.json",
                 "report": "reports/team-chip-retention-replay.md",
+            }
+        )
+    elif args.command == "calibrate-chip-strategy":
+        result = build_chip_strategy_calibration()
+        _print(
+            {
+                "status": result["status"],
+                "historical_gate": result["historical_gate"],
+                "authority_by_chip": result["authority_by_chip"],
+                "results": "data/model/chip_strategy_v2/retained-value.json",
+                "report": "reports/chip-strategy-v2.md",
             }
         )
     elif args.command == "reconstruct-bps":
@@ -1105,6 +1249,9 @@ def main() -> None:
             reuse_latest_official=args.reuse_latest_official,
             stability_samples=args.stability_samples,
         )
+        handoff = None
+        if result.get("status") == "published" and result.get("published") is True:
+            handoff = build_complete_deadline_handoff()
         _print(
             {
                 "status": result["status"],
@@ -1114,6 +1261,7 @@ def main() -> None:
                 "stages": result.get("stages", []),
                 "artifacts": result.get("published_artifacts", {}),
                 "message": result.get("message"),
+                "deadline_handoff": handoff,
             }
         )
     elif args.command == "calibrate-transfer-value":
@@ -1138,6 +1286,18 @@ def main() -> None:
                 "participation_calibration": build_participation_scoreboard(),
             }
         )
+    elif args.command == "scouting-refresh":
+        from .scouting import refresh_scouting
+        _print(refresh_scouting())
+    elif args.command == "replay-score-shapes":
+        from .score_shape import replay_score_shapes, activate_marginal_diagnostics
+        result = replay_score_shapes()
+        if args.activate_diagnostics:
+            result["activation"] = activate_marginal_diagnostics()
+        _print(result)
+    elif args.command == "review-gameweeks":
+        from .gameweek_review import refresh_gameweek_review
+        _print(refresh_gameweek_review(args.entry_id))
     elif args.command == "prospective-scoreboard":
         result = build_prospective_scoreboard()
         _print(

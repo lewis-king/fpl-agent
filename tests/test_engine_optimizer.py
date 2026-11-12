@@ -36,3 +36,13 @@ def test_invalid_gw1_defender_count_is_rejected_before_solving() -> None:
 def test_invalid_forbidden_transfer_event_is_rejected_before_solving() -> None:
     with pytest.raises(ValueError, match="forbid_transfer_events"):
         _solve([], [1, 2, 3], forbid_transfer_events={1})
+
+
+def test_invalid_exact_initial_club_count_is_rejected_before_solving() -> None:
+    with pytest.raises(ValueError, match="initial club counts"):
+        _solve([], [], initial_club_counts={1: 4})
+
+
+def test_exact_initial_club_count_cannot_violate_minimum() -> None:
+    with pytest.raises(ValueError, match="satisfy club minimums"):
+        _solve([], [], club_minimums={1: 3}, initial_club_counts={1: 2})

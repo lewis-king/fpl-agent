@@ -4,6 +4,24 @@ This is the cohesive local product over the GW1 optimiser, multimodal team impor
 FPL-tuned Qwen assistant. The preseason experience is implemented now; its shell and data contracts
 are designed to become the transfer, XI, captaincy, chip, live and review workspace after GW1.
 
+## Routine weekly use (existing installation)
+
+Follow the root README's [startup and next-Gameweek refresh commands](../README.md#run-the-app-and-refresh-the-next-gameweek).
+It covers MCP + API + frontend startup without Qwen, optional saved-file login, authenticated squad
+sync, the background refresh request, progress monitoring and persisted decisions. Use that path
+for the current in-season workflow; you do not need the model installation/training steps below.
+
+Prefer a terminal report? From the repository root, `.venv/bin/fplagent decisions` prints the same
+saved weekly recommendation. Use `decisions --refresh` to sync, request a background refresh, wait
+and print it, or `decisions --wait` to join an existing job. Only the API (and MCP for a fresh sync)
+is required; the frontend and Qwen are optional for this workflow.
+
+Authentication alone is not a squad sync, and a successful sync is not a completed decision run.
+Wait for successful publication and check the event/timestamp. See the
+[refresh lifecycle](../docs/decision-refresh-lifecycle.md) and
+[saved-login security guide](../docs/local-saved-fpl-login.md). The root guide also documents the
+unresolved chip-parent display mismatch; never combine instructions from different transfer routes.
+
 ## First-time setup
 
 Install the main and isolated model environments:

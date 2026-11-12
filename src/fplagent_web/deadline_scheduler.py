@@ -148,6 +148,43 @@ class DeadlineRefreshScheduler:
             self._write_state(result)
             return result
 
+        # A missing private snapshot is not a transient market/solver failure.
+        # Wait for a genuinely newer sync; immediately resume when it arrives,
+        # even if the login dialog closed before its frontend callback completed.
+        refresh = self.refresh_coordinator.status()
+        if refresh.status == "not_ready" and refresh.event == scheduled_event:
+            profile = self.profile_loader()
+            synced = (
+                datetime.fromisoformat(profile.last_synced_at).astimezone(UTC)
+                if profile.last_synced_at else None
+            )
+            attempted = (
+                datetime.fromisoformat(refresh.started_at).astimezone(UTC)
+                if refresh.started_at else None
+            )
+            if (
+                synced is not None and attempted is not None and attempted < synced <= now
+                and profile.fpl_entry_id == refresh.manager_entry_id
+            ):
+                started = self.refresh_coordinator.request(
+                    mode="gw1" if scheduled_event == 1 else "weekly",
+                    reason="scheduled", manager_entry_id=profile.fpl_entry_id,
+                    event=scheduled_event, deadline_at=deadline,
+                )
+                result = DeadlineScheduleView(
+                    status="running" if started.status == "running" else "waiting",
+                    **{**common, "last_attempt_at": now.isoformat(),
+                       "last_attempt_window": "manager_sync", "refresh_run_id": started.run_id},
+                    message="New FPL squad sync received; resuming the decision refresh.",
+                )
+            else:
+                result = DeadlineScheduleView(
+                    status="waiting", **common, refresh_run_id=refresh.run_id,
+                    message=f"Waiting for a new FPL squad sync; no refresh is running. {refresh.message}",
+                )
+            self._write_state(result)
+            return result
+
         if self.material_probe is not None:
             last_checked = (
                 datetime.fromisoformat(same_event_prior.material_checked_at).astimezone(UTC)
@@ -157,7 +194,13 @@ class DeadlineRefreshScheduler:
             probe_due = last_checked is None or now - last_checked >= material_probe_interval(
                 deadline - now
             )
-            if probe_due:
+            # The material probe refreshes the active bookmaker generation. Never
+            # mutate that generation while a decision is being built from it: the
+            # final checksum gate would correctly reject the otherwise coherent
+            # decision. The single-flight refresh will itself collect current
+            # market evidence, so deferring this lightweight probe loses nothing.
+            refresh_before_probe = self.refresh_coordinator.status()
+            if probe_due and refresh_before_probe.status != "running":
                 try:
                     probe = self.material_probe()
                     probe_checked = datetime.fromisoformat(probe.checked_at)
@@ -213,8 +256,14 @@ class DeadlineRefreshScheduler:
                 return result
             elif (
                 refresh.status == "blocked"
-                and refresh.completed_at is not None
-                and datetime.fromisoformat(refresh.completed_at).astimezone(UTC) >= material_checked
+                and (
+                    refresh.failure_code == "refresh_process_interrupted"
+                    or (
+                        refresh.completed_at is not None
+                        and datetime.fromisoformat(refresh.completed_at).astimezone(UTC)
+                        >= material_checked
+                    )
+                )
             ):
                 result = DeadlineScheduleView(
                     status="waiting",
@@ -232,7 +281,7 @@ class DeadlineRefreshScheduler:
                 ) + timedelta(seconds=self.retry_seconds)
                 result = DeadlineScheduleView(
                     status="waiting",
-                    **active,
+                    **{**active, "next_window_at": retry_at.isoformat()},
                     message=(f"The material-change retry is held until {retry_at.isoformat()}."),
                 )
                 self._write_state(result)
@@ -319,10 +368,16 @@ class DeadlineRefreshScheduler:
 
         if (
             refresh.status == "blocked"
-            and refresh.completed_at is not None
             and (
-                validated_at is None
-                or datetime.fromisoformat(refresh.completed_at).astimezone(UTC) >= validated_at
+                refresh.failure_code == "refresh_process_interrupted"
+                or (
+                    refresh.completed_at is not None
+                    and (
+                        validated_at is None
+                        or datetime.fromisoformat(refresh.completed_at).astimezone(UTC)
+                        >= validated_at
+                    )
+                )
             )
         ):
             result = DeadlineScheduleView(
@@ -342,7 +397,7 @@ class DeadlineRefreshScheduler:
             )
             result = DeadlineScheduleView(
                 status="waiting",
-                **active,
+                **{**active, "next_window_at": retry_at.isoformat()},
                 message=f"The {cadence_label} retry is held until {retry_at.isoformat()}.",
             )
             self._write_state(result)

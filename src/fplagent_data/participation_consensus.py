@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -22,21 +23,27 @@ from .preseason_lineups import match_sofascore_player
 
 SEASON = "2026-27"
 VERSION = "participation_consensus_v1"
-FFSCOUT_URL = "https://cdn.fantasyfootballscout.co.uk/team-news"
+FFSCOUT_URL = "https://www.fantasyfootballscout.co.uk/team-news"
 ROTOWIRE_URL = "https://www.rotowire.com/soccer/lineups.php?league=EPL"
 SOURCE_URLS = {
     "fantasy_football_scout": FFSCOUT_URL,
     "rotowire": ROTOWIRE_URL,
 }
-SOURCE_UPDATED_MAX_AGE = timedelta(days=7)
+EARLY_SOURCE_MAX_AGE = timedelta(days=5)
+MIDWEEK_SOURCE_MAX_AGE = timedelta(days=2)
+DEADLINE_SOURCE_MAX_AGE = timedelta(hours=18)
 
 FPL_DIR = PROCESSED / "fpl" / SEASON / "preseason"
 PLAYERS = FPL_DIR / "players.parquet"
 TEAMS = FPL_DIR / "teams.parquet"
 EVENTS = FPL_DIR / "events.parquet"
 FIXTURES = FPL_DIR / "fixtures.parquet"
-FORECAST = Path(__file__).resolve().parents[2] / "data" / "model" / "forecasts" / (
-    f"{SEASON}-preseason.parquet"
+FORECAST = (
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "model"
+    / "forecasts"
+    / (f"{SEASON}-preseason.parquet")
 )
 RAW_DIR = RAW / "supporting" / "participation" / SEASON
 ARCHIVE_DIR = RAW_DIR / "archive"
@@ -45,6 +52,13 @@ OBSERVATIONS = OUT_DIR / "predicted_lineup_observations.parquet"
 CONSENSUS = OUT_DIR / "participation_consensus.parquet"
 SNAPSHOT_DIR = OUT_DIR / "snapshots"
 RECEIPT = MANIFESTS / "participation_consensus_current.json"
+PROSPECTIVE_SCOREBOARD = (
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "model"
+    / "participation_consensus_v1"
+    / "scoreboard.json"
+)
 
 TEAM_CODE_ALIASES = {
     "not": "NFO",
@@ -106,9 +120,7 @@ def parse_ffscout_lineups(payload: bytes | str) -> dict[str, Any]:
     """Parse the server-rendered FFScout team-news page without executing scripts."""
     text = payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else payload
     modified = re.search(r'"dateModified"\s*:\s*"([^"]+)"', text)
-    starts = list(
-        re.finditer(r'<li\s+class="team-news-item"\s+data-team-code="([^"]+)"', text)
-    )
+    starts = list(re.finditer(r'<li\s+class="team-news-item"\s+data-team-code="([^"]+)"', text))
     teams = []
     for index, match in enumerate(starts):
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
@@ -125,7 +137,16 @@ def parse_ffscout_lineups(payload: bytes | str) -> dict[str, Any]:
             {
                 "source_team_code": match.group(1).upper(),
                 "lineup_status": "predicted",
-                "players": [name for name in names if name][:11],
+                "players": [name for name in names if name],
+                # The article's JSON-LD modified date is NOT the team editor's
+                # update time. Keep it as page metadata, never override a team date.
+                "source_updated_label": next(iter(re.findall(
+                    r"Last Updated\s+([^<]+)", block
+                )), None),
+                "fixture_identity_required": True,
+                "fixture_label": next(iter(re.findall(
+                    r'<div\s+class="next-match"[^>]*>(.*?)</div>', block, re.DOTALL
+                )), None),
             }
         )
     return {
@@ -133,6 +154,30 @@ def parse_ffscout_lineups(payload: bytes | str) -> dict[str, Any]:
         "source_updated_at": modified.group(1) if modified else None,
         "teams": teams,
     }
+
+
+def _scout_team_timestamp(label: str, observed: datetime) -> datetime:
+    """Conservative beginning of the printed UK calendar day, never page metadata.
+
+    Scout currently prints no year/time. Resolve the closest calendar date around
+    observation, require its weekday to agree, and reject distant/future dates.
+    This does not pretend a Friday update was made immediately before Saturday's deadline.
+    """
+    cleaned = re.sub(r"(\d+)(?:st|nd|rd|th)\b", r"\1", _clean_text(label))
+    local = observed.astimezone(ZoneInfo("Europe/London"))
+    dates = []
+    for year in (local.year - 1, local.year, local.year + 1):
+        try:
+            date = datetime.strptime(f"{cleaned} {year}", "%a %d %b %Y").replace(tzinfo=local.tzinfo)
+        except ValueError:
+            continue
+        dates.append(date)
+    if not dates:
+        raise ValueError("unrecognised Scout team update date")
+    date = min(dates, key=lambda value: abs((local - value).total_seconds()))
+    if date.strftime("%a") != cleaned.split()[0] or not timedelta(0) <= local - date <= timedelta(days=183):
+        raise ValueError("invalid or future Scout team update date")
+    return date.astimezone(UTC)
 
 
 def parse_rotowire_lineups(payload: bytes | str) -> dict[str, Any]:
@@ -154,24 +199,20 @@ def parse_rotowire_lineups(payload: bytes | str) -> dict[str, Any]:
         for side, body in lists[:2]:
             team_index = 0 if side == "is-home" else 1
             status_match = re.search(
-                r'lineup__status[^>]*>.*?(Predicted|Confirmed)\s+Lineup',
+                r"lineup__status[^>]*>.*?(Predicted|Confirmed)\s+Lineup",
                 body,
                 flags=re.DOTALL | re.IGNORECASE,
             )
             starters = body.split('class="lineup__title is-middle"', 1)[0]
             names = [
                 _clean_text(value)
-                for value in re.findall(
-                    r'<a\s+title="([^"]+)"\s+href="/soccer/player/', starters
-                )
+                for value in re.findall(r'<a\s+title="([^"]+)"\s+href="/soccer/player/', starters)
             ]
             teams.append(
                 {
                     "source_team_code": codes[team_index].strip().upper(),
                     "opponent_team_code": codes[1 - team_index].strip().upper(),
-                    "lineup_status": (
-                        status_match.group(1).lower() if status_match else "unknown"
-                    ),
+                    "lineup_status": (status_match.group(1).lower() if status_match else "unknown"),
                     "players": names[:11],
                 }
             )
@@ -211,7 +252,9 @@ def _event_context(
     events: list[dict[str, Any]], fixtures: list[dict[str, Any]], event: int | None
 ) -> tuple[int, str, dict[int, list[tuple[int, int]]]]:
     if event is None:
-        candidates = [row for row in events if row.get("is_next") or row.get("is_current")]
+        candidates = [row for row in events if row.get("is_next")]
+        if not candidates:
+            candidates = [row for row in events if row.get("is_current")]
         if not candidates:
             candidates = [row for row in events if not row.get("finished")]
         if not candidates:
@@ -236,6 +279,17 @@ def _source_code(value: str) -> str:
     return TEAM_CODE_ALIASES.get(normalized, normalized.upper())
 
 
+def source_max_age(*, observed: datetime, deadline: datetime) -> timedelta:
+    """Tighten lineup-source freshness as actionable decision time approaches."""
+
+    remaining = deadline - observed
+    if remaining <= timedelta(hours=24):
+        return DEADLINE_SOURCE_MAX_AGE
+    if remaining <= timedelta(hours=72):
+        return MIDWEEK_SOURCE_MAX_AGE
+    return EARLY_SOURCE_MAX_AGE
+
+
 def normalize_source_lineups(
     parsed_sources: list[dict[str, Any]],
     *,
@@ -249,9 +303,19 @@ def normalize_source_lineups(
     observed = _aware(observed_at, "observed_at")
     event, deadline_text, fixture_by_team = _event_context(events, fixtures, event)
     deadline = _aware(deadline_text, "deadline_time")
-    team_by_code = {
-        str(row["short_name"]).upper(): row for row in teams if row.get("short_name")
-    }
+    maximum_source_age = source_max_age(observed=observed, deadline=deadline)
+    team_by_code = {str(row["short_name"]).upper(): row for row in teams if row.get("short_name")}
+    name_key = lambda value: re.sub(r"[^a-z0-9]", "", str(value).lower())
+    team_by_name = {name_key(row.get("name", "")): row for row in teams}
+    for name, code in {
+        "Manchester City": "MCI", "Manchester United": "MUN",
+        "Nottingham Forest": "NFO", "Tottenham Hotspur": "TOT",
+        "Brighton and Hove Albion": "BHA", "Wolverhampton Wanderers": "WOL",
+        "Newcastle United": "NEW", "West Ham United": "WHU",
+    }.items():
+        if code in team_by_code:
+            team_by_name[name_key(name)] = team_by_code[code]
+    fixture_rows = {int(row["id"]): row for row in fixtures}
     players_by_team: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for player in players:
         players_by_team[int(player["team"])].append(player)
@@ -266,15 +330,30 @@ def normalize_source_lineups(
         if source_updated_at:
             try:
                 updated = _aware(str(source_updated_at), "source_updated_at")
-                source_current = timedelta(0) <= observed - updated <= SOURCE_UPDATED_MAX_AGE
+                source_current = timedelta(0) <= observed - updated <= maximum_source_age
                 source_freshness = (
-                    "source_timestamp_current"
-                    if source_current
-                    else "source_timestamp_stale"
+                    "source_timestamp_current" if source_current else "source_timestamp_stale"
                 )
             except (ParticipationConsensusError, ValueError):
                 source_current = False
                 source_freshness = "invalid_source_timestamp"
+        else:
+            first_observed_at = source.get("content_first_observed_at") or observed.isoformat()
+            try:
+                first_observed = _aware(
+                    str(first_observed_at), "content_first_observed_at"
+                )
+                source_current = (
+                    timedelta(0) <= observed - first_observed <= maximum_source_age
+                )
+                source_freshness = (
+                    "unchanged_content_current"
+                    if source_current
+                    else "unchanged_content_stale"
+                )
+            except (ParticipationConsensusError, ValueError):
+                source_current = False
+                source_freshness = "invalid_content_observation_timestamp"
         coverage = {
             "source_id": source_id,
             "teams_seen": 0,
@@ -284,8 +363,12 @@ def normalize_source_lineups(
             "players_matched": 0,
             "unmatched_players": [],
             "source_freshness": source_freshness,
+            "maximum_source_age_seconds": int(maximum_source_age.total_seconds()),
+            "content_first_observed_at": source.get("content_first_observed_at"),
             "decision_eligible": observed < deadline and source_current,
             "ambiguous_multi_fixture_teams": [],
+            "fixture_mismatches": [],
+            "team_freshness": {},
         }
         for source_team in source.get("teams", []):
             coverage["teams_seen"] += 1
@@ -298,6 +381,16 @@ def normalize_source_lineups(
             if not team_fixtures:
                 continue
             opponent_code = source_team.get("opponent_team_code")
+            venue = None
+            if source_team.get("fixture_identity_required"):
+                label = _clean_text(source_team.get("fixture_label") or "")
+                fixture_match = re.fullmatch(r"Next Match:\s*(.*?)\s*\(([HA])\)", label)
+                opponent = team_by_name.get(name_key(fixture_match[1])) if fixture_match else None
+                if opponent is None:
+                    coverage["fixture_mismatches"].append(code)
+                    continue
+                opponent_code = opponent["short_name"]
+                venue = fixture_match[2]
             if opponent_code:
                 opponent = team_by_code.get(_source_code(str(opponent_code)))
                 matching_fixtures = (
@@ -306,6 +399,7 @@ def normalize_source_lineups(
                     else []
                 )
                 if len(matching_fixtures) != 1:
+                    coverage["fixture_mismatches"].append(code)
                     continue
                 fixture = matching_fixtures[0]
             elif len(team_fixtures) == 1:
@@ -313,13 +407,32 @@ def normalize_source_lineups(
             else:
                 coverage["ambiguous_multi_fixture_teams"].append(code)
                 continue
+            if venue is not None:
+                official_home = int(fixture_rows[fixture[0]]["team_h"]) == team_id
+                if official_home != (venue == "H"):
+                    coverage["fixture_mismatches"].append(code)
+                    continue
+            team_current, team_freshness, team_updated = source_current, source_freshness, source_updated_at
+            if source_team.get("fixture_identity_required"):
+                # Missing/invalid team dates must not borrow the article date or a
+                # fresh HTTP fetch timestamp. Day-only times use a conservative bound.
+                try:
+                    updated = _scout_team_timestamp(source_team.get("source_updated_label") or "", observed)
+                    team_updated = updated.isoformat()
+                    team_current = observed - updated <= maximum_source_age
+                    team_freshness = "team_date_current" if team_current else "team_date_stale_or_imprecise"
+                except ValueError:
+                    team_current, team_freshness, team_updated = False, "invalid_team_update_date", None
+            elif source_team.get("content_first_observed_at") and not source_updated_at:
+                first = _aware(source_team["content_first_observed_at"], "team content first observed")
+                team_current = timedelta(0) <= observed - first <= maximum_source_age
+                team_freshness = "unchanged_content_current" if team_current else "unchanged_content_stale"
+            coverage["team_freshness"][code] = team_freshness
             coverage["teams_aligned_to_event"] += 1
             source_names = list(map(str, source_team.get("players") or []))
             matched: list[tuple[str, int | None, str, float | None]] = []
             for name in source_names:
-                element, method, score = match_sofascore_player(
-                    name, players_by_team[team_id]
-                )
+                element, method, score = match_sofascore_player(name, players_by_team[team_id])
                 matched.append((name, element, method, score))
                 coverage["players_seen"] += 1
                 if element is None:
@@ -345,8 +458,8 @@ def normalize_source_lineups(
                         "observed_at": observed.isoformat(),
                         "source_id": source_id,
                         "source_url": SOURCE_URLS.get(source_id, ""),
-                        "source_updated_at": source_updated_at,
-                        "source_freshness": source_freshness,
+                        "source_updated_at": team_updated,
+                        "source_freshness": team_freshness,
                         "source_team_code": code,
                         "team_id": team_id,
                         "team_short_name": str(team["short_name"]),
@@ -359,9 +472,14 @@ def normalize_source_lineups(
                         "match_method": method,
                         "match_score": score,
                         "predicted_start": True,
-                        "decision_eligible": observed < deadline and source_current,
+                        "decision_eligible": observed < deadline and team_current,
                     }
                 )
+        source_rows = [row for row in rows if row["source_id"] == source_id]
+        coverage["decision_eligible"] = any(row["decision_eligible"] for row in source_rows)
+        freshness_values = set(coverage["team_freshness"].values())
+        if freshness_values:
+            coverage["source_freshness"] = next(iter(freshness_values)) if len(freshness_values) == 1 else "mixed_team_freshness"
         source_coverage[source_id] = coverage
     return rows, {
         "event": event,
@@ -371,18 +489,10 @@ def normalize_source_lineups(
     }
 
 
-def _official_status(player: Mapping[str, Any]) -> tuple[str, int]:
-    chance = next(
-        (
-            int(player[field])
-            for field in (
-                "chance_of_playing_this_round",
-                "chance_of_playing_next_round",
-            )
-            if player.get(field) is not None
-        ),
-        100 if player.get("status") == "a" else 0,
-    )
+def _official_status(player: Mapping[str, Any], *, next_round: bool = True) -> tuple[str, int]:
+    from .availability import official_availability
+
+    chance = official_availability(player, next_round=next_round)
     if (
         player.get("removed") is True
         or player.get("can_select") is False
@@ -402,12 +512,11 @@ def build_consensus_rows(
     teams: list[dict[str, Any]],
     forecasts: list[dict[str, Any]],
     event: int,
+    next_round: bool = True,
 ) -> list[dict[str, Any]]:
     team_name = {int(row["id"]): str(row["name"]) for row in teams}
     forecast_by_id = {
-        int(row["element"]): row
-        for row in forecasts
-        if int(row.get("event_number") or -1) == event
+        int(row["element"]): row for row in forecasts if int(row.get("event_number") or -1) == event
     }
     positive: dict[int, set[str]] = defaultdict(set)
     complete_team_sources: dict[int, set[str]] = defaultdict(set)
@@ -438,7 +547,7 @@ def build_consensus_rows(
             consensus = "single_source_bench"
         else:
             consensus = "insufficient_coverage"
-        official, chance = _official_status(player)
+        official, chance = _official_status(player, next_round=next_round)
         attention = []
         if official == "unavailable":
             attention.append("official_unavailable")
@@ -450,11 +559,16 @@ def build_consensus_rows(
             attention.append("predicted_lineup_disagreement")
         forecast = forecast_by_id.get(element, {})
         p_start = (
-            float(forecast.get("p_60_89") or 0.0)
-            + float(forecast.get("p_90_or_more") or 0.0)
+            float(forecast.get("p_60_89") or 0.0) + float(forecast.get("p_90_or_more") or 0.0)
             if forecast
             else None
         )
+        production_weight = {
+            "predicted_start_consensus": 1.0,
+            "predicted_bench_consensus": 0.75,
+            "single_source_start": 1.0,
+            "single_source_bench": 0.35,
+        }.get(consensus, 0.0)
         result.append(
             {
                 "season": SEASON,
@@ -486,8 +600,8 @@ def build_consensus_rows(
                     float(forecast["p_play"]) if forecast.get("p_play") is not None else None
                 ),
                 "champion_p_start": p_start,
-                "production_weight": 0.0,
-                "production_adjustment_authorized": False,
+                "production_weight": production_weight,
+                "production_adjustment_authorized": production_weight > 0.0,
             }
         )
     return result
@@ -509,7 +623,7 @@ def collect_participation_consensus(
     snapshot_dir: Path = SNAPSHOT_DIR,
     fetcher: Callable[[str], bytes] = _fetch_html,
 ) -> dict[str, Any]:
-    """Capture two independent lineup feeds and freeze a zero-authority consensus."""
+    """Capture two independent lineup feeds for the bounded production role ensemble."""
     ensure_layout()
     observed = _aware(observed_at or datetime.now(tz=UTC), "observed_at")
     for path, label in (
@@ -527,6 +641,16 @@ def collect_participation_consensus(
     fixtures = pq.read_table(fixtures_path).to_pylist()
     forecasts = pq.read_table(forecast_path).to_pylist()
 
+    previous_receipt: dict[str, Any] = {}
+    if receipt_path.is_file():
+        try:
+            loaded_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_receipt, dict):
+                previous_receipt = loaded_receipt
+        except (OSError, json.JSONDecodeError):
+            previous_receipt = {}
+    previous_sources = previous_receipt.get("sources") or {}
+
     parsed = []
     source_receipts: dict[str, Any] = {}
     parsers = {
@@ -538,13 +662,32 @@ def collect_participation_consensus(
             body = fetcher(url)
             archive = _archive(source_id, body, archive_dir)
             source = parsers[source_id](body)
+            previous_source = previous_sources.get(source_id) or {}
+            previous_teams = previous_source.get("team_content_observations") or {}
+            team_observations = {}
+            for team in source.get("teams", []):
+                # Ads, nonces and edits to OTHER clubs do not renew this XI's age.
+                identity = hashlib.sha256(json.dumps(team, sort_keys=True).encode()).hexdigest()
+                first = previous_teams.get(identity) or observed.isoformat()
+                team_observations[identity] = first
+                team["content_first_observed_at"] = first
+            content_first_observed_at = observed.isoformat()
+            if previous_source.get("sha256") == archive["sha256"]:
+                content_first_observed_at = str(
+                    previous_source.get("content_first_observed_at")
+                    or previous_receipt.get("observed_at")
+                    or content_first_observed_at
+                )
+            source["content_first_observed_at"] = content_first_observed_at
             parsed.append(source)
             source_receipts[source_id] = {
                 "status": "captured",
                 "url": url,
                 **archive,
                 "source_updated_at": source.get("source_updated_at"),
+                "content_first_observed_at": content_first_observed_at,
                 "teams_parsed": len(source.get("teams") or []),
+                "team_content_observations": team_observations,
             }
         except (
             OSError,
@@ -570,18 +713,18 @@ def collect_participation_consensus(
     )
     for source_id, coverage in context["sources"].items():
         if source_id in source_receipts:
-            source_receipts[source_id]["source_freshness"] = coverage[
-                "source_freshness"
-            ]
-            source_receipts[source_id]["decision_eligible"] = coverage[
-                "decision_eligible"
-            ]
+            source_receipts[source_id]["source_freshness"] = coverage["source_freshness"]
+            source_receipts[source_id]["decision_eligible"] = coverage["decision_eligible"]
     consensus_rows = build_consensus_rows(
         observations,
         players=players,
         teams=teams,
         forecasts=forecasts,
         event=int(context["event"]),
+        next_round=any(
+            int(row["id"]) == int(context["event"]) and row.get("is_next")
+            for row in events
+        ),
     )
     write_rows(observations, observations_path, schema=OBSERVATION_SCHEMA)
     write_rows(consensus_rows, consensus_path)
@@ -607,6 +750,15 @@ def collect_participation_consensus(
         ),
         "official_attention": sum(row["official_status"] != "clear" for row in consensus_rows),
     }
+    prospective_gate: dict[str, Any] = {}
+    if PROSPECTIVE_SCOREBOARD.is_file():
+        try:
+            scoreboard = json.loads(PROSPECTIVE_SCOREBOARD.read_text(encoding="utf-8"))
+            if isinstance(scoreboard, dict):
+                prospective_gate = dict(scoreboard.get("promotion_gate") or {})
+        except (OSError, json.JSONDecodeError):
+            prospective_gate = {}
+    prospectively_passed = bool(prospective_gate.get("passed"))
     receipt = {
         "version": VERSION,
         "season": SEASON,
@@ -615,21 +767,24 @@ def collect_participation_consensus(
         "deadline_time": context["deadline_time"],
         "decision_eligible": context["decision_eligible"],
         "status": (
-            "shadow_consensus_ready"
+            "production_consensus_ready"
             if sum(
                 value.get("status") == "captured" and value.get("decision_eligible")
                 for value in source_receipts.values()
             )
             >= 2
-            else "shadow_consensus_partial"
+            else "production_consensus_partial"
         ),
         "authority": {
             "official_fpl_status": "production",
-            "predicted_lineup_consensus": "prospective_shadow",
-            "production_weight": 0.0,
+            "predicted_lineup_consensus": "bounded_production_operator_override",
+            "maximum_evidence_weight": 1.0,
+            "operator_override_active": not prospectively_passed,
             "reason": (
-                "No point-in-time historical archive with matching provenance exists. The feed "
-                "must beat the frozen minute model prospectively before it can alter forecasts."
+                "Lineup evidence changes a bounded Bayesian play/duration distribution. Evidence "
+                "strength is consensus-specific; disagreement is uncertainty. Prospective scoring "
+                "has not yet passed, so current use is an explicit bounded operator decision rather "
+                "than a validated automatic promotion."
             ),
         },
         "promotion_gate": {
@@ -637,8 +792,21 @@ def collect_participation_consensus(
             "requires_two_independent_sources": True,
             "requires_positive_lineup_hit_lift": True,
             "requires_non_negative_event_floor": True,
-            "passed": False,
-            "state": "awaiting_prospective_outcomes",
+            "passed": prospectively_passed,
+            "operator_override_active": not prospectively_passed,
+            "state": (
+                "prospectively_validated"
+                if prospectively_passed
+                else "bounded_operator_override_pending_prospective_scoring"
+            ),
+            "historical_calibration": "unavailable_for_current_source_snapshots",
+            "prospective_scoreboard": str(PROSPECTIVE_SCOREBOARD),
+            "prospective_scoreboard_sha256": (
+                sha256_file(PROSPECTIVE_SCOREBOARD)
+                if PROSPECTIVE_SCOREBOARD.is_file()
+                else None
+            ),
+            "prospective_checks": prospective_gate.get("checks") or {},
         },
         "sources": source_receipts,
         "coverage": context["sources"],
@@ -661,14 +829,10 @@ def collect_participation_consensus(
         },
     }
     _atomic_json(snapshot / "manifest.json", receipt)
-    receipt["outputs"]["snapshot_manifest_sha256"] = sha256_file(
-        snapshot / "manifest.json"
-    )
+    receipt["outputs"]["snapshot_manifest_sha256"] = sha256_file(snapshot / "manifest.json")
     _atomic_json(receipt_path, receipt)
     return receipt
 
 
-def latest_consensus_age(
-    receipt: Mapping[str, Any], *, as_of: str | datetime
-) -> timedelta:
+def latest_consensus_age(receipt: Mapping[str, Any], *, as_of: str | datetime) -> timedelta:
     return _aware(as_of, "as_of") - _aware(str(receipt["observed_at"]), "observed_at")

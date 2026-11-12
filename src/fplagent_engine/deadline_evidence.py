@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,11 +10,13 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from fplagent_data.availability import official_availability
 from fplagent_data.http import sha256_file
 from fplagent_data.live_snapshots import (
     CURRENT_POINTER,
     CURRENT_STATUS,
     SNAPSHOT_ROOT,
+    latest_official_snapshot,
     latest_official_status,
 )
 from fplagent_data.manager_snapshots import (
@@ -32,6 +35,28 @@ DEADLINE_STATUS_RECEIPT = MANIFESTS / "fpl-deadline-evidence-status.json"
 
 class DeadlineEvidenceError(ValueError):
     pass
+
+
+def availability_violations(bootstrap: Mapping[str, Any], rows: list[dict]) -> list[str]:
+    """Check raw official next-round data, independently of forecast provenance flags."""
+    next_events = [int(e["id"]) for e in bootstrap.get("events", []) if e.get("is_next")]
+    if len(next_events) != 1:
+        return []  # The official-event contract handles ambiguous/finished seasons.
+    event = next_events[0]
+    unavailable = {
+        int(p["id"]) for p in bootstrap.get("elements", [])
+        if official_availability(p, next_round=True) == 0
+    }
+    issues = []
+    for row in rows:
+        if int(row["event_number"]) != event or int(row["element"]) not in unavailable:
+            continue
+        for field in ("p_play", "expected_points", "expected_minutes", "expected_goals",
+                      "expected_assists", "expected_bonus", "expected_saves"):
+            value = row.get(field)
+            if value is not None and (not math.isfinite(float(value)) or abs(float(value)) > 1e-9):
+                issues.append(f"official unavailable player {row['element']} has nonzero {field} in GW{event}")
+    return issues
 
 
 def _aware(value: str | datetime, field: str) -> datetime:
@@ -280,6 +305,7 @@ def _decision_status(
             issues.append(str(exc))
 
     source_hashes: set[str] = set()
+    manager_state_freshness: dict[str, Any] | None = None
     raw_sources = payload.get("source_artifacts")
     if not isinstance(raw_sources, Mapping):
         issues.append("decision receipt has no source_artifacts mapping")
@@ -304,6 +330,39 @@ def _decision_status(
                     issues.append(f"decision JSON source artifact is invalid: {key}")
                     continue
                 source_hashes.update(_hash_values(source_payload))
+                if key == "manager_state_contract" and payload.get("decision_event") is not None:
+                    state_payload = source_payload.get("manager_state") or {}
+                    state_sources = source_payload.get("source_artifacts") or {}
+                    observed_raw = state_sources.get("manager_snapshot_observed_at")
+                    minimum_raw = state_sources.get("manager_snapshot_minimum_observed_at")
+                    manager_state_freshness = {
+                        "decision_event": int(payload["decision_event"]),
+                        "state_event": state_payload.get("event"),
+                        "snapshot_observed_at": observed_raw,
+                        "minimum_snapshot_observed_at": minimum_raw,
+                        "passed": False,
+                    }
+                    if int(state_payload.get("event") or -1) != int(payload["decision_event"]):
+                        issues.append("manager-state contract event does not match decision event")
+                    if not isinstance(observed_raw, str) or not isinstance(minimum_raw, str):
+                        issues.append(
+                            "manager-state contract has no previous-deadline freshness proof"
+                        )
+                    else:
+                        try:
+                            observed = _aware(observed_raw, "manager snapshot observed_at")
+                            minimum = _aware(
+                                minimum_raw,
+                                "manager snapshot minimum_observed_at",
+                            )
+                        except (DeadlineEvidenceError, ValueError) as exc:
+                            issues.append(str(exc))
+                        else:
+                            manager_state_freshness["passed"] = observed >= minimum
+                            if observed < minimum:
+                                issues.append(
+                                    "manager snapshot predates the previous Gameweek deadline"
+                                )
     current_forecast_hashes = {
         str(value)
         for value in (direct.get("sha256"), component.get("sha256"))
@@ -317,6 +376,7 @@ def _decision_status(
         "sha256": sha256_file(path),
         "created_at": created_at.isoformat(),
         "status": payload.get("decision_status"),
+        "manager_state_freshness": manager_state_freshness,
         "source_forecast_hash_match": bool(source_hashes & current_forecast_hashes),
         "publishable": not issues,
         "issues": issues,
@@ -351,6 +411,15 @@ def audit_deadline_evidence(
         freshness_limit_seconds=int(official["freshness_limit_seconds"]),
     )
     component = _component_status(component_forecast_path, direct)
+    official_dir, _ = latest_official_snapshot(
+        snapshot_root=official_snapshot_root, pointer_path=official_pointer_path
+    )
+    bootstrap = json.loads((official_dir / "bootstrap-static.json").read_text())
+    for path, stage in ((direct_forecast_path, direct), (component_forecast_path, component)):
+        if stage.get("publishable"):
+            violations = availability_violations(bootstrap, pq.read_table(path).to_pylist())
+            stage["issues"].extend(violations)
+            stage["publishable"] = not stage["issues"]
     decision = _decision_status(
         decision_path,
         official_observed_at=official_observed,

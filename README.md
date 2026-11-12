@@ -1,6 +1,6 @@
 # FPLAgent data and decision foundation
 
-> **Active objective — 7 August 2026:** maximise season points through the deterministic data,
+> **Active objective — in-season:** maximise season points through the deterministic data,
 > forecast, squad-selection and weekly decision engine. LoRA/LLM improvement work is parked; no
 > training or adapter experiments should run unless Lewis explicitly reopens it. See the
 > [current project status](docs/project-status.md) and
@@ -20,6 +20,336 @@ The initial build contains four complementary evidence layers:
 - factual decision trails for the 2025/26 top 100 from FPL Genius;
 - multi-season veteran-manager spreadsheets published by Mike Croft;
 - historical player, fixture and top-manager data from Vaastav and smaller public archives.
+
+## Run the app and refresh the next Gameweek
+
+**Routine workflow, verified 11 September 2026.** Use the existing installed environments. These
+commands do not train models, start Qwen, or submit transfers/chips to the official FPL account.
+If the services are already running, skip startup—do not launch duplicate copies on the same ports.
+
+### 1. Start the three services in separate terminals
+
+**Terminal 1 — local FPL MCP/login service:**
+
+```bash
+cd /home/lewis/Workspace/fpl-mcp-server
+FPL_MCP_TRANSPORT=streamable-http PYTHONPATH=src .venv/bin/python -m fpl_server.main
+```
+
+**Terminal 2 — FPLAgent API and background decision worker:**
+
+```bash
+cd /home/lewis/Workspace/fpl-agent
+.venv/bin/fplagent-web --host 127.0.0.1 --port 8000
+```
+
+**Terminal 3 — frontend:**
+
+```bash
+cd /home/lewis/Workspace/fpl-agent/web
+npm run dev -- --host 127.0.0.1
+```
+
+Open **<http://localhost:5173>**. The API is on 8000, MCP on 8021 and its embedded login service on
+8020. Leave the service terminals open. The optional `scripts/run_local_web.sh` launcher also starts
+Qwen; it is not needed for the decision-only workflow above.
+
+The MCP uses the optional saved credentials in
+`/home/lewis/Workspace/fpl-mcp-server/.local/fpl-credentials.json`. The file is local, owner-only,
+Git-ignored **plaintext**; never paste it into a terminal command, chat or a report. See
+[saved-login setup and security](docs/local-saved-fpl-login.md). Missing credentials or account
+verification may still require the embedded login flow.
+
+### Automation first; player comparisons are optional
+
+The normal workflow is **connect once → refresh decisions → act on one published plan**:
+transfers or roll, any hit, chip or no chip, XI, ordered bench, captain and vice-captain.
+You do not need to screen players, inspect Scout, pick a model, run research commands or open
+the comparison view. The normal weekly pipeline scores finalized decisions automatically and
+rebuilds scouting explanations from the **same immutable official snapshot and final forecasts**.
+This adds no external requests. An optional explanation failure is recorded, preserves the saved
+board and does not stop the decision engine. Existing decision-evidence safety gates still apply.
+
+New evidence/model changes must improve time-forward legal decisions before gaining production
+authority. More charts, better probability metrics or a competitor's reputation alone do not
+prove more FPL points. Scout informs independent benchmarks and feature research; the automated
+workflow must not depend on the manager maintaining a subscription or copying its projections.
+
+The automatic research checks also examine joint premium-sale/reinvestment routes and compare
+future moves against holding at the same future state. Finalized results aggregate only policy
+choices frozen before their deadlines. These checks do not silently override the published plan:
+new search/forecast/timing authority still requires validation. See the
+[21 October points-first follow-up](reports/scout-product-audit-and-gw7-review-2026-10-21.md#follow-up-premium-capital-objective-future-actions-and-distributions)
+for the measured results and remaining sequential-policy work. A minutes-model overhaul and LLM
+improvements are currently parked.
+
+Developer-only chronological policy validation (not a live decision refresh):
+
+```bash
+FPLAGENT_ACCELERATOR=cpu .venv/bin/python scripts/replay_sequential_policies.py \
+  --output data/research/points-priorities/NEW-SEQUENTIAL-RUN.json
+```
+
+This carries independent squads, selling prices, banks, free transfers and hits through GW1–10
+of 2024/25 and 2025/26. It prints progress and saves a checksummed research receipt; existing
+receipts cannot be overwritten. The earlier-season-fitted residual-world experiment is **not**
+the complete live three-world/chip policy. Its results cannot publish recommendations or tune
+risk weights. See the [sequential test and release call](reports/scout-product-audit-and-gw7-review-2026-10-21.md#chronological-follow-up-four-policy-paths-across-two-seasons).
+
+The expanded research replay adds all three simulation families, exact legal XI/bench/C/VC
+configuration, earlier-season free-transfer opportunity values, and consistent risk settings
+at both configuration and route selection:
+
+```bash
+.venv/bin/python scripts/replay_multiworld_policies.py \
+  --output data/research/points-priorities/NEW-MULTIWORLD-RUN.json
+```
+
+Run this separately from GPU-heavy test suites/audits to avoid competing for VRAM.
+It uses the GPU when available, reports progress, and never refreshes or publishes the live
+workspace. Seven independent policies carry their actual squads, prices, cash, FTs and hits
+through two opening-ten-GW windows. Outcomes also score frozen distributions by position,
+captain and bench. Historical lineup/market snapshots and a pre-2025 defensive-contribution
+prior are not available: this is an architecture ablation, **not a complete production clone
+or proof of a whole-season edge**. Do not infer authority from a passing experiment.
+The receipt's `archive_preflight` explicitly lists missing same-event metadata and lagged-price
+coverage; 2025/26 GW8 currently relies on the earlier GW7 fixture archive. That gap must not be
+presented as an exact, verified historical execution-price backtest.
+
+Normal weekly refreshes now also record `diagnostics.exact_chip_opportunities`: BB scoring
+with actual autosub displacement and TC scoring with captain/vice fallback, compared against
+the existing future-opportunity proxies. This adds no external requests or manual manager
+workflow. The comparison cannot spend a chip: new timing inputs require matching retained-value
+calibration and chronological policy validation first.
+
+The [completed 21 October results and release decisions](reports/scout-product-audit-and-gw7-review-2026-10-21.md#completed-three-world-results-and-release-decisions)
+retain the current selection policy: none of these experimental variants improved both historical
+folds. Demonstrated chip expiry/capacity bugs are fixed in normal decisions; unvalidated research
+cannot promote itself. This work did not refresh or replace the saved live squad.
+
+### Optional player scouting and comparisons
+
+Open **Player scouting** in the navigation to compare two players using our own official data:
+recent versus earlier xG/xA, minutes/starts, actual defensive-contribution awards, set-piece order,
+six upcoming gameweeks and separately dated model forecasts. Filter the shortlist by position and
+minimum minutes; order it by chance creation, minutes or defensive-contribution hit rate.
+The normal decision refresh updates this board for you. **Update scouting** is an optional
+inspection-only refresh of the public catalogue/fixtures, not your team or decision engine.
+Standalone use requires archived completed results; use the normal decision refresh if missing.
+The following commands are for inspection/repair, not part of the routine manager workflow:
+
+```bash
+.venv/bin/fplagent review-gameweeks --entry-id 2754976  # public final outcomes
+.venv/bin/fplagent scouting-refresh                   # evidence board; JSON output
+```
+
+The optional probability display preserves model xP but gives blanks and hauls their own probability
+mass. It earned **diagnostic-only** activation on historical probability scoring, not authority
+to change transfers or captaincy. Reproduce the experiment and activate only if its gates pass:
+
+```bash
+.venv/bin/fplagent replay-score-shapes --activate-diagnostics
+```
+
+See the [Scout gap-closure implementation and validation](reports/scout-product-audit-and-gw7-review-2026-10-21.md#implementation-follow-up-closing-the-first-gaps).
+Stale forecasts remain explicitly stale even when today's catalogue has been refreshed; use
+**Refresh decisions** for current recommendations. These comparisons are not a paid Scout data
+feed, and a price difference alone is not proof that a transfer is affordable or legal.
+
+### 2. Refresh from the browser (recommended)
+
+Let the app connect and sync your squad, then click **Refresh decisions** (or **Sync FPL & retry**
+if prompted). Successful app-open sync also requests a refresh; if one is running, join it rather
+than starting a separate engine command.
+
+The server refreshes public evidence, forecasts and your exact archived manager state, then compares
+transfers, rolling, the starting XI/bench, captaincy and chip policies. It uses FPL's official next
+event automatically: no Gameweek number needs changing by hand. The weekly forecast horizon is
+currently five Gameweeks starting with that event, not five promises to execute future transfers.
+
+**Simulation-based lineups (16 October 2026):** normal weekly refreshes now search every legal XI,
+outfield bench order and captain/vice pair for each proposed roster and horizon event. This includes
+the no-transfer comparator, exact Bench Boost/Triple Captain scoring and Free Hit's restored squad.
+The search uses the existing three model worlds and 0.25 worst-world risk weight; it does not
+change player forecasts, force named players to start, or expand the transfer shortlist. Within
+each fixed roster, the configuration is selected jointly over the horizon using its own attainable
+frontier. This is not a proof of a global adaptive transfer-policy optimum.
+
+Selection uses at least 50,000 samples per model family. The selected ordinary route and any
+recommended chip route are frozen before a separate 100,000-sample-per-family validation. A changed
+configuration must have a positive paired lower confidence bound over its original configuration
+and no model-world mean loss greater than 0.05 points over the discounted horizon. These intervals
+measure Monte Carlo error, **not** football forecast uncertainty. Raw and anchored component samples
+are correlated and their covariance is preserved in the paired calculation. On failure, the entire
+original selection/configuration is retained and explicitly labelled in the browser and CLI; we
+never select a replacement on the holdout or weaken gates to obtain a particular player.
+
+The weekly JSON receipt records this under `diagnostics.configuration_optimisation`, including
+original/refined lineups, counts, frozen hashes, seeds and validation results. The browser's
+recommended pitch and terminal report consume the same published lineup. The routine command
+remains `.venv/bin/fplagent decisions --refresh`. This is separate from the older, rejected
+**wider-roster** deep-search research programme.
+
+Wait for successful validation/publication, then open **View recommended squad / Recommended squad**.
+“Your FPL squad” is the team actually synced from FPL; “Best lineup” rearranges those existing 15;
+the recommended squad can include proposed transfers. Review the transfers, XI, bench, captain,
+vice and chip instruction together before making changes manually in FPL.
+
+**Chip configuration contract:** new receipts include an `execution_plan` when a chip is recommended.
+The browser/CLI use that exact transfer parent, XI, bench and captain pair, including chip-adjusted
+scalar projections. The ordinary no-chip benchmark remains separately auditable. Older receipts
+without this contract still require care: do not combine a chip with an unrelated transfer route.
+The [11 September diagnosis](reports/gw4-refresh-2026-09-11.md) describes the earlier mismatch.
+
+### 3. Readable terminal decisions (no frontend required)
+
+With the API running, show the same saved weekly plan as the browser:
+
+```bash
+cd /home/lewis/Workspace/fpl-agent
+.venv/bin/fplagent decisions
+```
+
+To connect via MCP/saved login, sync your actual squad, request a full refresh, wait for completion,
+and print the resulting plan in one command:
+
+```bash
+.venv/bin/fplagent decisions --refresh
+```
+
+This needs the API and MCP services, **not** Vite or Qwen. If another refresh is already running, it
+joins that job without replacing its input snapshot. To only join a running job without requesting
+anything new:
+
+```bash
+.venv/bin/fplagent decisions --wait
+```
+
+During a longer calculation, a timed-out progress request is retried within `--timeout`; the
+server-owned job is not cancelled. Only read-only status polls are retried, never a sync or refresh
+POST. A timeout during those operations requires checking the running job before trying again.
+
+The plain-text report includes transfers and their point cost, captain/vice, chip instruction,
+the complete starting XI, three outfield substitutes in priority order and the reserve goalkeeper
+separately. It also shows fixtures, individual undoubled model xP, expected minutes, appearance
+probability, the saved team projection, horizon gain versus rolling, chip opportunities and evidence
+timestamps. Future chip windows are estimates, not fixed bookings. The model's player xP and saved
+team scoring basis can differ; the CLI does not invent a new team total by summing displayed rows.
+
+The CLI uses the same validated `/api/v1/workspace` response as the web app; it neither runs a
+second optimizer nor submits any transfer, lineup or chip to FPL. An incomplete, stale, wrong-event
+or inconsistent decision is shown as **NEEDS REVIEW**, with execution instructions withheld. In
+particular, an active chip must be traceable to the same transfer route—mismatched or missing
+chip-parent metadata is not silently combined. APIs started before this command was added need a
+restart **after any current refresh finishes** to expose that metadata.
+
+Optional output modes:
+
+```bash
+# Narrow terminal or phone SSH session.
+.venv/bin/fplagent decisions --width 70
+
+# Machine-readable workspace + refresh/schedule status + readiness issues.
+.venv/bin/fplagent decisions --json
+
+# Allow up to one hour of waiting (default: 30 minutes).
+.venv/bin/fplagent decisions --refresh --timeout 3600
+```
+
+Progress goes to stderr, so stdout can be redirected to a text report or JSON file without progress
+noise. No ANSI styling is required. Exit codes are `0` for a ready report, `2` for a retrieved report
+that needs review, `1` for connection/sync/schema/wait errors, and `130` if you interrupt the CLI.
+Ctrl+C or a wait timeout **does not cancel** the API's background job. Read-only `decisions` calls do
+not start refreshes; the independently running API scheduler may still do so.
+
+### 4. Low-level refresh API calls from a fourth terminal
+
+These are the API calls used for the recent refresh. They use the same single-flight worker and
+progress state as the browser. Start in the project directory:
+
+```bash
+cd /home/lewis/Workspace/fpl-agent
+```
+
+First check authentication; this also starts saved-file login when needed:
+
+```bash
+curl --fail --silent --show-error --max-time 20 \
+  http://127.0.0.1:8000/api/v1/integrations/fpl \
+  | .venv/bin/python -m json.tool
+```
+
+Wait for `"status": "connected"` before continuing. If it is `not_authenticated`, allow the browser
+login to finish and repeat the check; resolve a failed login in the app instead of repeatedly
+submitting credentials. Then archive the current squad, bank, selling prices, FT and chip state:
+
+```bash
+curl --fail --silent --show-error --max-time 60 -X POST \
+  http://127.0.0.1:8000/api/v1/integrations/fpl/sync \
+  | .venv/bin/python -m json.tool
+```
+
+Require `"manager_state_status": "ready"`. **A failed sync is not permission to use stale manager
+data.** Once ready, request the full decision refresh:
+
+```bash
+curl --fail --silent --show-error --max-time 30 -X POST \
+  -H 'Content-Type: application/json' \
+  --data '{"reason":"manual"}' \
+  http://127.0.0.1:8000/api/v1/workspace/refresh \
+  | .venv/bin/python -m json.tool
+```
+
+HTTP 202 / `"status": "running"` means accepted, not finished. Watch progress with **GET only**:
+
+```bash
+watch -n 3 'curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/api/v1/workspace/refresh | .venv/bin/python -m json.tool'
+```
+
+Success is `published` or `reused`, with a successful completion timestamp and the intended event.
+`blocked`, `not_ready` or `failed` require reading `message`/`failure_code`; do not treat an older
+recommendation as newly validated. Press Ctrl+C to stop **watching**; that does not cancel the worker.
+The five stage percentages are stage counts, not a time-based ETA. Recent ordinary runs took about
+two minutes; deeper research audits take longer and do not automatically replace production.
+
+Inspect the next scheduled check, or read the full workspace without starting another run:
+
+```bash
+curl --fail --silent --show-error --max-time 20 \
+  http://127.0.0.1:8000/api/v1/workspace/refresh/schedule \
+  | .venv/bin/python -m json.tool
+
+curl --fail --silent --show-error --max-time 30 \
+  http://127.0.0.1:8000/api/v1/workspace \
+  | .venv/bin/python -m json.tool
+```
+
+Keep the API running for jobs to finish and scheduled checks to occur. Closing the browser is fine;
+stopping the API interrupts its worker. Validated decisions persist across restarts in
+`data/decisions/2026-27-weekly-current.json`, with immutable archives in
+`data/decisions/weekly/event-N/`. Current cadence is six hours, two hours in the last day, and thirty
+minutes in the final three hours; material evidence changes can trigger an earlier run. A temporary
+view block during a new forecast generation is not proof that its replacement decision is ready.
+
+### Engine-only alternative (advanced)
+
+The underlying weekly engine command is:
+
+```bash
+cd /home/lewis/Workspace/fpl-agent
+.venv/bin/fplagent deadline-run --manager-entry-id 2754976 --horizon 5
+```
+
+`2754976` is Lewis's entry ID; other users must substitute theirs. This CLI uses the latest
+**already archived** authenticated manager snapshot—it does not log in or sync private FPL data.
+Sync first, then stop the API before using this alternative. Do not run it alongside the API's
+worker/scheduler or another refresh: they share mutable forecast/publication artifacts, and this
+CLI bypasses the web worker's single-flight coordination and run-status tracking. Restart the API
+afterward to inspect the persisted result in the browser. For normal use, prefer the API sequence.
+
+Omit `--reuse-latest-official` when you want newly fetched evidence. That flag is for replaying a
+captured generation, not fetching the latest news. Do not use `gw1-deadline-run`, `build-gw1`,
+`train`, or the development commands below for the routine in-season refresh.
 
 ## Project technical documentation
 
@@ -76,7 +406,11 @@ scores.
 - [Grounded FPL chatbot runtime v1](reports/fpl-llm-chat-runtime-v1.md)
 - [V5-V9 application-conversation LoRA experiments and pause hand-off](reports/fpl-llm-v5-experiment.md)
 
-## Quick start
+## Data/model development commands (not the routine weekly refresh)
+
+The following are setup, historical research and preseason/model-development commands. Some build
+large datasets or train models. For normal in-season use, follow
+[Run the app and refresh the next Gameweek](#run-the-app-and-refresh-the-next-gameweek) above instead.
 
 ```bash
 uv sync
@@ -237,33 +571,46 @@ Before FPL exposes post-GW1 finance fields the command returns `not_ready` witho
 
 Every published weekly decision is also copied into a content-addressed, immutable event archive.
 Once FPL marks that Gameweek both finished and data-checked, the normal `deadline-run` automatically
-archives any missing event outcomes and rebuilds the live xG/xA/minutes/points feature stream. The
-explicit collector is still available for repair or inspection. Close the prospective scoring loop:
+archives any missing event outcomes, rebuilds the live xG/xA/minutes/points feature stream, and
+scores frozen decisions for finalized events. Scoring failures are recorded for review without
+blocking the next decision or automatically promoting a model. The explicit commands remain
+available for repair or inspection:
 
 ```bash
 uv run fpl-data collect-event-outcome --event 1  # optional if deadline-run already synced it
 uv run fplagent score-weekly-event --event 1
+uv run fplagent review-gameweeks --entry-id YOUR_ENTRY_ID
 ```
+
+`review-gameweeks` fetches public, finalized FPL results and reconciles your actual locked team
+against the recommendation saved before each deadline. Its JSON output includes all 15 players,
+forecast/actual points and minutes, captain contributions, hit costs, rank and calibration
+diagnostics. It does **not** start an optimisation, change forecasts or write to your FPL account.
+The saved review lives under `data/model/gameweek_review_v1/<entry-id>/current.json`.
+In the web app, open **Season review** in the navigation and use **Refresh results**. This is
+separate from **Refresh decisions**; failures retain the previous verified review.
 
 The collector archives the official event-live bytes only after exact finality, player-set and
 production-stat validation. The scorer selects the last frozen pre-deadline decision, verifies it was created before
 the official deadline, and scores the selected action, roll comparator and every considered route
 with exact autosubs, captain fallback and incremental hit costs. It records realized decision rank,
 gain versus roll, opportunity cost, forecast error and player-level points/minutes errors. Receipts
-are immutable under `data/model/prospective_weekly_scoring_v1/`; a single noisy Gameweek is never a
-model-promotion gate by itself.
+are immutable under `data/model/prospective_weekly_scoring_v4/`; previous versions are retained.
+V4 binds chip results to their exact executable XI/captain configuration and records short
+appearances separately from merely playing. A single noisy Gameweek is never a model-promotion
+gate by itself. See the [21 October season and Scout audit](reports/scout-product-audit-and-gw7-review-2026-10-21.md)
+for the current evidence, limitations and points-first priorities.
 
-The weekly engine also evaluates Bench Boost and Triple Captain in shadow mode. Each available chip
-is paired with the identical no-chip squad/transfer route and scored with exact chip rules in the
-same residual and component worlds. The receipt compares current simulated uplift with the best
-visible retained opportunity before the chip-half expiry. An incomplete half-season forecast,
-unresolved fixture schedule, scenario reversal or confidence interval crossing zero forces
-`no_chip`. `uv run fplagent schedule-status` writes an immutable official-schedule receipt that
-separates confirmed, provisional and unassigned fixtures and reports blanks/doubles without
-inventing a rearrangement. The component simulator scores every match in a double independently
-before aggregating the Gameweek. These routes cannot yet drive the live recommendation; Wildcard/
-Free Hit search, probabilistic rearrangement scenarios and historical chip-option calibration are
-still required.
+The weekly engine pairs chip candidates with their actual squad/transfer routes and scores exact
+chip rules in shared residual and component worlds. Under the current
+[joint chip strategy v2](docs/chip-strategy-v2.md), Bench Boost and Triple Captain are eligible for
+live recommendations after historical, schedule, opportunity-cost and uncertainty gates pass.
+Wildcard/Free Hit mechanics are implemented, but their timing remains research-only. Older
+`chip_shadow` diagnostics are retained and must not be confused with the joint v2 operational
+recommendation. `uv run fplagent schedule-status` records confirmed, provisional and unassigned
+fixtures without inventing rearrangements; the component simulator scores each double-Gameweek
+fixture separately before aggregating. Read the current release/receipt rather than assuming all
+chips are either permanently disabled or automatically approved.
 
 `train` and `forecast` deliberately fail when CUDA is unavailable; there is no silent CPU
 training path. The promoted model must also pass rolling MAE, ranking, top-shortlist and GW1
@@ -298,3 +645,41 @@ uv run fpl-data catalog
 ```
 
 See [data/README.md](data/README.md) for schemas, provenance and source caveats.
+
+### Optional private Scout benchmark
+
+The [21 October forecast diagnosis](reports/forecast-diagnosis-and-corrections-2026-10-21.md)
+documents the matched comparison and live availability repairs. Upcoming decisions now use
+**next-round**, event-relative official availability; a previous-round flag cannot silently
+override it. Publication independently rejects nonzero direct/component projections for an
+officially unavailable player in that round. Future injury recovery remains an explicitly
+uncertain assumption, not a known return date.
+
+Normal finalized-outcome scoring also updates
+`data/model/forecast_diagnosis_v1/current.json`: verified frozen forecast errors by position,
+selected squad and captain, separating nonappearance from conditional-return errors. No extra
+weekly manual step is required. This diagnosis and private Scout comparisons do not automatically
+retrain models or override recommendations.
+
+Normal weekly deadline runs now capture a bounded, private comparison with Scout when an
+authorized session is saved in `.local/ffscout-cookie.txt` (permissions `600`). No new manual
+gameweek workflow is required. Missing/expired membership or changed source schemas do not
+block the decision engine. This is evaluation, not a dependency of our forecasts or advice.
+
+Receipts stay outside Git in `.local/scout-benchmarks/`. Stale local inputs, mismatched player
+identities/prices or missing projections cannot masquerade as a fair head-to-head result.
+Eligible same-squad controls are scored against finalized official outcomes automatically;
+they are not Scout's proprietary optimizer or a proof of season-long superiority.
+
+One-off private capture and the separate historical gate/search study:
+
+```bash
+.venv/bin/python scripts/capture_scout_benchmark.py --manager-contract PATH_TO_MANAGER_STATE_JSON --event 8 --horizon 4
+.venv/bin/python scripts/replay_gate_search.py --output data/research/points-priorities/NEW_UNIQUE_RUN.json
+.venv/bin/python scripts/verify_policy_ledger.py data/research/points-priorities/gate-search-20261021-v1.json
+.venv/bin/python scripts/audit_search_coverage.py data/research/points-priorities/gate-search-20261021-v1.json
+```
+
+The study never publishes advice. Do not edit engine code or run competing GPU-heavy jobs
+during its hash-frozen execution. See the [Scout audit](reports/scout-product-audit-and-gw7-review-2026-10-21.md)
+for definitions, limitations and completed results.

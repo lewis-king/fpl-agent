@@ -2,11 +2,11 @@
 
 ## A technical whitepaper on building a deadline-grade FPL decision system
 
-**Version:** 2.0  
-**Prepared:** 16 August 2026  
-**Decision snapshot:** official FPL state captured 16 August 2026 at 06:10:27 UTC  
-**Published decision:** `R-92c8534bfc` · 3-4-3 · Bruno Fernandes captain · £20.5m nominal GW1 bench  
-**Implementation:** `src/fplagent_data`, `src/fplagent_engine`, `src/fplagent_api` and `web`  
+**Version:** 2.1
+**Prepared:** 19 August 2026
+**Decision snapshot:** official FPL state captured 19 August 2026 at 15:28:23 UTC
+**Published decision:** `R-01afc86b1b` · 3-4-3 · Bruno Fernandes captain · £20.0m nominal GW1 bench
+**Implementation:** `src/fplagent_data`, `src/fplagent_engine`, `src/fplagent_api` and `web`
 **Evidence status:** deadline-grade research system; not yet state-of-the-art proven
 
 > FPLAgent is not a list of players sorted by a single expected-points number. It is a
@@ -24,15 +24,15 @@ The objective is not to make the most confident-looking forecast. It is to make 
 decision that the available evidence supports, preserve its lineage, and expose the conditions
 under which that decision should change.
 
-The published squad is `R-92c8534bfc`, a £100.0m 3-4-3 captained by Bruno Fernandes. It emerged from
-a fresh 551,183-squad local and global search, was rescored in independent 25,000-world five-week
+The published squad is `R-01afc86b1b`, a £100.0m 3-4-3 captained by Bruno Fernandes. It emerged from
+a fresh 537,804-squad local and global search, was rescored in independent 25,000-world five-week
 and eight-week holdouts, survived a high-scoring stress, exact autosub and scoring-rule ablations,
 and remained the lowest-regret compromise across the five-week model-risk family and the
-eight-week transfer/horizon family. It is not the winner of every view. The dedicated horizon model
-prefers `R-1ca68907f5` by 1.045 decayed points, while a GW1 structure-only audit slightly prefers
-`R-1ced0705f3`. Those disagreements are retained as evidence rather than hidden. The synthesis
-chooses the squad with the best balance, not the squad favoured by the last test that happened to
-run.
+eight-week transfer/horizon family. The five-week specialist `R-b954c5c198` has lower five-week
+regret, but the published squad wins the eight-week audit and the declared cross-family synthesis.
+It also ranks first in the independent structure stress. Those agreements and disagreements are
+retained as evidence rather than hidden: the synthesis chooses the squad with the best declared
+balance, not the squad favoured by the last test that happened to run.
 
 The system's strongest demonstrated edges are: leakage-safe player forecasting that beat the
 declared form baseline in 11 of 12 time-forward shortlist slices; a legal GW1 picker that recorded
@@ -43,12 +43,15 @@ correlated simulation; wide local and distant squad search; and explicit robustn
 bench and availability vetoes.
 
 The paper also draws a hard line around evidence that has not earned production authority.
-Understat is collected and replayed but currently receives zero weight. RotoWire and FFScout
-predicted lineups are captured but remain prospective shadow evidence. Price timing, full
+Understat is collected and replayed but currently receives zero weight. Clear two-source
+RotoWire/FFScout lineup consensus has bounded provisional role authority, while disagreement stays
+conservative and visible. Price timing, full
 distribution calibration and chip timing are implemented as measurement frameworks, not promoted
 decision signals. No 2026/27 event has yet finished, so no honest claim can be made that the engine
 is objectively best in the world. The defensible claim is narrower and useful: this is the
 best-supported current GW1 decision produced by the declared, checksum-bound FPLAgent process.
+
+<!-- VISUAL:episode -->
 
 ## 1. The decision, in plain English
 
@@ -74,9 +77,10 @@ or reject him because he is template.
 ### 1.2 What “best” means here
 
 “Best” does not mean highest displayed GW1 xP. The selected squad's direct GW1 lineup forecast is
-57.01 points in the final synthesis artifact, while the exact one-week structure stress scores it
-at 58.09 under that audit's component world and gives another squad 58.23. Those values answer
-different questions and use different scoring paths. Treating the extra 0.14 as decisive would
+64.29 points in the final synthesis artifact, while the exact one-week structure stress scores it
+at 60.23 under that audit's independent component world. Those values answer different questions
+and use different scoring paths. The connected current squad is 0.13 points higher on raw GW1 xP,
+but loses the validated multiweek decision; treating that tiny one-week edge as decisive would
 discard transfer value, later fixtures and model-risk evidence.
 
 The production selector minimizes regret. For each declared scenario it measures how far a squad
@@ -89,7 +93,7 @@ poor everywhere else.
 
 The system can defend the following statement:
 
-> `R-92c8534bfc` is the best-supported GW1 squad produced by FPLAgent under the current immutable
+> `R-01afc86b1b` is the best-supported GW1 squad produced by FPLAgent under the current immutable
 > evidence, legal rules and declared risk policy.
 
 It cannot yet defend these stronger statements:
@@ -112,23 +116,23 @@ The current starting XI is:
 | Position | Player | Club | Price | Role |
 |---|---|---|---:|---|
 | GK | Donnarumma | Man City | £5.5m | Start |
-| DEF | Tarkowski | Everton | £6.0m | Start · vice-captain |
+| DEF | Lacroix | Chelsea | £6.0m | Start |
+| DEF | Tarkowski | Everton | £6.0m | Start |
 | DEF | Maguire | Man Utd | £5.0m | Start |
-| DEF | Truffert | Bournemouth | £5.5m | Start |
 | MID | Bruno Fernandes | Man Utd | £12.0m | Start · captain |
-| MID | Mbeumo | Man Utd | £8.0m | Start |
+| MID | Mbeumo | Man Utd | £8.0m | Start · vice-captain |
 | MID | Semenyo | Man City | £8.5m | Start |
 | MID | Szoboszlai | Liverpool | £7.0m | Start |
 | FWD | Igor Thiago | Brentford | £8.0m | Start |
 | FWD | Watkins | Aston Villa | £8.0m | Start · verify role |
 | FWD | Calvert-Lewin | Leeds | £6.0m | Start |
-| Bench 1 | Xhaka | Sunderland | £5.5m | First outfield substitute |
-| Bench 2 | N.Williams | Nott'm Forest | £5.0m | Second outfield substitute |
-| Bench 3 | Hill | Bournemouth | £5.5m | Third outfield substitute |
+| Bench 1 | Milenković | Nott'm Forest | £5.5m | First outfield substitute |
+| Bench 2 | Truffert | Bournemouth | £5.5m | Second outfield substitute |
+| Bench 3 | McAteer | Ipswich Town | £4.5m | Third outfield substitute · verify role |
 | Bench GK | Verbruggen | Brighton | £4.5m | Goalkeeper substitute |
 
-The squad spends £100.0m and leaves £0.0m in the bank. Its nominal GW1 bench costs £20.5m, while
-the four cheapest players owned cost £20.0m. That distinction is important: the bench price is
+The squad spends £100.0m and leaves £0.0m in the bank. Its nominal GW1 bench costs £20.0m, while
+the four cheapest players owned cost £19.5m. That distinction is important: the bench price is
 partly a one-week rotation choice, not a permanent instruction to keep expensive assets unused.
 
 ### 2.1 Why Bruno Fernandes is captain
@@ -136,7 +140,8 @@ partly a one-week rotation choice, not a permanent instruction to keep expensive
 Captaincy is solved inside the legal XI, not in a disconnected chat heuristic. The simulator
 doubles the captain's realized score and moves the multiplier to the vice-captain only when the
 captain plays zero minutes. Bruno remains captain across the published five-week, horizon and GW1
-configuration receipts. Tarkowski is vice in the selected baseline XI.
+configuration receipts. An independent 25,000-world XI/configuration holdout promoted Mbeumo as
+vice-captain and Milenković ahead of Truffert on the bench.
 
 This is a model decision rather than a certainty claim. The app must quote the same versioned
 captain receipt everywhere; a language model is allowed to explain the answer but not invent a
@@ -145,7 +150,7 @@ different captain from stale context.
 ### 2.2 What is genuinely uncertain
 
 The final availability watch found zero official-attention players, complete club-feed coverage,
-and one role-verification item among the 15: Watkins. Preseason lineup absence is not treated as an
+and two role-verification items among the 15: Watkins and McAteer. Preseason lineup absence is not treated as an
 injury label. Instead, the engine runs conditional appearance stresses and requires attributable
 deadline evidence before changing the production probability.
 
@@ -158,8 +163,8 @@ joint optimization of budget, XI, bench and later transfers.
 ### 2.3 Lineage
 
 The publication is bound to input fingerprint
-`0fb5197b72166f19b6d3a76842f7ce1a0a3242dfdcb283d9dfe406a9b37b1e8c`. The pipeline observed the
-published input generation at 06:10:27 UTC and released it only after all 12 stages completed. The
+`4c0610bf057d1663c96006c1ae0ae2b52f9ae84eeacf52dde0cfdb7d06b25cfe`. The pipeline observed the
+published official generation at 15:28:23 UTC and released it only after all 15 stages completed. The
 canonical machine artifacts are the synthesis result, robust audit, horizon audit, structure
 stress, role scenario, role threshold and pipeline manifest listed in Appendix C.
 
@@ -253,9 +258,9 @@ Every source has an explicit role:
 | Official FPL | Rules, prices, positions, fixtures, statuses, outcomes, manager state | Full for those facts | Defines the game |
 | Vaastav historical FPL | Deadline-safe training and replay | Full after validation | Broad public event history |
 | Internal team model | Team attack/defence and goal rates | Full | Passed frozen goal-model tests |
-| Betfair delayed exchange | De-vigged 1X2 and O/U team context | 20% defender-only in preseason | Passed bounded time-forward and legal-decision gates |
+| Betfair delayed exchange | De-vigged 1X2 and O/U team context | 20% defender feature plus 5% FWD goal-environment blend in preseason | Position-specific time-forward and legal-decision gates passed |
 | Understat | Independent xG/xA/process challenger | Zero | Mixed time-forward results; legal selector chose 0% |
-| RotoWire + FFScout | Predicted-XI consensus and role watch | Zero | No completed prospective events yet |
+| RotoWire + FFScout | Predicted-XI consensus and role watch | Bounded for clear two-source starts; disagreement retains the incumbent | Pool-wide role correction with capital/lineup safety gates; prospective scoring still pending |
 | SofaScore | Research-only independent event challenger | Zero | Slight MAE gain but lost 15 legal-policy points; live 403 instability |
 | FBref | No live dependency | None | Automated access unavailable and advanced data changed in 2026 |
 
@@ -444,10 +449,14 @@ markets. Competition and market identifiers are discovered rather than hardcoded
 de-vigged, timestamped and mapped to official fixtures. The current GW1 snapshot covers 10 of 10
 fixtures; GW2–GW8 have no market coverage yet and therefore fall back to the internal team model.
 
+The forecast records the exact market receipt and Parquet hashes. A transient provider failure may
+retain a checksum-valid, exact-fixture ready generation for no more than six hours; the failed
+observation is stored separately. A stale, wrong-event or incoherent generation still fails closed.
+
 Markets inform team scoring and clean-sheet context. They do not directly declare that a specific
 player will start, take penalties or receive bonus.
 
-### 9.2 Why the active weight is only 20% and defender-only
+### 9.2 Why the active weights are only 20% for defenders and 5% for forwards
 
 An unconstrained one-season search selected a 70% market weight and then lost 16 points on the
 independent season. That failure is precisely why weight selection needs sequential stability.
@@ -466,6 +475,8 @@ out-of-selection lower bound crossed below zero. Production authority is therefo
 split:
 
 - preseason defender squad/XI decisions: 20% market blend;
+- preseason FWD goal-environment adjustment: 5% after a separate position-specific calibration;
+- preseason MID goal-environment adjustment: 0%, because its promotion test did not pass;
 - weekly transfer decisions: 0% until stronger continuous or prospective evidence passes.
 
 This is one of the clearest competitive edges in the system because it combines a near-efficient
@@ -544,15 +555,15 @@ transfer when a planning horizon ends; that value is not smuggled into this init
 
 ### 11.2 Global and local candidate generation
 
-The 16 August run began with 141 seed squads covering residual/component models, horizon decays,
+The 19 August run began with 144 seed squads covering residual/component models, horizon decays,
 formations, bench bands, premium structures and transfer-aware views. It generated:
 
-- 298,359 legal exhaustive same-position one-swap squads;
-- 530,947 local one/two-swap squads;
+- 281,267 legal exhaustive same-position one-swap squads;
+- 518,272 local one/two-swap squads;
 - 256 distant mixed-integer squads at least three swaps from every seed; and
-- 19,980 evolutionary squads across legal crossover and mutation.
+- 19,249 evolutionary squads across legal crossover and mutation.
 
-After deduplication the universe contained 551,183 legal candidates and 261 distinct players.
+After deduplication the universe contained 537,804 legal candidates.
 Within the 10,000 retained discovery field, all legal formations and four bench bands were
 represented. Search breadth is an edge because a sophisticated evaluator cannot rescue a squad it
 never generates.
@@ -563,14 +574,14 @@ never generates.
 
 | Stage | Field | Evaluation |
 |---|---:|---|
-| Legal search universe | 551,183 | 40 deterministic proxy views |
+| Legal search universe | 537,804 | 40 deterministic proxy views |
 | Discovery | 10,000 | 2,000 residual worlds |
 | Component shortlist | 512 | 5,000 exact component worlds |
 | Five-week deep holdout | 64 | 25,000 untouched base worlds |
 | High-goal stress | 64 | 25,000 independent goal-rate ×1.15 worlds |
-| Eight-week combined field | 224 | Existing finalists + 128 horizon challengers + 32 neighbours |
-| Eight-week deep holdout | 48 | 25,000 untouched worlds and three transfer policies |
-| Cross-family synthesis | 23 | Candidates measured in both families |
+| Eight-week combined field | 213 | Existing finalists + 128 horizon challengers + 32 neighbours |
+| Eight-week deep holdout | 53 | 25,000 untouched worlds and three transfer policies |
+| Cross-family synthesis | 45 | Candidates measured in both families |
 
 Independent seeds separate discovery, selection and holdout. Named incumbents and scenario
 specialists are protected through early cuts, so a new method cannot “win” by eliminating the old
@@ -583,14 +594,14 @@ combines central evidence, raw component, xP-anchored and high-scoring environme
 
 | Scenario | Weight | Selected squad regret |
 |---|---:|---:|
-| Base evidence · open transfers | 30.0% | 0.304 |
-| Base evidence · force GW2 roll | 20.0% | 0.302 |
-| Base evidence · fixed squad | 10.0% | 0.560 |
-| Raw component · open | 10.0% | 2.046 |
-| Anchored xP · open | 15.0% | 0.490 |
-| Goals +15% · open | 7.5% | 1.866 |
-| Goals +15% · force GW2 roll | 5.0% | 1.360 |
-| Goals +15% · fixed | 2.5% | 3.247 |
+| Base evidence · open transfers | 30.0% | 0.154 |
+| Base evidence · force GW2 roll | 20.0% | 0.154 |
+| Base evidence · fixed squad | 10.0% | 0.000 |
+| Raw component · open | 10.0% | 2.248 |
+| Anchored xP · open | 15.0% | 0.292 |
+| Goals +15% · open | 7.5% | 2.496 |
+| Goals +15% · force GW2 roll | 5.0% | 2.496 |
+| Goals +15% · fixed | 2.5% | 1.056 |
 
 For candidate `c` and scenario `s`:
 
@@ -601,14 +612,12 @@ robust_regret_5(c) = 0.75 * weighted_mean_regret(c)
                    + 0.25 * worst_scenario_regret(c)
 ```
 
-The selected squad records weighted mean regret 0.775, worst regret 3.247 and five-week robust
-regret 1.393. It remains the winner in all eight leave-one-scenario-out tests. Its paired central
-edge over the previous robust incumbent is +0.419 points with a 95% Monte Carlo interval of +0.234
-to +0.604.
-
-The highest central mean belongs to another candidate. The selected squad consciously gives up
-0.304 points to the central scenario leader in exchange for materially better cross-environment
-stability. This is risk management in point units, not vague conservatism.
+The five-week leader `R-b954c5c198` records weighted mean regret 0.503, worst regret 1.244 and robust
+regret 0.688. The published squad records five-week robust regret **1.137**, weighted mean regret
+0.684 and worst-case regret 2.496. It gives up 0.449 regret units to the five-week specialist, but
+its eight-week regret is materially lower. That trade is resolved by
+the declared cross-family synthesis rather than by silently treating whichever audit ran last as
+the objective. This is risk management in point units, not vague conservatism.
 
 ## 13. Eight-week horizon and transfer policy
 
@@ -636,13 +645,13 @@ audit, not because history proved eight to be universally optimal.
 
 ### 13.3 Current disagreement
 
-The horizon-only leader is `R-1ca68907f5`, a 4-4-2. It beats the selected squad by 1.045 decayed
-central points, with a paired interval of +0.910 to +1.180. Its horizon robust regret is only 0.193,
-versus 0.917 for the published squad.
+The horizon audit promotes `R-01afc86b1b`, the eventual published 3-4-3. It beats the provisional
+five-week incumbent `R-b954c5c198` by 1.654 decayed central points, with a paired interval of +1.524
+to +1.784. Its horizon robust regret is **0.552**, versus 1.848 for the five-week leader.
 
-But it performs worse in the five-week model-risk family: robust regret 2.684 and open-transfer
-high-goal regret 4.579. An eight-week winner is therefore not automatically the overall winner.
-FPLAgent retains both facts.
+The disagreement is therefore clean and measurable: `R-b954c5c198` owns the strongest five-week
+model-risk score, while `R-01afc86b1b` owns the horizon, structure and final synthesis. FPLAgent
+retains both facts rather than presenting every audit as unanimous.
 
 Public manager histories support early optionality and later adaptation, not a fixed eight-week
 team. In the 2025/26 top-100 trail, 61 managers rolled in GW2, only 22 in GW3 and 19 in GW4. Those
@@ -669,37 +678,30 @@ preferred answer.
 
 | Candidate | Shape | Five-week regret | Eight-week regret | Synthesis | Rank |
 |---|---|---:|---:|---:|---:|
-| `R-92c8534bfc` | 3-4-3 | 1.393 | 0.917 | **1.202** | 1 |
-| `R-5f3c2a2518` | 4-4-2 | 2.105 | 0.273 | 1.372 | 2 |
-| `R-2ef866d551` | 4-4-2 | 2.158 | 0.334 | 1.428 | 3 |
-| Previous incumbent `R-dc7de17def` | 4-4-2 | 1.534 | 1.312 | 1.445 | 4 |
-| Horizon leader `R-1ca68907f5` | 4-4-2 | 2.684 | 0.193 | 1.688 | 9 |
+| `R-01afc86b1b` | 3-4-3 | 1.137 | 0.552 | **0.903** | 1 |
+| Five-week leader `R-b954c5c198` | 3-4-3 | 0.688 | 1.848 | 1.384 | 2 |
+| `R-a277a3f382` | 4-3-3 | 2.006 | 1.054 | 1.625 | 3 |
+| `R-d66a358490` | 3-4-3 | 1.339 | 1.944 | 1.702 | 4 |
+| `R-9f2439ebd5` | 3-4-3 | 3.995 | 1.390 | 2.953 | 5 |
 
-The published 3-4-3 remains champion while the horizon family receives between 0% and 65.6% of
-family weight. Beyond that, another 4-4-2—not necessarily the pure horizon leader—becomes the best
-compromise. The balanced 50/50 policy lies comfortably inside the champion interval.
+The five-week specialist wins when horizon-family weight is below 15.5%; the published 3-4-3 is
+champion from 15.5% through 100%. The declared 50/50 policy lies well inside the published champion
+interval rather than on a convenient boundary.
 
 ## 15. Bench allocation: rotation, not bench worship
 
-The £20.5m visible bench initially looks expensive. The targeted audit asked whether the model was
+The £20.0m visible bench initially looks expensive. The targeted audit asked whether the model was
 overvaluing reserves.
 
-Forty-two candidates received fresh five- and eight-week simulations, including eight squads at
-or below £18.5m and the strongest historical-band challengers through £20.0m. The active squad was
-the exact fresh winner. The strongest ≤£20.0m alternative shared 14 of 15 players but lost:
-
-| View | Active minus ≤£20m challenger | 95% interval |
-|---|---:|---:|
-| Five-week base open | +0.27 | +0.22 to +0.32 |
-| Five-week high-goal open | +1.06 | +1.01 to +1.12 |
-| Eight-week open, decay 0.88 | +0.27 | +0.15 to +0.39 |
-| GW6–8 only | +0.16 | +0.08 to +0.23 |
-| Eight-week fixed | +0.37 | +0.32 to +0.43 |
+Sixty-eight targeted candidates received fresh five- and eight-week simulations, including all 39
+protected squads at or below £18.5m and 120 shortlisted squads at or below £20.0m. The active squad
+was the exact targeted winner. This is a matched opportunity-cost test, not a historical claim that
+an expensive bench is intrinsically valuable.
 
 The mechanism is rotation. Three of the four GW1 substitutes are scheduled to start later and the
-group supplies eight planned starts across GW2–5. N.Williams is planned for GW3–5, Hill for GW2–5,
-and Verbruggen for GW4. Xhaka is the one current non-rotator. The system is purchasing a flexible
-15, not expecting £20.5m to remain unused.
+group supplies eight planned starts across GW2–5. Truffert is planned for GW2–5, Milenković for
+GW3–5 and Verbruggen for GW4. McAteer is the one current non-rotator. The system is purchasing a
+flexible 15, not expecting £20.0m to remain unused.
 
 Recent elite examples show observed opening/early-wildcard benches from £18.5m to £21.0m, but that
 evidence is descriptive. The production rule is not “spend more on the bench.” It is “score all 15,
@@ -714,10 +716,10 @@ Every synthesis finalist and five bench-proxy challengers was rescored under cen
 removed, defensive-contribution points removed, both removed, and both doubled. Exact autosubs and
 captain fallback were used in all views.
 
-The stress-specific leader was `R-1ced0705f3`; the published squad ranked third in the one-week
-structure table, at 58.09 central xP versus 58.23. The publication gate still passed because there
-was no supported one-week reversal that justified overturning the declared multiweek synthesis.
-This prevents a narrow audit from silently changing the objective after candidate selection.
+The stress-specific leader was the published `R-01afc86b1b`. It scored 60.226 in the central
+component view and ranked first across the five-view regret selector, with robust structure regret
+0.125. The next candidate scored 60.075 centrally and 0.285 robust regret. Structure therefore
+supports rather than merely tolerates the cross-family decision on this snapshot.
 
 ### 16.2 Preseason role scenarios
 
@@ -727,19 +729,24 @@ not-listed-DNP boundary scenarios are tested in independent residual and compone
 challenger squads are given the same exhaustive 550-configuration XI, bench, captain and vice
 search as the incumbent.
 
-Alternatives do win under the counterfactuals. That result is labeled
+Alternative squads lead some deliberately adverse role worlds, so the resulting verdict is
 `material_counterfactual_reversal_requires_live_verification`, while `production_changed` remains
-false. Conditional stresses are not source-authoritative probabilities. Their purpose is to tell
-the manager exactly which news can change the answer. At publication, Watkins is the one selected
-player requiring role verification.
+false. A second causal audit then checks whether each apparent reversal is actually created by a
+drop from the player's live minutes anchor. On this snapshot every individual challenger already
+won its narrow GW1 comparison at the production anchor, so none was mislabelled as a minutes
+threshold. The combined severe-role alternative gained 0.589 in its GW1 family but carried 4.125
+more multiweek synthesis regret; it remains monitor-only rather than an executable fallback.
+Conditional stresses are not source-authoritative probabilities. Their purpose is to identify
+which news requires a full rerun. At publication, Watkins and McAteer are the two selected players
+requiring role verification.
 
 ### 16.3 Availability gate
 
 The pipeline cannot publish a partially refreshed decision. Official status/news, price, fixture,
 forecast, market, participation and role lineages are checked together. A stale or incoherent
 availability watch blocks publication and retains the last valid workspace. On the current run all
-clubs had feed coverage, no player had official-attention evidence, and the Watkins role item was
-surfaced as scenario attention.
+clubs had feed coverage, no player had official-attention evidence, and the Watkins/McAteer role
+items were surfaced as scenario attention.
 
 ## 17. External benchmark and competitive evidence
 
@@ -818,11 +825,11 @@ recommendation is to wait for information unless the exact decision receipt has 
 | Opponent model | Replaces coarse fixture badges with attack/defence rates | Lower Poisson deviance on 2024/25 and 2025/26 | Production |
 | Appearance calibration | Corrects over/under-confident DNP probabilities | Both Brier and log-loss gates passed for FWD only | FWD production only |
 | Component simulation | Captures goals, clean sheets, bonus, autosubs and captain fallback jointly | Current-rule identities and historical BPS control | Production |
-| Betfair team prior | Adds efficient scoring/clean-sheet information | Defender gains in 3/3 seasons; +27 frozen initial-squad points | 20% preseason DEF only |
-| Global search | Challenges local roster structures | 551,183 legal candidates; distant MILP/evolution finalists | Production |
+| Betfair team prior | Adds efficient scoring/clean-sheet information | Defender gains in 3/3 seasons; FWD goal-environment calibration passed separately | 20% preseason DEF + 5% FWD; 0% MID |
+| Global search | Challenges local roster structures | 537,804 legal candidates; distant MILP/evolution finalists | Production |
 | Regret selector | Avoids a squad dependent on one preferred model | 8/8 leave-one-scenario-out wins | Production |
-| Horizon portfolio | Prices future fixtures and transfer optionality without a rigid plan | 48 deep policies; historical decay replay retained broad incumbent | Production sensitivity family |
-| Bench audit | Tests rotation value against cheap matched alternatives | 42-candidate fresh holdout; active exact winner | Production |
+| Horizon portfolio | Prices future fixtures and transfer optionality without a rigid plan | 53 deep finalists; historical decay replay retained broad incumbent | Production sensitivity family |
+| Bench audit | Tests rotation value against cheap matched alternatives | 68-candidate fresh holdout; active exact winner | Production |
 | Structure stress | Challenges scoring rules, formations and bench proxy | All finalists, five rule views, no supported reversal | Publication gate |
 | Role stress | Identifies the exact news that can overturn the squad | Deep residual/component counterfactual reversals | Verification trigger only |
 | OpenFPL benchmark | Tests against a strong external method | Lower MAE; +69 legal points over 114 decisions | Evidence, not a model input |
@@ -843,8 +850,9 @@ Confidence comes from convergence of independent protections:
 1. The forecast is independent of FPL's own expected-points field and beats a declared simple
    baseline on time-forward and legal-decision tests.
 2. Team scoring rates beat a simpler fixture model on two untouched seasons.
-3. The only external live feature with production weight—Betfair for defenders—passed bounded
-   player and legal-policy gates; more aggressive weights failed and were rejected.
+3. The only external live forecast feature with production weight—Betfair at 20% for defenders and
+   a separately calibrated 5% goal-environment blend for forwards—passed bounded gates; midfield
+   and more aggressive weights remain at zero.
 4. The selected structure emerged from more than half a million legal candidates and survived
    distant optimization, not just swaps around a favourite team.
 5. Final comparisons use shared correlated worlds, exact autosubs and independent holdouts.
@@ -859,7 +867,7 @@ Confidence comes from convergence of independent protections:
 10. Unproven complexity is kept at zero authority, reducing the risk of an impressive but fragile
     preseason model.
 
-None of those protections eliminates football variance. A 57-point expectation is an average over
+None of those protections eliminates football variance. A 64-point expectation is an average over
 many possible worlds, not a promise. Red cards, penalties, deflections, late injuries and bonus
 ties can dominate one gameweek. Even a genuinely superior season-long policy can lose a mini-league
 over 38 events. The goal is to repeatedly choose actions with positive expected value, control
@@ -900,7 +908,63 @@ A full run stages outputs separately and publishes only when all gates pass. Clo
 does not cancel the backend process. If a run fails, the previous published workspace remains
 active and the UI exposes the blocking receipt.
 
-### 22.2 Rebuild command
+### 22.2 Hardware-aware acceleration
+
+The production workstation pairs an NVIDIA GeForce RTX 5090 (Blackwell, 31.4 GiB visible VRAM)
+with a 16-core/32-thread Ryzen 9 9950X3D. The validated software path is NVIDIA driver 610.43.02,
+CUDA 13.2 runtime / 13.3 driver API, CuPy 14.1.1 and XGBoost 3.3.0. FPLAgent treats the CPU and GPU
+as two different compute engines, not as a reason to send every operation to CUDA. The accelerator
+router chooses the measured faster deterministic implementation for each workload:
+
+| Workload | Production device | Why |
+|---|---|---|
+| XGBoost player, component and team-goal inference | RTX 5090 through CUDA/CuPy | Models are CUDA-trained; device-native arrays avoid XGBoost's CPU `DMatrix` fallback and repeated host/device copies. |
+| XGBoost training and time-forward model experiments | RTX 5090 | Thousands of boosted-tree fits and challenger folds are the clearest Blackwell throughput advantage. |
+| Independent squad and transfer-policy MILPs | 12 isolated CPU processes | HiGHS is CPU-native. One thread per worker avoids scheduler contention while independent policies fill physical cores. |
+| Four independent preseason role scenarios | Four isolated, single-threaded CPU processes over memory-mapped worlds | Separate interpreters bypass the Python GIL; read-only simulation tensors are shared rather than serialized four times. |
+| Current exact autosub and sparse screening kernels | CPU | Production-shape benchmarks found transfer and pattern construction dominated; forcing these kernels onto CUDA was marginally slower. |
+| Future sufficiently large dense simulation kernels | RTX 5090 when the measured operation gate is crossed | CUDA remains available behind an explicit size threshold rather than being used cosmetically. |
+
+This routing has three consequences. First, CUDA inference stays on the RTX 5090 end to end:
+CuPy supplies device-resident `float32` matrices to XGBoost and the refresh test records zero
+device-mismatch warnings. Second, independent optimization is genuinely parallel. The exact
+20-sample initial-squad stability audit fell from **152.999 seconds to 23.519 seconds** on the same
+inputs, a **6.505× speed-up**, with byte-equivalent decision statistics. Four representative
+open/rolled transfer-policy pairs improved from **15.083 to 6.913 seconds** (**2.182×**), and eight
+GW1–8 challenger solves improved from **7.757 to 3.684 seconds** (**2.105×**). The full 128-squad
+residual discovery population is now generated in about **18 seconds**; two immediate runs produced
+the same population hash and every squad passed the legal validator. The previously dominant
+preseason role-scenario audit fell from **639.824 to 197.632 seconds** (**3.237×**) after moving its
+four independent counterfactual worlds from GIL-limited threads to isolated processes backed by
+memory-mapped input tensors. Its complete result remained exactly equal to the published serial
+reference. The rejected thread experiment managed only 618.999 seconds, which illustrates why
+acceleration changes are benchmarked rather than accepted from architecture diagrams alone.
+The final production publication independently recorded **198.629 wall seconds**, **671.167 CPU
+seconds** and **3.38 average CPU cores** for this stage, confirming that the benchmark translated
+to the transactional pipeline rather than only to an isolated script.
+
+Third, the router records when the GPU is *not* an advantage. On the production exact-autosub shape
+of 25,000 worlds × 512 candidates × five events, CPU scored in **25.786 seconds** and CUDA in
+**26.151 seconds**, with identical scores. A sparse 100,000-world utility screen was also dominated
+by CPU because it completed before PCIe setup could be amortized. Automatic mode therefore keeps
+these shapes on CPU and only moves a kernel to CUDA above the benchmarked operation threshold.
+“Fully using the hardware” means minimizing wall time, not making the GPU utilization graph look
+busy.
+
+The competitive edge is indirect but important: more independent challengers, deeper untouched
+holdouts and more role/fixture stress can finish before the deadline. Blackwell does not make a
+forecast more accurate by itself; it buys the experiment budget needed to reject weak ideas and
+validate useful ones. Seeds are generated in the parent process, worker results are restored to a
+stable order, and equality/legal checks guard every accelerated boundary. The pipeline manifest
+records wall time, aggregate CPU time, average cores and peak memory per stage so future routing
+changes must earn their place empirically.
+
+Operators can reproduce or override the router with `FPLAGENT_ACCELERATOR=auto|cpu|cuda`,
+`FPLAGENT_POLICY_WORKERS=<n>`, `FPLAGENT_ROLE_WORKERS=<n>` and
+`FPLAGENT_GPU_MIN_MULTIPLIES=<n>`. `auto` is the production default; forced CUDA exists for
+controlled benchmarking and fails loudly if the device is unavailable.
+
+### 22.3 Rebuild command
 
 ```bash
 uv sync
@@ -913,7 +977,7 @@ uv run python scripts/build_algorithm_whitepaper.py
 Individual research commands are documented in the linked audit reports. The canonical deadline
 run should use the transactional pipeline rather than manually composing a partial sequence.
 
-### 22.3 Seed discipline
+### 22.4 Seed discipline
 
 Simulation seeds are versioned by purpose. Discovery, selection, five-week holdout, high-goal
 stress, horizon selection and horizon holdout use independent streams. Changing a seed is a
@@ -930,7 +994,7 @@ legal-policy evidence is positive.
 
 ### 23.2 Search is broad, not exhaustive
 
-There are vastly more legal budget/club-valid combinations than 551,183. MILP restarts and
+There are vastly more legal budget/club-valid combinations than 537,804. MILP restarts and
 evolutionary search give global reach, but the engine cannot prove an ungenerated squad would not
 win. Protected benchmarks, one/two-swap enumeration and distant finalists make the search claim
 stronger without turning it into a mathematical global proof.
@@ -943,9 +1007,12 @@ zero 2026/27 events have been scored by the prospective distribution framework.
 
 ### 23.4 Current-role uncertainty
 
-Predicted-lineup feeds have zero authority, and post-World-Cup preseason participation is unusually
-difficult to interpret. The Watkins verification item is real. The answer should be rerun after
-credible press-conference or squad evidence rather than assuming the current receipt is permanent.
+Predicted-lineup feeds have bounded authority only for clear two-source starts; source disagreement
+retains the incumbent role probability, and every selected premium, starter and armband must still
+clear a separate capital/lineup integrity gate. Post-World-Cup preseason participation remains
+unusually difficult to interpret. The Watkins verification item is real. The answer should be rerun
+after credible press-conference or squad evidence rather than assuming the current receipt is
+permanent.
 
 ### 23.5 Season-long frontiers
 
@@ -967,12 +1034,14 @@ Before entering the team:
 1. Refresh after the final relevant press conferences and near the GW1 deadline.
 2. Verify Watkins and any new official status, transfer or registration changes.
 3. Confirm all ten GW1 market fixtures still map cleanly; missing markets must fall back to the
-   internal team model rather than stale prices.
-4. Rebuild the forecast and complete all 12 pipeline stages when the semantic fingerprint changes.
+   internal team model rather than stale prices outside the six-hour validated retention window.
+4. Rebuild the forecast and complete all 15 pipeline stages when the semantic fingerprint changes.
 5. Require the data, structure, role, availability and transactional publication gates to pass.
-6. Compare the new receipt with `R-92c8534bfc`: squad, XI, captain, bench, family regrets and role
+6. Compare the new receipt with `R-01afc86b1b`: squad, XI, captain, bench, family regrets and role
    items—not only the headline GW1 xP.
-7. Freeze and hash the final receipt, then enter that exact legal team in FPL.
+7. Treat a minutes fallback as executable only when the central squad wins at the live anchor, a
+   monotone deterioration creates the reversal below it, and its GW1 floor repays multiweek regret.
+8. Freeze and hash the final receipt, then enter that exact legal team in FPL.
 
 If no material evidence changes, reusing the checksum-identical receipt is more rigorous than
 rerunning repeatedly and interpreting Monte Carlo noise as new information.
@@ -988,8 +1057,8 @@ and horizon families stop one model from owning the answer. Bench, structure, ro
 audits attack the final squad from different directions. Atomic publication stops incoherent
 artifacts reaching the app.
 
-The current result is a 3-4-3 built around Bruno Fernandes captaincy, a rotating £20.5m nominal
-bench and a single live role-verification item. It is supported more deeply than the earlier squad,
+The current result is a 3-4-3 built around Bruno Fernandes captaincy, a rotating £20.0m nominal
+bench and two selected role-verification items. It is supported more deeply than the earlier squad,
 but it is still a decision under uncertainty. The strongest reason for confidence is not that every
 model agrees—they do not. It is that disagreement is measured, the selected squad remains near the
 frontier across those disagreements, and unsupported signals are prevented from voting.

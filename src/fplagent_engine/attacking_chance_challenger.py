@@ -15,6 +15,7 @@ from sklearn.metrics import mean_absolute_error
 
 from fplagent_data.http import sha256_file
 
+from .acceleration import xgboost_infer
 from .features import (
     ATTACKING_HISTORY_FEATURES,
     MODEL_FEATURES,
@@ -649,7 +650,10 @@ def blend_current_attacking_predictions(
         indices = np.flatnonzero(feature_positions == position)
         conditional_by_position[position] = (
             indices,
-            np.mean([model.predict(matrix[indices]) for model in models[position]], axis=0),
+            np.mean(
+                [xgboost_infer(model, matrix[indices]) for model in models[position]],
+                axis=0,
+            ),
         )
     predictions = {}
     for position, (indices, values) in conditional_by_position.items():

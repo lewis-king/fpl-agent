@@ -5,17 +5,24 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated, Any
 
+import httpx
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from fplagent_data.elite_sample import ensure_elite_sample, latest_finished_event
 from fplagent_data.live_snapshots import SnapshotValidationError
 from fplagent_data.manager_snapshots import archive_manager_snapshot
+from fplagent_data.participation_consensus import CONSENSUS as CURRENT_PARTICIPATION_CONSENSUS
+from fplagent_engine.component_models import CURRENT_COMPONENT_FORECAST
+from fplagent_engine.gameweek_review import read_gameweek_review, refresh_gameweek_review
+from fplagent_engine.scouting import read_scouting, refresh_scouting
 from fplagent_engine.manager_state_store import (
     ManagerStateContractError,
     current_actionable_event,
     derive_latest_manager_state,
 )
+from fplagent_engine.models import CURRENT_FORECAST
 
 from .chat_gateway import ChatGateway, ChatGatewayError, LocalQwenGateway
 from .deadline_scheduler import DeadlineRefreshScheduler
@@ -53,7 +60,12 @@ from .workspace import DEFAULT_REFRESH_STATE, WorkspaceBuilder, WorkspaceBuildEr
 
 @lru_cache(maxsize=1)
 def workspace_builder() -> WorkspaceBuilder:
-    return WorkspaceBuilder(refresh_state_path=DEFAULT_REFRESH_STATE)
+    return WorkspaceBuilder(
+        refresh_state_path=DEFAULT_REFRESH_STATE,
+        weekly_forecast_path=CURRENT_FORECAST,
+        weekly_component_path=CURRENT_COMPONENT_FORECAST,
+        weekly_participation_consensus_path=CURRENT_PARTICIPATION_CONSENSUS,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -206,6 +218,46 @@ def create_app(
     @app.get("/api/v1/profile", response_model=ManagerProfileView)
     def get_manager_profile() -> ManagerProfileView:
         return profile_factory().get()
+
+    @app.get("/api/v1/scouting")
+    def get_scouting() -> dict[str, Any]:
+        try:
+            return read_scouting()
+        except (ValueError, OSError, KeyError) as exc:
+            raise HTTPException(503, detail="Scouting evidence could not be verified; refresh it.") from exc
+
+    @app.post("/api/v1/scouting/refresh")
+    def update_scouting() -> dict[str, Any]:
+        try:
+            return refresh_scouting()
+        except (ValueError, OSError, KeyError, httpx.HTTPError) as exc:
+            raise HTTPException(503, detail="Could not update scouting. The saved board is retained. Refresh completed results if an event is missing.") from exc
+
+    @app.get("/api/v1/review")
+    def get_gameweek_review() -> dict[str, Any]:
+        entry_id = profile_factory().get().fpl_entry_id
+        if not entry_id:
+            return {"status": "manager_required", "events": [], "observed_at": None}
+        try:
+            return read_gameweek_review(entry_id)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(503, detail={"code": "review_unavailable", "message": str(exc)}) from exc
+
+    @app.post("/api/v1/review/refresh")
+    def refresh_gameweek_results() -> dict[str, Any]:
+        entry_id = profile_factory().get().fpl_entry_id
+        if not entry_id:
+            raise HTTPException(400, detail={"code": "manager_required", "message": "Save your FPL entry ID first."})
+        try:
+            latest = latest_finished_event()
+            if latest:
+                ensure_elite_sample(latest)
+        except (RuntimeError, httpx.HTTPError, OSError, KeyError, ValueError):
+            pass  # The review still refreshes; the top-manager comparison is omitted.
+        try:
+            return refresh_gameweek_review(entry_id)
+        except (ValueError, OSError, httpx.HTTPError, KeyError) as exc:
+            raise HTTPException(503, detail={"code": "review_refresh_failed", "message": "Results could not be verified. The previous review is retained; try again shortly."}) from exc
 
     @app.put("/api/v1/profile", response_model=ManagerProfileView)
     def save_manager_profile(request: ManagerProfileRequest) -> ManagerProfileView:

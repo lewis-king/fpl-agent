@@ -16,6 +16,12 @@ from fplagent_engine.deadline_pipeline import (
 from fplagent_engine.rules import SquadRules
 
 
+@pytest.fixture(autouse=True)
+def no_external_scout_requests(monkeypatch):
+    monkeypatch.setattr("fplagent_engine.scout_benchmark.optional_capture",
+                        lambda **kwargs: {"status": "test_disabled", "decision_authority": False})
+
+
 def _rules() -> SquadRules:
     return SquadRules(
         budget=1000,
@@ -150,6 +156,39 @@ def test_failed_staged_gate_never_replaces_active_decision(tmp_path: Path) -> No
     assert published.read_bytes() == b"previous-good-decision"
 
 
+@pytest.mark.parametrize("status", ["contemporaneous_capture", "unavailable"])
+def test_optional_scout_diagnostic_is_archived_without_decision_authority(tmp_path, monkeypatch, status):
+    kwargs, _ = _kwargs(tmp_path)
+    captures = []
+    def capture(**call):
+        captures.append(call)
+        return {"status": status, "decision_authority": False}
+    monkeypatch.setattr("fplagent_engine.scout_benchmark.optional_capture", capture)
+    result = run_weekly_deadline_pipeline(**kwargs)
+    assert result["published"]
+    saved = json.loads(Path(result["archived_decision"]).read_text())
+    diagnostic = saved["diagnostics"]["scout_private_benchmark"]
+    assert diagnostic["status"] == status
+    assert diagnostic["decision_authority"] is False
+    assert diagnostic["deployment_review"]["decision"] == "reject"
+    assert captures[0]["events"] == (2, 3, 4)
+    assert captures[0]["forecast_path"] == kwargs["direct_forecast_path"]
+    assert run_weekly_deadline_pipeline(**kwargs)["reused"]
+    assert len(captures) == 1
+
+
+def test_engine_change_invalidates_identical_weekly_evidence(tmp_path, monkeypatch):
+    kwargs, calls = _kwargs(tmp_path)
+    target = "fplagent_engine.deadline_pipeline.weekly_pipeline_implementation_sha256"
+    monkeypatch.setattr(target, lambda: "engine-before")
+    old = run_weekly_deadline_pipeline(**kwargs)
+    monkeypatch.setattr(target, lambda: "engine-after")
+    new = run_weekly_deadline_pipeline(**kwargs)
+    assert calls["decisions"] == 2
+    assert old["input_fingerprint"] != new["input_fingerprint"]
+    assert new["input_identity"]["implementation_sha256"] == "engine-after"
+
+
 def test_failed_final_recheck_rolls_back_decision_and_status(tmp_path: Path) -> None:
     kwargs, _ = _kwargs(tmp_path)
     published = Path(kwargs["published_decision_path"])
@@ -188,6 +227,30 @@ def test_incomplete_manager_state_stops_before_decision_generation(tmp_path: Pat
     assert result["published"] is False
     assert calls["decisions"] == 0
     assert not Path(kwargs["published_decision_path"]).exists()
+    assert result["failure_code"] == "manager_state_required"
+    assert [stage["name"] for stage in result["stages"]] == ["weekly_evidence"]
+
+
+def test_weekly_progress_tracks_work_without_publishing_unvalidated_decisions(tmp_path: Path) -> None:
+    kwargs, _ = _kwargs(tmp_path)
+    captured = []
+    pipeline = Path(kwargs["pipeline_receipt_path"])
+    for key in ("refresh_runner", "state_deriver", "decision_runner", "evidence_auditor"):
+        original = kwargs[key]
+
+        def wrapped(*args, _original=original, **call_kwargs):
+            captured.append(json.loads(pipeline.read_text()))
+            return _original(*args, **call_kwargs)
+
+        kwargs[key] = wrapped
+    result = run_weekly_deadline_pipeline(**kwargs)
+    assert [value["current_stage"] for value in captured] == [
+        "weekly_evidence", "weekly_manager_state", "weekly_optimisation",
+        "weekly_validation", "weekly_publication",
+    ]
+    assert all(value["status"] == "running" and not value["published"] for value in captured)
+    assert [len(value["stages"]) for value in captured] == list(range(5))
+    assert len(result["stages"]) == result["total_stages"] == 5
 
 
 def test_deadline_run_is_exposed_as_one_engine_command() -> None:
@@ -206,3 +269,51 @@ def test_deadline_run_is_exposed_as_one_engine_command() -> None:
     assert args.manager_entry_id == 431892
     assert args.reuse_latest_official is True
     assert args.horizon == 4
+
+
+def test_chip_timing_second_pass_uses_fresh_check_time(monkeypatch):
+    from fplagent_engine import chip_timing, deadline_pipeline
+
+    calls = []
+
+    def once(**kwargs):
+        calls.append(kwargs)
+        return {"status": "published", "pass": len(calls)}
+
+    monkeypatch.setattr(deadline_pipeline, "_run_weekly_deadline_pipeline_once", once)
+    monkeypatch.setattr(chip_timing, "timing_refresh_needed", lambda path: True)
+    ran = []
+    result = deadline_pipeline.run_weekly_deadline_pipeline(
+        as_of="2026-11-06T13:38:37+00:00",
+        chip_timing_runner=lambda **kw: ran.append(kw),
+    )
+    assert ran and len(calls) == 2
+    assert calls[1]["reuse_latest_official"] is True
+    assert calls[1]["as_of"] != calls[0]["as_of"]
+    assert result["pass"] == 2 and result["chip_timing"]["status"] == "refreshed"
+
+
+def test_chip_timing_failure_keeps_first_publication(monkeypatch):
+    from fplagent_engine import chip_timing, deadline_pipeline
+
+    results = iter([{"status": "published", "pass": 1}, {"status": "blocked", "pass": 2}])
+    monkeypatch.setattr(
+        deadline_pipeline, "_run_weekly_deadline_pipeline_once", lambda **kw: next(results)
+    )
+    monkeypatch.setattr(chip_timing, "timing_refresh_needed", lambda path: True)
+    result = deadline_pipeline.run_weekly_deadline_pipeline(chip_timing_runner=lambda **kw: None)
+    assert result["pass"] == 1
+    assert result["chip_timing"]["status"] == "second_pass_failed"
+
+
+def test_no_second_pass_when_timing_is_fresh(monkeypatch):
+    from fplagent_engine import chip_timing, deadline_pipeline
+
+    calls = []
+    monkeypatch.setattr(
+        deadline_pipeline, "_run_weekly_deadline_pipeline_once",
+        lambda **kw: calls.append(kw) or {"status": "published"},
+    )
+    monkeypatch.setattr(chip_timing, "timing_refresh_needed", lambda path: False)
+    deadline_pipeline.run_weekly_deadline_pipeline(chip_timing_runner=lambda **kw: 1 / 0)
+    assert len(calls) == 1

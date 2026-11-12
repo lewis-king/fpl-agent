@@ -13,6 +13,7 @@ from fplagent_data.http import sha256_file
 from fplagent_engine.availability_watch import (
     _decision_frontier,
     _decision_impacts,
+    _scenario_stability,
     audit_availability_watch,
 )
 from fplagent_engine.cli import parser
@@ -323,9 +324,90 @@ def test_aligned_predicted_lineups_are_exposed_with_zero_authority(
     assert predicted["eligible_source_count"] == 1
     assert predicted["captured_source_count"] == 2
     assert predicted["production_adjustment_authorized"] is False
-    assert result["players"][0]["predicted_lineups"]["consensus"] == (
-        "single_source_start"
+    assert result["players"][0]["predicted_lineups"]["consensus"] == ("single_source_start")
+
+
+def test_applied_predicted_lineups_require_one_checksum_bound_bundle(
+    tmp_path: Path,
+) -> None:
+    kwargs = _artifacts(tmp_path)
+    forecast_path = Path(kwargs["forecast_path"])
+    forecast_rows = pq.read_table(forecast_path).to_pylist()
+    for row in forecast_rows:
+        row["live_participation_applied"] = True
+    pq.write_table(pa.Table.from_pylist(forecast_rows), forecast_path)
+    threshold_path = Path(kwargs["threshold_results_path"])
+    threshold = json.loads(threshold_path.read_text(encoding="utf-8"))
+    threshold["lineage"]["forecast_sha256"] = sha256_file(forecast_path)
+    _write_json(threshold_path, threshold)
+
+    receipt_path = tmp_path / "participation-receipt.json"
+    consensus_path = tmp_path / "participation.parquet"
+    manifest_path = tmp_path / "forecast-manifest.json"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event": 1,
+                    "element": element,
+                    "consensus": "predicted_start_consensus",
+                    "predicted_start_sources": ["rotowire", "fantasy_football_scout"],
+                    "predicted_not_start_sources": [],
+                    "complete_source_count": 2,
+                    "attention": [],
+                }
+                for element in range(1, 16)
+            ]
+        ),
+        consensus_path,
     )
+    _write_json(
+        receipt_path,
+        {
+            "event": 1,
+            "observed_at": kwargs["as_of"].isoformat(),
+            "status": "consensus_ready",
+            "inputs": {
+                "official_players_sha256": sha256_file(Path(kwargs["players_path"])),
+                "forecast_sha256": sha256_file(forecast_path),
+            },
+            "outputs": {"consensus_sha256": sha256_file(consensus_path)},
+            "authority": {
+                "predicted_lineup_consensus": "bounded_production_operator_override",
+                "maximum_evidence_weight": 1.0,
+            },
+        },
+    )
+    _write_json(
+        manifest_path,
+        {
+            "forecast_sha256": sha256_file(forecast_path),
+            "result": {
+                "participation_policy": {
+                    "decision_authority": True,
+                    "receipt_sha256": sha256_file(receipt_path),
+                    "consensus_sha256": sha256_file(consensus_path),
+                }
+            },
+        },
+    )
+    kwargs.update(
+        forecast_manifest_path=manifest_path,
+        participation_receipt_path=receipt_path,
+        participation_consensus_path=consensus_path,
+    )
+
+    aligned = audit_availability_watch(**kwargs)
+    assert aligned["current"] is True
+    assert aligned["predicted_lineup_consensus"]["current"] is True
+
+    pq.write_table(
+        pa.Table.from_pylist([{"event": 1, "element": 1, "consensus": "changed"}]),
+        consensus_path,
+    )
+    mismatched = audit_availability_watch(**kwargs)
+    assert mismatched["current"] is False
+    assert any("consensus differs" in issue for issue in mismatched["issues"])
 
 
 def test_supported_role_alternative_is_current_attention_not_stale_evidence(
@@ -409,9 +491,7 @@ def test_missing_advisory_artifact_returns_structured_refresh_status(
 
 
 def test_cli_exposes_availability_status() -> None:
-    args = parser().parse_args(
-        ["availability-status", "--as-of", "2026-08-07T15:00:00+00:00"]
-    )
+    args = parser().parse_args(["availability-status", "--as-of", "2026-08-07T15:00:00+00:00"])
 
     assert args.command == "availability-status"
     assert args.as_of == "2026-08-07T15:00:00+00:00"
@@ -513,3 +593,22 @@ def test_scenario_reversal_explains_why_synthesis_rejected_it() -> None:
     assert result[0]["five_week_regret_delta"] == pytest.approx(0.6)
     assert result[0]["eight_week_regret_delta"] == pytest.approx(-0.4)
     assert "0.170 more synthesis regret" in result[0]["why_not_selected"]
+
+
+def test_deep_replay_refutation_closes_a_preliminary_squad_screen_alert() -> None:
+    scenario = {
+        "supported_deep_squad_scenarios": [],
+        "scenarios": {
+            name: {
+                "configuration": {"cross_family_holdout_support": False},
+                "squad": {"cross_family_holdout_support": True},
+                "deep_squad_replay": {"cross_family_holdout_support": False},
+            }
+            for name in ("baseline", "moderate_role_stress")
+        },
+    }
+
+    result = _scenario_stability(scenario)
+
+    assert result["baseline_stable"] is True
+    assert result["moderate_stable"] is True

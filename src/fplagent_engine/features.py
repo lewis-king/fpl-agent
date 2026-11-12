@@ -902,15 +902,37 @@ def _current_query(horizon: int, *, start_event: int = 1) -> str:
                 ORDER BY coalesce(try_cast(p.selected_by_percent AS DOUBLE), 0)
             ) AS ownership_percentile,
             CASE
-                WHEN h.event_number = 1 AND p.chance_of_playing_this_round IS NOT NULL
-                    THEN p.chance_of_playing_this_round::DOUBLE
-                WHEN h.event_number <= 2 AND p.chance_of_playing_next_round IS NOT NULL
+                -- FPL can keep a player in an existing manager squad while removing
+                -- them from the selectable pool.  Retain that player in the feature
+                -- catalog so the weekly optimiser can sell them, but never assign
+                -- them playing probability merely because a future horizon is being
+                -- forecast.
+                WHEN NOT coalesce(p.can_select, true) THEN 0.0
+                WHEN h.event_number = {start_event}
+                     AND p.chance_of_playing_next_round IS NOT NULL
                     THEN p.chance_of_playing_next_round::DOUBLE
                 WHEN p.status = 'a' OR p.status IS NULL THEN 100.0
-                WHEN h.event_number > 3 THEN 85.0
+                WHEN h.event_number > {start_event + 2} THEN 85.0
                 WHEN p.status IN ('i', 's', 'u', 'n') THEN 0.0
                 ELSE 75.0
             END AS availability_chance,
+            {start_event} AS official_availability_event,
+            CASE
+                WHEN NOT coalesce(p.can_select, true) OR p.status = 'u' THEN 0.0
+                WHEN p.chance_of_playing_next_round IS NOT NULL
+                    THEN p.chance_of_playing_next_round::DOUBLE
+                WHEN p.status = 'a' OR p.status IS NULL THEN 100.0
+                WHEN p.status IN ('i', 's', 'n') THEN 0.0
+                ELSE 75.0
+            END AS official_availability_chance,
+            'chance_of_playing_next_round' AS official_availability_source,
+            CASE
+                WHEN NOT coalesce(p.can_select, true) THEN 'unselectable'
+                WHEN h.event_number = {start_event} THEN 'official_next_round'
+                WHEN h.event_number > {start_event + 2} AND p.status <> 'a'
+                    THEN 'unvalidated_recovery_prior'
+                ELSE 'status_prior'
+            END AS availability_basis,
             p.penalties_order::DOUBLE AS penalty_order,
             p.corners_and_indirect_freekicks_order::DOUBLE AS corner_order,
             te.team_attack5,
@@ -945,6 +967,7 @@ def _current_query(horizon: int, *, start_event: int = 1) -> str:
             p.status,
             p.news,
             p.snapshot_at,
+            p.can_transact,
             p.can_select,
             p.removed
         FROM fpl_current_players p
@@ -954,7 +977,10 @@ def _current_query(horizon: int, *, start_event: int = 1) -> str:
         LEFT JOIN current_team_events te
           ON h.event_number = te.event AND p.team = te.team_id
         WHERE p.element_type BETWEEN 1 AND 4
-          AND coalesce(p.can_select, true)
+          AND (
+              coalesce(p.can_select, true)
+              OR coalesce(p.can_transact, false)
+          )
           AND NOT coalesce(p.removed, false)
         ORDER BY h.event_number, p.id
     """
@@ -970,6 +996,7 @@ def build(horizon: int = 8) -> dict:
             connection.execute(
                 """
                 SELECT coalesce(
+                    min(id) FILTER (WHERE is_next IS TRUE),
                     min(id) FILTER (WHERE NOT coalesce(finished, false)),
                     max(id)
                 )

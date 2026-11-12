@@ -275,8 +275,8 @@ def _render(result: dict[str, Any]) -> str:
     lines = [
         "# FPL 2026/27 rulebook audit",
         "",
-        f"**Audited:** {result['created_at']}  ",
-        f"**Live snapshot:** {result['snapshot_at']}  ",
+        f"**Audited:** {result['created_at']}",
+        f"**Live snapshot:** {result['snapshot_at']}",
         "**Verdict:** the initial-squad legality layer is current, but the engine is not yet a complete weekly decision agent.",
         "",
         "## Confirmed 2026/27 state",

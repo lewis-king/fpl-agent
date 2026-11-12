@@ -74,3 +74,14 @@ def test_empty_scoreboard_reuses_identical_input_fingerprint(tmp_path) -> None:
     assert first["reused"] is False
     assert second["reused"] is True
     assert output.read_bytes() == first_bytes
+
+
+def test_corrected_scoring_revision_supersedes_old_receipt_without_double_counting():
+    old = _receipt(3, "2026-09-04T15:42:00+00:00", regret=9.0, challenger=-5.0)
+    corrected = _receipt(3, "2026-09-04T15:42:00+00:00", regret=1.0, challenger=2.0)
+    old["_receipt_path"] = "/model/prospective_weekly_scoring_v2/event-3/test.json"
+    corrected["_receipt_path"] = "/model/prospective_weekly_scoring_v3/event-3/test.json"
+    for receipts in ([old, corrected], [corrected, old]):
+        result = aggregate_prospective_receipts(receipts)
+        assert result["completed_events"] == 1
+        assert result["season_summary"]["total_action_selection_regret"] == 1.0

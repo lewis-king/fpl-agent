@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,13 @@ import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
 
+from .capital_efficiency import expected_minutes, player_action_role_risk
 from .challenger_registry import RESULTS as CHALLENGER_REGISTRY
+from .chip_strategy import (
+    load_chip_strategy_calibration,
+    synthesize_joint_chip_strategy,
+)
+from .chip_timing import load_live_timing, squad_fingerprint
 from .component_models import CURRENT_COMPONENT_FORECAST
 from .component_models import MODEL_FILE as COMPONENT_EVENT_MODEL_FILE
 from .component_simulator import (
@@ -25,8 +32,10 @@ from .component_simulator import (
     simulate_component_outcomes,
     train_goal_model,
 )
-from .distribution_calibration import RESIDUAL_CALIBRATION, empirical_points_pmf
-from .early_transfer import evaluate_early_transfer_shadow
+from .early_transfer import (
+    evaluate_early_transfer_shadow,
+    evaluate_retained_asset_price_risks,
+)
 from .form_reversion import evaluate_form_reversion_shadow
 from .manager_state_adapter import manager_state_from_snapshot, player_catalog_from_rows
 from .manager_state_store import load_manager_state_contract
@@ -55,6 +64,7 @@ from .schedule_scenarios import (
     load_schedule_receipt,
     schedule_horizon_status,
 )
+from .score_shape import frozen_score_distribution
 from .squad_chip_replay import load_squad_chip_retention_results
 from .team_chip_replay import load_team_chip_retention_results
 from .tournament import _simulate_player_outcomes, calibrate_residuals
@@ -78,6 +88,90 @@ DEFAULT_SCENARIO_WEIGHTS = {
     "component_anchored": 0.45,
     "component_raw": 0.05,
 }
+
+
+def frozen_participation_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the decision-time minutes estimate and its provenance for later audits."""
+    bins = ("p_1_59", "p_60_89", "p_90_or_more")
+    source = "forecast"
+    if row.get("expected_minutes") is None:
+        source = (
+            "participation_bin_proxy"
+            if any(row.get(field) is not None for field in bins)
+            else "appearance_probability_proxy"
+        )
+    return {
+        "expected_minutes": expected_minutes(row),
+        "minutes_source": source,
+        **{field: row.get(field) for field in bins},
+    }
+
+
+def freeze_weekly_player_forecasts(event_rows: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    """Freeze the entire decision-time pool, not just players we chose to test."""
+    return {
+        str(element): {
+            "element": element,
+            "player_name": str(row.get("player_name") or f"#{element}"),
+            "position": str(row["position"]),
+            "team_id": int(row["team_id"]),
+            "market_price": int(row["market_price"]),
+            "expected_points": float(row["expected_points"]),
+            "robust_points": float(row.get("robust_points", row["expected_points"])),
+            "p_play": float(row.get("p_play", 1.0)),
+            "forecast_diagnosis_inputs": {
+                field: row.get(field) for field in (
+                    "official_availability_event", "official_availability_chance",
+                    "official_availability_source", "availability_basis", "official_gate_reason",
+                    "raw_model_expected_points", "conditional_points_if_playing",
+                    "live_participation_reason", "live_role_minutes_ratio",
+                    "team_expected_goals", "team_expected_goals_against",
+                    "team_clean_sheet_probability", "form5_xg", "form5_xa",
+                    "form38_xg", "form38_xa", "form38_minutes", "penalty_order",
+                )
+            },
+            **frozen_participation_fields(row),
+            "fixture_count": row.get("fixture_count"),
+            **frozen_score_distribution(row),
+        }
+        for element, row in sorted(event_rows.items())
+    }
+
+
+def selected_incoming_role_risks(
+    selected_action: EvaluatedAction,
+    event_rows: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Validate incoming transfers against their own current-event forecast rows.
+
+    Keep this as an explicit boundary helper: passing the containing player index to
+    ``player_action_role_risk`` silently turns a covered player into a zero-probability,
+    metadata-free fallback. Missing forecast coverage remains a hard publication failure.
+    """
+
+    risks: list[dict[str, Any]] = []
+    for transfer in selected_action.action.transfers:
+        element = int(transfer.incoming.player_id)
+        row = event_rows.get(element)
+        if row is None:
+            risks.append(
+                {
+                    "element": element,
+                    "player_name": str(element),
+                    "position": str(transfer.incoming.position or ""),
+                    "price": float(transfer.incoming.current_price) / 10.0,
+                    "expected_minutes": 0.0,
+                    "p_play": 0.0,
+                    "participation_consensus": "missing",
+                    "action": "incoming",
+                    "reasons": ["current_event_forecast_missing"],
+                }
+            )
+            continue
+        risk = player_action_role_risk(element, row, row, action="incoming")
+        if risk is not None:
+            risks.append(risk)
+    return risks
 
 
 def summarize_market_shadow_scenario(
@@ -344,6 +438,7 @@ def synthesize_weekly_decision(
     scenario_weights: dict[str, float],
     worst_case_weight: float = 0.25,
     created_at: str | None = None,
+    event_rows: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     ranking = combine_scenario_regret(
         scenario_metrics,
@@ -357,9 +452,71 @@ def synthesize_weekly_decision(
     if roll is None:
         raise ValueError("Weekly decision synthesis requires a roll action")
     robust_leader = by_action[ranking[0]["action_id"]]
-    gate = _promotion_gate(robust_leader, scenario_metrics, scenario_weights)
-    selected = robust_leader if gate["passed"] else roll
-    selected_rank = next(row for row in ranking if row["action_id"] == selected.action_id)
+    # A rejected leader does not invalidate unrelated alternatives. Evaluate
+    # every route against the SAME roll comparator before picking the highest
+    # ranked admissible route. In particular, never skip a safe runner-up merely
+    # because a better but brittle route was generated above it.
+    selection_gates = {}
+    for row in ranking:
+        action = by_action[row["action_id"]]
+        action_gate = _promotion_gate(action, scenario_metrics, scenario_weights)
+        if action.route_type == "roll":
+            action_gate = {
+                "passed": True,
+                "status": "roll_is_robust_leader" if action == robust_leader else "roll_fallback",
+                "checks": [
+                    {
+                        "name": "roll comparator",
+                        "passed": True,
+                        "evidence": "Retaining the squad is an admissible ordinary action.",
+                    }
+                ],
+            }
+        if event_rows is not None:
+            risks = selected_incoming_role_risks(action, event_rows)
+            action_gate["checks"].append(
+                {
+                    "name": "incoming player role evidence",
+                    "passed": not risks,
+                    "evidence": risks or "All incoming players clear the current-event role gate.",
+                }
+            )
+            action_gate["passed"] = action_gate["passed"] and not risks
+        selection_gates[action.action_id] = action_gate
+    # A route we cannot play must not define the ideal against which playable
+    # routes are penalised. Otherwise adding an unsafe, extreme one-world
+    # candidate can reverse the choice between two unchanged safe actions.
+    # Keep the unfiltered ranking as an audit; decision regret is relative only
+    # to the admissible set. No probability, risk weight or safety gate changes.
+    admissible_ids = {key for key, value in selection_gates.items() if value["passed"]}
+    admissible_metrics = {}
+    for name, values in scenario_metrics.items():
+        members = [m for m in values if m.action_id in admissible_ids]
+        best = max(m.mean_net_points for m in members)
+        admissible_metrics[name] = [
+            replace(m, scenario_regret=best - m.mean_net_points) for m in members
+        ]
+    admissible_ranking = combine_scenario_regret(
+        admissible_metrics,
+        scenario_weights=scenario_weights,
+        worst_case_weight=worst_case_weight,
+    )
+    selected = by_action[admissible_ranking[0]["action_id"]]
+    gate = dict(selection_gates[selected.action_id])
+    if selected != robust_leader:
+        if selection_gates[robust_leader.action_id]["passed"]:
+            gate["status"] = (
+                "roll_under_admissible_reference" if selected.route_type == "roll"
+                else "promoted_with_admissible_reference"
+            )
+        elif selected.route_type == "roll":
+            # Preserve the existing roll explanation/consumer contract while
+            # recording the roll's own admissibility separately in the audit.
+            gate = {**selection_gates[robust_leader.action_id], "status": "roll_due_to_uncertainty"}
+        else:
+            gate["status"] = "promoted_after_rejections"
+    unfiltered_rank = next(row for row in ranking if row["action_id"] == selected.action_id)
+    selected_rank = admissible_ranking[0]
     rejected = next((row for row in ranking if row["action_id"] != selected.action_id), None)
     metric_by_scenario = {
         name: asdict(_metric_map(metrics)[selected.action_id])
@@ -369,6 +526,18 @@ def synthesize_weekly_decision(
         name: {metric.action_id: asdict(metric) for metric in metrics}
         for name, metrics in scenario_metrics.items()
     }
+    weighted_gains = {
+        action_id: sum(
+            scenario_weights[name] * all_scenario_metrics[name][action_id]["mean_delta_to_roll"]
+            for name in scenario_weights
+        )
+        for action_id in by_action
+    }
+    mean_leader = min(by_action, key=lambda action_id: (-weighted_gains[action_id], action_id))
+    admissible_mean_leader = min(
+        (action_id for action_id in by_action if selection_gates[action_id]["passed"]),
+        key=lambda action_id: (-weighted_gains[action_id], action_id),
+    )
     action_summaries = [
         {
             "action_id": action.action_id,
@@ -396,6 +565,7 @@ def synthesize_weekly_decision(
             "terminal_transfer_value": action.terminal_transfer_value,
             "gross_horizon_utility": action.gross_horizon_utility,
             "decision_utility": action.decision_utility,
+            "protected_counterfactuals": list(action.protected_counterfactuals),
             "event_lineups": [
                 {
                     "event": item.event,
@@ -412,12 +582,42 @@ def synthesize_weekly_decision(
         for action in actions
     ]
     return {
-        "version": "weekly_decision_synthesis_v3",
+        "version": "weekly_decision_synthesis_v4",
         "created_at": created_at or datetime.now(UTC).isoformat(),
         "decision_event": selected.action.event,
         "selected_action_id": selected.action_id,
         "selected_route_type": selected.route_type,
         "robust_leader_action_id": robust_leader.action_id,
+        "selection_audit": {
+            "version": "admissible_reference_v2",
+            "selected_rank": unfiltered_rank["rank"],
+            "selected_admissible_rank": selected_rank["rank"],
+            "risk_reference": "best admissible action in each world",
+            "incoming_roles_checked": event_rows is not None,
+            "gates_by_action": selection_gates,
+            "rejected_higher_ranked_action_ids": [
+                row["action_id"] for row in ranking
+                if row["rank"] < unfiltered_rank["rank"]
+                and not selection_gates[row["action_id"]]["passed"]
+            ],
+            "reference_changed_selection": selected.action_id != next(
+                row["action_id"] for row in ranking
+                if selection_gates[row["action_id"]]["passed"]
+            ),
+        },
+        "objective_tradeoff": {
+            "objective": "weighted mean regret plus worst-world protection",
+            "worst_case_weight": worst_case_weight,
+            "weighted_mean_leader_action_id": mean_leader,
+            "weighted_mean_leader_gate_passed": selection_gates[mean_leader]["passed"],
+            "admissible_mean_leader_action_id": admissible_mean_leader,
+            "selected_weighted_gain": weighted_gains[selected.action_id],
+            "mean_points_sacrificed_to_safety_gates": weighted_gains[mean_leader]
+            - weighted_gains[admissible_mean_leader],
+            "mean_points_sacrificed_to_robust_ranking": weighted_gains[admissible_mean_leader]
+            - weighted_gains[selected.action_id],
+            "interpretation": "Model-implied horizon points, not observed points or a calibrated guarantee.",
+        },
         "roll_action_id": roll.action_id,
         "promotion_gate": gate,
         "selected_action": asdict(selected),
@@ -427,12 +627,108 @@ def synthesize_weekly_decision(
         "selected_robust_metrics": selected_rank,
         "strongest_rejected": rejected,
         "ranking": ranking,
+        "admissible_ranking": admissible_ranking,
         "method": {
             "scenario_weights": scenario_weights,
             "worst_case_weight": worst_case_weight,
             "points_cost_basis": "incremental points cost; previously committed hits are sunk",
             "roll_is_mandatory_comparator": True,
+            "decision_regret_reference": "admissible candidates only; ranking retains the unfiltered audit",
         },
+    }
+
+
+def synthesize_retained_role_counterfactuals(
+    actions: list[EvaluatedAction],
+    scenario_metrics: dict[str, list[ActionPathMetric]],
+    *,
+    scenario_weights: dict[str, float],
+    selected_action_id: str,
+    ranking: list[dict[str, Any]],
+    event_rows: dict[int, dict[str, Any]],
+) -> dict[str, Any]:
+    """Explain whether an exact severe-role sale route beats the selected action."""
+
+    rank_by_action = {str(row["action_id"]): dict(row) for row in ranking}
+    metrics_by_scenario = {
+        name: {metric.action_id: metric for metric in metrics}
+        for name, metrics in scenario_metrics.items()
+    }
+
+    def weighted_mean(action_id: str) -> float:
+        return sum(
+            float(scenario_weights[name])
+            * float(metrics_by_scenario[name][action_id].mean_net_points)
+            for name in scenario_weights
+        )
+
+    selected = next(action for action in actions if action.action_id == selected_action_id)
+    selected_mean = weighted_mean(selected_action_id)
+    by_element: dict[int, list[EvaluatedAction]] = {}
+    for action in actions:
+        for label in action.protected_counterfactuals:
+            if not label.startswith("retained-role-sale:"):
+                continue
+            element = int(label.rsplit(":", 1)[1])
+            by_element.setdefault(element, []).append(action)
+
+    watches = []
+    for element, candidates in sorted(by_element.items()):
+        best = min(
+            candidates,
+            key=lambda action: int(rank_by_action[action.action_id]["rank"]),
+        )
+        row = event_rows[element]
+        transfers = [
+            {
+                "outgoing_player_id": int(transfer.outgoing_player_id),
+                "outgoing_name": str(
+                    event_rows[int(transfer.outgoing_player_id)].get("player_name")
+                    or transfer.outgoing_player_id
+                ),
+                "incoming_player_id": int(transfer.incoming.player_id),
+                "incoming_name": str(
+                    event_rows[int(transfer.incoming.player_id)].get("player_name")
+                    or transfer.incoming.player_id
+                ),
+            }
+            for transfer in best.action.transfers
+        ]
+        selected_sells = any(
+            int(transfer.outgoing_player_id) == element for transfer in selected.action.transfers
+        )
+        best_mean = weighted_mean(best.action_id)
+        watches.append(
+            {
+                "element": element,
+                "player_name": str(row.get("player_name") or element),
+                "position": str(row.get("position") or ""),
+                "price": float(row.get("market_price") or 0.0) / 10.0,
+                "last_minutes": float(row.get("last_minutes") or 0.0),
+                "expected_minutes": expected_minutes(row),
+                "p_play": float(row.get("p_play") or 0.0),
+                "expected_points": float(row.get("expected_points") or 0.0),
+                "participation_consensus": str(
+                    row.get("live_participation_consensus") or "not_covered"
+                ),
+                "selected_action_sells_player": selected_sells,
+                "best_forced_sale_action_id": best.action_id,
+                "best_forced_sale_rank": int(rank_by_action[best.action_id]["rank"]),
+                "best_forced_sale_route_type": best.route_type,
+                "best_forced_sale_transfers": transfers,
+                "best_forced_sale_weighted_mean": best_mean,
+                "selected_weighted_mean": selected_mean,
+                "forced_sale_delta_to_selected": best_mean - selected_mean,
+                "forced_sale_beats_selected": best_mean > selected_mean,
+            }
+        )
+    return {
+        "status": "evaluated" if watches else "no_severe_retained_role_watches",
+        "policy": (
+            "Every severe retained role watch receives an exact sale route in the same "
+            "shared-world simulation and robust ranking as the selected action."
+        ),
+        "watches": watches,
     }
 
 
@@ -444,6 +740,7 @@ def synthesize_team_chip_shadow(
     scenario_weights: dict[str, float],
     schedule_status: dict[str, Any] | None = None,
     retention_calibration: dict[str, Any] | None = None,
+    comparison_action_id: str | None = None,
 ) -> dict[str, Any]:
     if not chip_actions:
         return {
@@ -459,6 +756,11 @@ def synthesize_team_chip_shadow(
     index = {action.action_id: offset for offset, action in enumerate(all_actions)}
     if len(index) != len(all_actions):
         raise ValueError("Chip shadow actions must have unique IDs")
+    if comparison_action_id is not None and comparison_action_id not in {
+        action.action_id for action in base_actions
+    }:
+        raise ValueError("Team-chip comparison action must be an evaluated ordinary action")
+    comparison_index = index[comparison_action_id] if comparison_action_id is not None else None
     central_name = max(scenario_weights, key=scenario_weights.get)
     schedule_confirmed = bool(schedule_status and schedule_status.get("fully_confirmed"))
     schedule_issues = (
@@ -491,6 +793,11 @@ def synthesize_team_chip_shadow(
         scenario_rows = {}
         for name, totals in scenario_totals.items():
             raw_delta = totals[:, variant_index] - totals[:, parent_index]
+            comparison_delta = (
+                totals[:, variant_index] - totals[:, comparison_index]
+                if comparison_index is not None
+                else raw_delta
+            )
             net_delta = raw_delta - retained_value
             mean = float(net_delta.mean())
             standard_error = (
@@ -505,7 +812,25 @@ def synthesize_team_chip_shadow(
                 "net_value_95ci_low": mean - 1.96 * standard_error,
                 "net_value_95ci_high": mean + 1.96 * standard_error,
                 "probability_current_beats_retention_proxy": float(np.mean(net_delta > 0)),
+                "mean_delta_to_comparison_ordinary": float(comparison_delta.mean()),
+                "delta_to_comparison_95ci_low": float(comparison_delta.mean())
+                - 1.96
+                * (
+                    float(comparison_delta.std(ddof=1) / math.sqrt(len(comparison_delta)))
+                    if len(comparison_delta) > 1
+                    else 0.0
+                ),
             }
+        weighted_comparison = sum(
+            scenario_weights[name] * values["mean_delta_to_comparison_ordinary"]
+            for name, values in scenario_rows.items()
+        )
+        worst_comparison = min(
+            values["mean_delta_to_comparison_ordinary"] for values in scenario_rows.values()
+        )
+        comparison_ci_low = min(
+            values["delta_to_comparison_95ci_low"] for values in scenario_rows.values()
+        )
         weighted = sum(
             scenario_weights[name] * values["mean_net_value"]
             for name, values in scenario_rows.items()
@@ -565,6 +890,7 @@ def synthesize_team_chip_shadow(
             {
                 "action_id": action.action_id,
                 "parent_action_id": action.parent_action_id,
+                "comparison_ordinary_action_id": comparison_action_id,
                 "chip": action.action.chip.value if action.action.chip else None,
                 "route_type": action.route_type,
                 "current_proxy_uplift": action.chip_current_proxy_uplift,
@@ -573,6 +899,9 @@ def synthesize_team_chip_shadow(
                 "chip_horizon_complete": action.chip_horizon_complete,
                 "weighted_mean_net_value": weighted,
                 "worst_scenario_net_value": worst,
+                "weighted_delta_to_comparison_ordinary": weighted_comparison,
+                "worst_delta_to_comparison_ordinary": worst_comparison,
+                "delta_to_comparison_95ci_low": comparison_ci_low,
                 "scenario_metrics": scenario_rows,
                 "checks": checks,
                 "shadow_gate_passed": all(check["passed"] for check in checks),
@@ -627,6 +956,7 @@ def synthesize_squad_chip_shadow(
     scenario_weights: dict[str, float],
     schedule_status: dict[str, Any] | None = None,
     retention_calibration: dict[str, Any] | None = None,
+    comparison_action_id: str | None = None,
 ) -> dict[str, Any]:
     """Compare exact WC/FH searches while retaining both chips operationally."""
     if not squad_chip_actions:
@@ -655,7 +985,9 @@ def synthesize_squad_chip_shadow(
         )
         for action in base_actions
     }
-    baseline_id = max(
+    if comparison_action_id is not None and comparison_action_id not in weighted_base_means:
+        raise ValueError("Squad-chip comparison action must be an evaluated ordinary action")
+    baseline_id = comparison_action_id or max(
         weighted_base_means,
         key=lambda action_id: (weighted_base_means[action_id], action_id),
     )
@@ -826,6 +1158,7 @@ def simulate_production_weekly_scenarios(
     component_seed: int = 20260812,
     horizon_decay: float = 0.88,
     component_forecast_path: Path = CURRENT_COMPONENT_FORECAST,
+    worlds_out: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[
     dict[str, list[ActionPathMetric]],
     dict[str, Any],
@@ -973,6 +1306,29 @@ def simulate_production_weekly_scenarios(
         "component_anchored": 0.50 * (1.0 - raw_weight),
         "component_raw": 0.50 * raw_weight,
     }
+    if worlds_out is not None:
+        worlds_out.update(
+            {
+                "residual": {
+                    "player_ids": player_ids,
+                    "points": residual_points,
+                    "played": residual_played,
+                    "player_meta": meta,
+                },
+                "component_anchored": {
+                    "player_ids": component_player_ids,
+                    "points": anchored_points,
+                    "played": component_played,
+                    "player_meta": meta,
+                },
+                "component_raw": {
+                    "player_ids": component_player_ids,
+                    "points": raw_points,
+                    "played": component_played,
+                    "player_meta": meta,
+                },
+            }
+        )
     return (
         {
             "residual": residual_metrics,
@@ -999,6 +1355,60 @@ def simulate_production_weekly_scenarios(
     )
 
 
+def _select_weekly_strategy(
+    actions, chip_actions, squad_chip_actions, all_scenario_metrics, scenario_totals,
+    *, state, rows, event, scenario_weights, horizon_schedule, schedule_receipt, created_at,
+    squad_timing=None,
+):
+    """One selector for original/refined policies; never selects on holdout data."""
+    all_actions = [*actions, *chip_actions, *squad_chip_actions]
+    action_ids = {action.action_id for action in actions}
+    scenario_metrics = {}
+    for name, metrics in all_scenario_metrics.items():
+        base_metrics = [metric for metric in metrics if metric.action_id in action_ids]
+        base_best = max(metric.mean_net_points for metric in base_metrics)
+        scenario_metrics[name] = [
+            replace(metric, scenario_regret=base_best - metric.mean_net_points)
+            for metric in base_metrics
+        ]
+    result = synthesize_weekly_decision(
+        actions, scenario_metrics, scenario_weights=scenario_weights, created_at=created_at,
+        event_rows={int(row["element"]): row for row in rows if int(row["event_number"]) == event},
+    )
+    selected_action = next(a for a in actions if a.action_id == result["selected_action_id"])
+    result["chip_shadow"] = synthesize_team_chip_shadow(
+        actions, chip_actions,
+        {name: values[:, :len(actions) + len(chip_actions)] for name, values in scenario_totals.items()},
+        scenario_weights=scenario_weights, schedule_status=horizon_schedule,
+        retention_calibration=(load_team_chip_retention_results() if chip_actions else None),
+        comparison_action_id=selected_action.action_id,
+    )
+    result["squad_chip_shadow"] = synthesize_squad_chip_shadow(
+        actions, squad_chip_actions, all_actions, scenario_totals,
+        scenario_weights=scenario_weights, schedule_status=horizon_schedule,
+        retention_calibration=(load_squad_chip_retention_results() if squad_chip_actions else None),
+        comparison_action_id=selected_action.action_id,
+    )
+    try:
+        chip_calibration = load_chip_strategy_calibration()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        result["chip_strategy"] = {
+            "version": "joint_chip_strategy_v2", "status": "blocked_missing_calibration",
+            "decision_event": event, "operational_recommendation": "no_chip",
+            "headline": "Retain all chips until calibration is available", "reason": str(exc),
+            "candidates": [],
+        }
+    else:
+        result["chip_strategy"] = synthesize_joint_chip_strategy(
+            state=state, selected_action=selected_action, forecast_rows=rows,
+            team_shadow=result["chip_shadow"], squad_shadow=result["squad_chip_shadow"],
+            schedule_receipt=schedule_receipt, calibration=chip_calibration,
+            chip_actions=chip_actions, squad_chip_actions=squad_chip_actions,
+            squad_timing=squad_timing,
+        )
+    return result, scenario_metrics
+
+
 def run_weekly_decision(
     rules: SquadRules,
     *,
@@ -1017,6 +1427,7 @@ def run_weekly_decision(
     schedule_receipt_path: Path = CURRENT_SCHEDULE_RECEIPT,
     schedule_fixtures_path: Path = CURRENT_SCHEDULE_FIXTURES,
     created_at: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     if event not in events:
         raise ValueError("Decision event must be included in the forecast horizon")
@@ -1054,6 +1465,7 @@ def run_weekly_decision(
         maximum=rules.max_free_transfers,
         rules=rules,
     )
+    ordinary_search_diagnostics: list[dict[str, Any]] = []
     actions = generate_weekly_actions(
         state,
         rows,
@@ -1063,6 +1475,7 @@ def run_weekly_decision(
         max_total_transfers=max_total_transfers,
         max_paid_transfers=max_paid_transfers,
         terminal_free_transfer_curve=terminal_transfer_curve,
+        search_diagnostics=ordinary_search_diagnostics,
     )
     chip_actions = generate_team_chip_shadow_actions(
         state,
@@ -1071,6 +1484,12 @@ def run_weekly_decision(
         rules,
         events=events,
     )
+    squad_timing = load_live_timing(event=event, fingerprint=squad_fingerprint(state))
+    # The full-half planner picks the Wildcard squad by simulation from several
+    # builds. When it says play now, publish that squad, not a fresh search.
+    wildcard_squad = None
+    if squad_timing and (squad_timing.get("verdict") or {}).get("play_now"):
+        wildcard_squad = tuple(squad_timing.get("wildcard_squad", {}).get("player_ids", ())) or None
     squad_chip_actions = generate_squad_chip_shadow_actions(
         state,
         rows,
@@ -1078,8 +1497,20 @@ def run_weekly_decision(
         events=events,
         alternatives_per_chip=alternatives_per_transfer_count,
         terminal_free_transfer_curve=terminal_transfer_curve,
+        wildcard_squad=wildcard_squad,
     )
     all_actions = [*actions, *chip_actions, *squad_chip_actions]
+    from .weekly_configuration import (
+        SELECTION_MIN_SAMPLES,
+        execution_plan,
+        select_validated_configurations,
+    )
+
+    # Stable precision floor for configuration search, not a player-specific
+    # adjustment. Original/refined routes use identical selection samples.
+    residual_simulations = max(residual_simulations, SELECTION_MIN_SAMPLES)
+    component_simulations = max(component_simulations, SELECTION_MIN_SAMPLES)
+    research_worlds: dict[str, dict[str, Any]] = {}
     (
         all_scenario_metrics,
         diagnostics,
@@ -1092,43 +1523,41 @@ def run_weekly_decision(
         residual_simulations=residual_simulations,
         component_simulations=component_simulations,
         component_forecast_path=component_forecast_path,
+        worlds_out=research_worlds,
     )
-    action_ids = {action.action_id for action in actions}
-    scenario_metrics = {}
-    for name, metrics in all_scenario_metrics.items():
-        base_metrics = [metric for metric in metrics if metric.action_id in action_ids]
-        base_best = max(metric.mean_net_points for metric in base_metrics)
-        scenario_metrics[name] = [
-            replace(metric, scenario_regret=base_best - metric.mean_net_points)
-            for metric in base_metrics
-        ]
-    result = synthesize_weekly_decision(
-        actions,
-        scenario_metrics,
-        scenario_weights=scenario_weights,
-        created_at=created_at,
-    )
-    team_chip_columns = len(actions) + len(chip_actions)
-    team_chip_totals = {
-        name: values[:, :team_chip_columns] for name, values in scenario_totals.items()
+    strategy_kwargs = {
+        "state": state, "rows": rows, "event": event, "scenario_weights": scenario_weights,
+        "horizon_schedule": horizon_schedule, "schedule_receipt": schedule_receipt,
+        "created_at": created_at,
+        "squad_timing": squad_timing,
     }
-    result["chip_shadow"] = synthesize_team_chip_shadow(
-        actions,
-        chip_actions,
-        team_chip_totals,
-        scenario_weights=scenario_weights,
-        schedule_status=horizon_schedule,
-        retention_calibration=(load_team_chip_retention_results() if chip_actions else None),
+    n_ordinary, n_team = len(actions), len(chip_actions)
+
+    def select_configured(candidate_actions, candidate_metrics, candidate_totals):
+        return _select_weekly_strategy(
+            candidate_actions[:n_ordinary], candidate_actions[n_ordinary:n_ordinary + n_team],
+            candidate_actions[n_ordinary + n_team:], candidate_metrics, candidate_totals,
+            **strategy_kwargs,
+        )
+
+    (all_actions, all_scenario_metrics, scenario_totals, result,
+     scenario_metrics, configuration_audit) = select_validated_configurations(
+        all_actions, state, rows, rules, research_worlds, scenario_weights,
+        all_scenario_metrics, scenario_totals, events=events, selector=select_configured,
+        component_forecast_path=component_forecast_path,
+        selection_seeds=(diagnostics["residual_seed"], diagnostics["component_seed"]),
+        progress=progress,
     )
-    result["squad_chip_shadow"] = synthesize_squad_chip_shadow(
-        actions,
-        squad_chip_actions,
-        all_actions,
-        scenario_totals,
-        scenario_weights=scenario_weights,
-        schedule_status=horizon_schedule,
-        retention_calibration=(load_squad_chip_retention_results() if squad_chip_actions else None),
-    )
+    actions = all_actions[:n_ordinary]
+    chip_actions = all_actions[n_ordinary:n_ordinary + n_team]
+    squad_chip_actions = all_actions[n_ordinary + n_team:]
+    diagnostics["configuration_optimisation"] = configuration_audit
+    if (sha256_file(forecast_path) != lineage["direct_forecast_sha256"]
+            or sha256_file(component_forecast_path) != lineage["component_forecast_sha256"]):
+        raise RuntimeError("Forecast inputs changed during configuration validation")
+    for name in ("form_reversion_shadow", "market_goal_rate_shadow"):
+        diagnostics[name]["configuration_basis"] = "original scalar configurations; diagnostic only"
+    selected_action = next(a for a in actions if a.action_id == result["selected_action_id"])
     player_names = {
         int(row["element"]): str(row.get("player_name") or f"#{row['element']}")
         for row in rows
@@ -1175,6 +1604,7 @@ def run_weekly_decision(
                 int(transfer["incoming_player_id"]),
                 f"#{transfer['incoming_player_id']}",
             )
+    result["execution_plan"] = execution_plan(result, all_actions, rows)
     relevant_players = sorted(
         {
             int(element)
@@ -1190,36 +1620,33 @@ def run_weekly_decision(
             for element in candidate["selected_player_ids"]
         }
     )
-    result["event_player_forecasts"] = {
-        str(element): {
-            "element": element,
-            "player_name": player_names.get(element, f"#{element}"),
-            "position": str(event_rows[element]["position"]),
-            "team_id": int(event_rows[element]["team_id"]),
-            "expected_points": float(event_rows[element]["expected_points"]),
-            "robust_points": float(
-                event_rows[element].get("robust_points", event_rows[element]["expected_points"])
-            ),
-            "p_play": float(event_rows[element].get("p_play", 1.0)),
-            "expected_minutes": (
-                float(event_rows[element]["expected_minutes"])
-                if event_rows[element].get("expected_minutes") is not None
-                else None
-            ),
-            "points_pmf": empirical_points_pmf(
-                float(event_rows[element]["expected_points"]),
-                position=str(event_rows[element]["position"]),
-                p_dnp=float(event_rows[element].get("p_dnp") or 0.0),
-            ),
-            "distribution_source": (
-                "pre-2026 position residual distribution plus explicit DNP mass"
-            ),
-            "distribution_calibration_sha256": sha256_file(RESIDUAL_CALIBRATION),
-        }
-        for element in relevant_players
+    result["event_player_forecasts"] = freeze_weekly_player_forecasts(event_rows)
+    result["forecast_coverage"] = {
+        "scope": "entire_current_event_forecast_pool",
+        "forecast_players": len(event_rows),
+        "candidate_players": len(relevant_players),
+        "candidate_player_ids": relevant_players,
+        "historical_backfill": False,
     }
     result["diagnostics"] = diagnostics
+    result["diagnostics"]["ordinary_candidate_search"] = {
+        "complete_requested_searches": not any(
+            row["status"] == "unresolved" for row in ordinary_search_diagnostics
+        ),
+        "attempts": ordinary_search_diagnostics,
+        "scope": "bounded ordinary candidates, including protected role-sale routes; not a global policy optimum",
+    }
     result["diagnostics"]["schedule_rearrangement_shadow"] = rearrangement_shadow
+    result["diagnostics"]["retained_role_counterfactuals"] = (
+        synthesize_retained_role_counterfactuals(
+            actions,
+            scenario_metrics,
+            scenario_weights=scenario_weights,
+            selected_action_id=result["selected_action_id"],
+            ranking=result["ranking"],
+            event_rows=event_rows,
+        )
+    )
     if DEFAULT_MINI_LEAGUE_CONTEXT.is_file():
         try:
             mini_league_context = json.loads(
@@ -1242,9 +1669,18 @@ def run_weekly_decision(
             "operational_recommendation": result["selected_action_id"],
             "required_context": str(DEFAULT_MINI_LEAGUE_CONTEXT),
         }
-    selected_action = next(
-        action for action in actions if action.action_id == result["selected_action_id"]
-    )
+    incoming_role_risks = selected_incoming_role_risks(selected_action, event_rows)
+    result["diagnostics"]["selected_incoming_role_gate"] = {
+        "passed": not incoming_role_risks,
+        "event": event,
+        "risks": incoming_role_risks,
+        "policy": "Every incoming transfer must clear the current-event appearance and minutes floor.",
+    }
+    if incoming_role_risks:
+        raise RuntimeError(
+            "Selected weekly action failed the incoming-player role gate: "
+            + "; ".join(str(risk) for risk in incoming_role_risks)
+        )
     event_deadline = next(
         str(row["deadline_time"])
         for row in pq.read_table(CURRENT_FPL_EVENTS).to_pylist()
@@ -1257,8 +1693,109 @@ def run_weekly_decision(
         as_of=str(result["created_at"]),
         selection_stable=bool(result["promotion_gate"]["passed"]),
     )
+    result["diagnostics"]["retained_asset_price_risks"] = evaluate_retained_asset_price_risks(
+        state,
+        selected_action,
+        deadline_at=event_deadline,
+        as_of=str(result["created_at"]),
+    )
     result["diagnostics"]["terminal_free_transfer_value"] = terminal_transfer_receipt
+    from .weekly_continuation import evaluate_weekly_continuation
+
+    try:
+        result["diagnostics"]["transfer_continuation"] = evaluate_weekly_continuation(
+            actions,
+            rows,
+            rules,
+            events=events,
+            selected_action_id=selected_action.action_id,
+            ranked_action_ids=[row["action_id"] for row in result["ranking"]],
+            terminal_free_transfer_curve=terminal_transfer_curve,
+        )
+    except (ValueError, RuntimeError, TypeError) as exc:
+        # Optional research must not replace or invalidate an otherwise legal
+        # recommendation. Expose missing/invalid evidence instead of hiding it.
+        result["diagnostics"]["transfer_continuation"] = {
+            "version": "weekly_continuation_v1",
+            "status": "blocked_diagnostic",
+            "decision_authority": False,
+            "operational_action_id": selected_action.action_id,
+            "reason": str(exc),
+        }
     result["forecast_lineage"] = lineage
+    from .weekly_policy_research import build_policy_plans, score_policy_plans
+
+    try:
+        plans, plan_receipt = build_policy_plans(
+            actions,
+            [*chip_actions, *squad_chip_actions],
+            rows,
+            rules,
+            events=events,
+            selected_id=selected_action.action_id,
+            terminal_curve=terminal_transfer_curve,
+        )
+        result["diagnostics"]["stateful_policy_research"] = score_policy_plans(
+            actions,
+            plans,
+            plan_receipt,
+            research_worlds,
+            scenario_weights,
+            events=events,
+            selected_id=selected_action.action_id,
+            event_rows=event_rows,
+        )
+    except (ValueError, RuntimeError, TypeError, KeyError) as exc:
+        result["diagnostics"]["stateful_policy_research"] = {
+            "status": "blocked_diagnostic",
+            "decision_authority": False,
+            "reason": str(exc),
+        }
+    from .allocation_research import run_allocation_research
+    from .role_shift_research import current_role_diagnostic
+
+    try:
+        result["diagnostics"]["allocation_research"] = run_allocation_research(
+            state,
+            actions,
+            rows,
+            rules,
+            research_worlds,
+            scenario_weights,
+            events=events,
+            selected_id=selected_action.action_id,
+            terminal_curve=terminal_transfer_curve,
+        )
+    except (ValueError, RuntimeError, TypeError, KeyError) as exc:
+        result["diagnostics"]["allocation_research"] = {
+            "status": "blocked_diagnostic",
+            "decision_authority": False,
+            "reason": str(exc),
+        }
+    try:
+        result["diagnostics"]["role_shift_research"] = current_role_diagnostic(rows, event=event)
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError) as exc:
+        result["diagnostics"]["role_shift_research"] = {
+            "status": "blocked_diagnostic",
+            "decision_authority": False,
+            "reason": str(exc),
+        }
+    from .chip_opportunity_audit import audit_chip_opportunities
+
+    try:
+        ordinary_selected = next(a for a in actions if a.action_id == result["selected_action_id"])
+        result["diagnostics"]["exact_chip_opportunities"] = audit_chip_opportunities(
+            state, ordinary_selected, rows, research_worlds, scenario_weights, events,
+            load_chip_strategy_calibration(),
+        )
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, StopIteration) as exc:
+        result["diagnostics"]["exact_chip_opportunities"] = {
+            "status": "blocked_diagnostic", "decision_authority": False, "reason": str(exc),
+        }
+    research_worlds.clear()
+    from .policy_release import attach_policy_release
+
+    attach_policy_release(result)
     result["schedule_lineage"] = {
         "receipt_fingerprint": schedule_receipt["receipt_fingerprint"],
         "schedule_fingerprint": schedule_receipt["schedule_fingerprint"],
@@ -1289,6 +1826,16 @@ def run_weekly_decision(
             {
                 "terminal_transfer_value": str(TRANSFER_VALUE_ARTIFACT),
                 "terminal_transfer_value_sha256": sha256_file(TRANSFER_VALUE_ARTIFACT),
+            }
+        )
+    role_diagnostic = result["diagnostics"].get("role_shift_research", {})
+    if role_diagnostic.get("status") == "ready_diagnostic":
+        from .role_shift_research import ARTIFACT as ROLE_SHIFT_CALIBRATION
+
+        result["source_artifacts"].update(
+            {
+                "role_shift_research_calibration": str(ROLE_SHIFT_CALIBRATION),
+                "role_shift_research_calibration_sha256": role_diagnostic["model_sha256"],
             }
         )
     if CHALLENGER_REGISTRY.is_file():
@@ -1374,6 +1921,14 @@ def run_weekly_decision(
             {
                 "team_chip_retention_replay": team_chip_retention["receipt_path"],
                 "team_chip_retention_replay_sha256": team_chip_retention["receipt_sha256"],
+            }
+        )
+    joint_chip_calibration = result.get("chip_strategy", {}).get("calibration") or {}
+    if joint_chip_calibration.get("receipt_path"):
+        result["source_artifacts"].update(
+            {
+                "joint_chip_strategy_calibration": joint_chip_calibration["receipt_path"],
+                "joint_chip_strategy_calibration_sha256": joint_chip_calibration["receipt_sha256"],
             }
         )
     output_path.parent.mkdir(parents=True, exist_ok=True)

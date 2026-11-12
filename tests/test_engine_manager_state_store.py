@@ -100,6 +100,7 @@ def _derive(tmp_path: Path, *, free_transfers: int | None = 2) -> dict:
         snapshot_manifest_root=snapshot_manifests,
         state_root=tmp_path / "states",
         state_manifest_root=tmp_path / "state-manifests",
+        minimum_snapshot_observed_at="2026-08-27T17:30:00+00:00",
     )
 
 
@@ -148,6 +149,35 @@ def test_incomplete_preseason_state_reports_not_ready_without_contract(tmp_path:
     assert not manager_state_pointer_path(7, tmp_path / "state-manifests").exists()
 
 
+def test_snapshot_before_previous_deadline_cannot_be_relabelled_as_next_event_state(
+    tmp_path: Path,
+) -> None:
+    snapshot_root = tmp_path / "raw"
+    snapshot_manifests = tmp_path / "snapshot-manifests"
+    archive_manager_snapshot(
+        _snapshot(),
+        snapshot_root=snapshot_root,
+        manifest_root=snapshot_manifests,
+    )
+
+    result = derive_latest_manager_state(
+        7,
+        3,
+        forecast_path=_forecast(tmp_path / "forecast.parquet", event=3),
+        rules=_rules(),
+        snapshot_root=snapshot_root,
+        snapshot_manifest_root=snapshot_manifests,
+        state_root=tmp_path / "states",
+        state_manifest_root=tmp_path / "state-manifests",
+        minimum_snapshot_observed_at="2026-08-28T17:30:00+00:00",
+    )
+
+    assert result["status"] == "not_ready"
+    assert result["reason_code"] == "manager_snapshot_predates_previous_deadline"
+    assert "Reconnect FPL" in result["message"]
+    assert not (tmp_path / "states").exists()
+
+
 def test_same_generation_rejects_content_collision(tmp_path: Path) -> None:
     result = _derive(tmp_path)
     contract_path = Path(result["contract_path"])
@@ -165,6 +195,7 @@ def test_same_generation_rejects_content_collision(tmp_path: Path) -> None:
             snapshot_manifest_root=tmp_path / "snapshot-manifests",
             state_root=tmp_path / "states",
             state_manifest_root=tmp_path / "state-manifests",
+            minimum_snapshot_observed_at="2026-08-27T17:30:00+00:00",
         )
 
 

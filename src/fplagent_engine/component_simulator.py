@@ -22,6 +22,7 @@ from fplagent_data.arrow import write_table
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import PROCESSED
 
+from .acceleration import xgboost_infer
 from .artifact_lineage import (
     load_json_artifact,
     require_current_forecast,
@@ -46,6 +47,7 @@ from .tournament import (
     DEFAULT_EVENTS,
     PLAYER_GAMEWEEKS,
     TRAINING_FEATURES,
+    ResidualCalibration,
     _finalist_candidates,
     _load_rows,
     _metrics,
@@ -329,9 +331,7 @@ def train_goal_model(*, force: bool = False, seed: int = 20260802) -> dict[str, 
         test_matrix = np.where(np.isnan(matrix[testing]), medians, matrix[testing])
         model = _goal_regressor(seed + int(test_season[:4]))
         model.fit(train_matrix, target[training], verbose=False)
-        predicted = np.clip(
-            model.get_booster().predict(xgb.DMatrix(test_matrix)), 0.05, 6.0
-        )
+        predicted = np.clip(xgboost_infer(model, test_matrix), 0.05, 6.0)
         is_home_train = matrix[training, 0] >= 0.5
         baseline_home = float(target[training][is_home_train].mean())
         baseline_away = float(target[training][~is_home_train].mean())
@@ -412,7 +412,10 @@ def _goal_feature_vector(row: dict[str, Any], is_home: bool) -> list[float]:
 
 
 def predict_current_goal_rates(
-    by_player: dict[int, dict[int, dict]], events: tuple[int, ...] = DEFAULT_EVENTS
+    by_player: dict[int, dict[int, dict]],
+    events: tuple[int, ...] = DEFAULT_EVENTS,
+    *,
+    persist: bool = True,
 ) -> tuple[dict[tuple[int, int, int], tuple[float, float]], dict[str, Any]]:
     if not GOAL_MODEL_FILE.exists():
         train_goal_model()
@@ -438,9 +441,7 @@ def predict_current_goal_rates(
         keys.append((event, home, away))
     matrix = np.asarray(design, dtype=np.float32)
     matrix = np.where(np.isnan(matrix), artifact["medians"], matrix)
-    predicted = np.clip(
-        artifact["model"].get_booster().predict(xgb.DMatrix(matrix)), 0.10, 4.50
-    )
+    predicted = np.clip(xgboost_infer(artifact["model"], matrix), 0.10, 4.50)
     rates = {
         key: (float(predicted[offset * 2]), float(predicted[offset * 2 + 1]))
         for offset, key in enumerate(keys)
@@ -457,7 +458,8 @@ def predict_current_goal_rates(
         }
         for event, home, away in keys
     ]
-    pq.write_table(pa.Table.from_pylist(output_rows), CURRENT_GOAL_RATES, compression="zstd")
+    if persist:
+        pq.write_table(pa.Table.from_pylist(output_rows), CURRENT_GOAL_RATES, compression="zstd")
     return rates, {
         "fixtures": len(keys),
         "mean_home_goal_rate": float(np.mean(predicted[0::2])),
@@ -468,21 +470,36 @@ def predict_current_goal_rates(
     }
 
 
-def calibrate_empirical_components() -> EmpiricalComponents:
+def calibrate_empirical_components(*, before_season: str | None = None) -> EmpiricalComponents:
     connection = duckdb.connect()
     try:
+        # Use a scoped relation so EVERY empirical pool, including minutes,
+        # cards, saves and multi-fixture appearances, obeys the training cutoff.
+        connection.execute(
+            f"CREATE TEMP VIEW historical_components AS SELECT * FROM "
+            f"read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')"
+        )
+        if before_season is not None:
+            if len(before_season) != 7 or not before_season[:4].isdigit() or not before_season[5:].isdigit() or before_season[4] != "-":
+                raise ValueError("Invalid empirical component season cutoff")
+            connection.execute(
+                f"CREATE TEMP VIEW eligible_components AS SELECT * FROM historical_components "
+                f"WHERE season < '{before_season}'"
+            )
+        else:
+            connection.execute("CREATE TEMP VIEW eligible_components AS SELECT * FROM historical_components")
         minute_rows = connection.execute(
-            f"""
+            """
             SELECT position,
                    CASE WHEN minutes = 0 THEN 0 WHEN minutes < 60 THEN 1
                         WHEN minutes < 90 THEN 2 ELSE 3 END AS class,
                    minutes
-            FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')
+            FROM eligible_components
             WHERE position IN ('GK', 'DEF', 'MID', 'FWD')
             """
         ).fetchall()
         rate_rows = connection.execute(
-            f"""
+            """
             SELECT position, sum(minutes)::DOUBLE AS minutes,
                    sum(goals_scored)::DOUBLE AS goals,
                    sum(assists)::DOUBLE AS assists,
@@ -492,14 +509,14 @@ def calibrate_empirical_components() -> EmpiricalComponents:
                    sum(penalties_missed)::DOUBLE AS penalties_missed,
                    sum(penalties_saved)::DOUBLE AS penalties_saved,
                    sum(saves)::DOUBLE AS saves
-            FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')
+            FROM eligible_components
             WHERE season >= '2023-24' AND minutes > 0
               AND position IN ('GK', 'DEF', 'MID', 'FWD')
             GROUP BY position
             """
         ).fetchall()
         dc_rows = connection.execute(
-            f"""
+            """
             SELECT position,
                    CASE WHEN minutes < 60 THEN 1 WHEN minutes < 90 THEN 2 ELSE 3 END AS class,
                    count(*) AS rows,
@@ -507,19 +524,19 @@ def calibrate_empirical_components() -> EmpiricalComponents:
                        WHEN position = 'DEF' AND defensive_contribution >= 10 THEN 1.0
                        WHEN position IN ('MID', 'FWD') AND defensive_contribution >= 12 THEN 1.0
                        ELSE 0.0 END) AS probability
-            FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')
+            FROM eligible_components
             WHERE season = '2025-26' AND minutes > 0
               AND position IN ('DEF', 'MID', 'FWD')
             GROUP BY position, class
             """
         ).fetchall()
         multi_fixture_rows = connection.execute(
-            f"""
+            """
             WITH player_events AS (
                 SELECT season, GW AS event, element,
                        count(DISTINCT fixture) AS fixture_count,
                        sum(CASE WHEN minutes > 0 THEN 1 ELSE 0 END) AS appearance_count
-                FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')
+                FROM eligible_components
                 GROUP BY season, GW, element
             )
             SELECT fixture_count, appearance_count, count(*) AS observations
@@ -530,10 +547,10 @@ def calibrate_empirical_components() -> EmpiricalComponents:
             """
         ).fetchall()
         total_rows = connection.execute(
-            f"SELECT count(*) FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')"
+            "SELECT count(*) FROM eligible_components"
         ).fetchone()[0]
         recent_rows = connection.execute(
-            f"""SELECT count(*) FROM read_parquet('{_sql_path(PLAYER_GAMEWEEKS)}')
+            """SELECT count(*) FROM eligible_components
                  WHERE season >= '2023-24' AND minutes > 0"""
         ).fetchone()[0]
     finally:
@@ -1180,6 +1197,17 @@ def _calibrate_to_xp(
     }
 
 
+@dataclass(frozen=True)
+class ComponentSimulationInputs:
+    """Complete explicit dependencies: historical simulation cannot mix in live data."""
+
+    fixture_rows: list[dict]
+    residual_calibration: ResidualCalibration
+    component_forecasts: dict[tuple[int, int], dict]
+    score_correlation: float
+    provenance: dict
+
+
 def simulate_component_outcomes(
     by_player: dict[int, dict[int, dict]],
     events: tuple[int, ...],
@@ -1190,6 +1218,7 @@ def simulate_component_outcomes(
     *,
     component_forecast_path: Path = CURRENT_COMPONENT_FORECAST,
     component_point_weights: dict[str, int] | None = None,
+    simulation_inputs: ComponentSimulationInputs | None = None,
 ) -> tuple[
     list[int],
     np.ndarray,
@@ -1249,7 +1278,8 @@ def simulate_component_outcomes(
     fixture_rows = sorted(
         (
             row
-            for row in pq.read_table(CURRENT_FIXTURES).to_pylist()
+            for row in (simulation_inputs.fixture_rows if simulation_inputs is not None
+                        else pq.read_table(CURRENT_FIXTURES).to_pylist())
             if row["event"] is not None and int(row["event"]) in events
         ),
         key=lambda row: (int(row["event"]), int(row["id"])),
@@ -1257,11 +1287,19 @@ def simulate_component_outcomes(
     fixtures_by_event: dict[int, list[dict]] = defaultdict(list)
     for fixture in fixture_rows:
         fixtures_by_event[int(fixture["event"])].append(fixture)
-    residual_calibration = calibrate_residuals()
-    component_forecasts, component_forecast_diagnostics = _load_component_event_forecasts(
-        component_forecast_path
-    )
-    score_correlation = float(joblib.load(GOAL_MODEL_FILE)["score_correlation"])
+    if simulation_inputs is None:
+        residual_calibration = calibrate_residuals()
+        component_forecasts, component_forecast_diagnostics = _load_component_event_forecasts(
+            component_forecast_path
+        )
+        score_correlation = float(joblib.load(GOAL_MODEL_FILE)["score_correlation"])
+    else:
+        residual_calibration = simulation_inputs.residual_calibration
+        component_forecasts = simulation_inputs.component_forecasts
+        component_forecast_diagnostics = dict(simulation_inputs.provenance)
+        score_correlation = float(simulation_inputs.score_correlation)
+        if not math.isfinite(score_correlation) or not -0.15 <= score_correlation <= 0.15:
+            raise ValueError("Invalid explicit match-score correlation")
     identities = {
         "simulated_match_scenarios": 0,
         "team_goals": 0,

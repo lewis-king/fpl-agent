@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from .arrow import write_rows
@@ -62,6 +63,53 @@ def _event_row(bootstrap: Mapping[str, Any], event: int) -> Mapping[str, Any]:
     if len(matches) != 1:
         raise SnapshotValidationError(f"bootstrap must contain exactly one event {event}")
     return matches[0]
+
+
+def _post_event_bootstrap_additions(
+    bootstrap_players: list[Any],
+    *,
+    missing_ids: set[int],
+    live_ids: set[int],
+    deadline_at: datetime | None,
+) -> list[dict[str, Any]] | None:
+    """Describe players added to bootstrap after an event's live roster was frozen.
+
+    FPL's current bootstrap is a season catalogue while ``event/{gw}/live`` is an
+    immutable event roster. After a deadline, newly registered players are appended
+    to bootstrap with higher element IDs but are not backfilled into earlier event
+    payloads. Accept only that narrow, auditable superset shape; an arbitrary missing
+    player must continue to fail closed.
+    """
+
+    if not missing_ids or not live_ids or deadline_at is None:
+        return None
+    maximum_live_id = max(live_ids)
+    players = {
+        int(row["id"]): row
+        for row in bootstrap_players
+        if isinstance(row, Mapping) and row.get("id") is not None
+    }
+    additions: list[dict[str, Any]] = []
+    for element in sorted(missing_ids):
+        row = players.get(element)
+        if row is None or element <= maximum_live_id:
+            return None
+        try:
+            joined = date.fromisoformat(str(row["team_join_date"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if joined < deadline_at.date():
+            return None
+        additions.append(
+            {
+                "element": element,
+                "player_name": str(
+                    row.get("known_name") or row.get("web_name") or f"#{element}"
+                ),
+                "team_join_date": joined.isoformat(),
+            }
+        )
+    return additions
 
 
 def validate_event_outcome(
@@ -138,18 +186,30 @@ def validate_event_outcome(
         if live_rows_valid and len(live_ids) != len(live_players):
             issues.append("live player IDs must be unique")
             live_rows_valid = False
+    post_event_additions: list[dict[str, Any]] = []
     if bootstrap_ids and live_rows_valid and live_ids != bootstrap_ids:
-        missing = len(bootstrap_ids - live_ids)
-        extra = len(live_ids - bootstrap_ids)
-        issues.append(
-            f"event live player set differs from bootstrap: missing={missing}, extra={extra}"
+        missing_ids = bootstrap_ids - live_ids
+        extra_ids = live_ids - bootstrap_ids
+        accepted_additions = _post_event_bootstrap_additions(
+            bootstrap_players,
+            missing_ids=missing_ids,
+            live_ids=live_ids,
+            deadline_at=deadline_at,
         )
+        if extra_ids or accepted_additions is None:
+            issues.append(
+                "event live player set differs from bootstrap: "
+                f"missing={len(missing_ids)}, extra={len(extra_ids)}"
+            )
+        else:
+            post_event_additions = accepted_additions
     return {
         "event": event,
         "deadline_time": deadline_at.isoformat() if deadline_at else None,
         "finished": event_row.get("finished") is True,
         "data_checked": event_row.get("data_checked") is True,
         "players": len(live_ids),
+        "post_event_bootstrap_additions": post_event_additions,
         "complete": not issues,
         "publishable": not issues,
         "issues": issues,
@@ -425,24 +485,30 @@ def collect_event_outcome(
     event_row = _event_row(bootstrap, event)
     if event_row.get("finished") is not True or event_row.get("data_checked") is not True:
         raise SnapshotValidationError(f"official event {event} is not final and checked")
-    snapshot_dir = outcome_root / f"event-{event}" / _timestamp_id(observed)
-    live_path = fetcher(
-        EVENT_LIVE_URL.format(event=event),
-        snapshot_dir / "event-live.json",
-        force=True,
-    )
-    if live_path is None:
-        raise SnapshotValidationError(f"event {event} live data could not be downloaded")
-    live = json.loads(Path(live_path).read_text(encoding="utf-8"))
-    manifest = archive_event_outcome(
-        live,
-        bootstrap,
-        event=event,
-        observed_at=observed,
-        outcome_root=outcome_root,
-        pointer_root=pointer_root,
-        bootstrap_path=bootstrap_path,
-    )
+    # Download to staging, then let ``archive_event_outcome`` exclusively create
+    # the immutable destination. Downloading directly to ``event-live.json`` made
+    # the archiver compare the server's whitespace-preserving response with its
+    # canonical JSON rendering and report a false content collision.
+    with TemporaryDirectory(prefix=f"fpl-event-{event}-") as temporary_dir:
+        live_path = fetcher(
+            EVENT_LIVE_URL.format(event=event),
+            Path(temporary_dir) / "event-live.json",
+            force=True,
+        )
+        if live_path is None:
+            raise SnapshotValidationError(
+                f"event {event} live data could not be downloaded"
+            )
+        live = json.loads(Path(live_path).read_text(encoding="utf-8"))
+        manifest = archive_event_outcome(
+            live,
+            bootstrap,
+            event=event,
+            observed_at=observed,
+            outcome_root=outcome_root,
+            pointer_root=pointer_root,
+            bootstrap_path=bootstrap_path,
+        )
     return {
         **manifest,
         "current_player_history": build_current_player_history(

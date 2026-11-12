@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fplagent_web.deadline_scheduler import DeadlineRefreshScheduler
 from fplagent_web.models import ManagerProfileView, WorkspaceRefreshView
 from fplagent_web.official_change_probe import OfficialChangeProbeResult
-from fplagent_web.workspace import WorkspaceBuilder
 
 
 class FakeRefreshCoordinator:
@@ -47,19 +47,32 @@ def _profile() -> ManagerProfileView:
     )
 
 
+def _workspace(now: datetime) -> SimpleNamespace:
+    gw1_deadline = datetime(2026, 8, 21, 17, 30, tzinfo=UTC)
+    if now < gw1_deadline:
+        event = 1
+        deadline = gw1_deadline
+    else:
+        event = 2
+        deadline = datetime(2026, 8, 28, 17, 30, tzinfo=UTC)
+    return SimpleNamespace(
+        phase=SimpleNamespace(
+            decision_event=event,
+            event=event,
+            decision_deadline=deadline.isoformat(),
+            deadline=deadline.isoformat(),
+        )
+    )
+
+
 def _scheduler(
     tmp_path: Path,
     *,
     now: list[datetime],
     refresh: FakeRefreshCoordinator,
 ) -> DeadlineRefreshScheduler:
-    builder = WorkspaceBuilder(
-        active_decision_path=tmp_path / "missing-active.json",
-        profile_path=tmp_path / "profile.json",
-        deadline_status_path=None,
-    )
     return DeadlineRefreshScheduler(
-        workspace_loader=lambda: builder.build(now=now[0]),
+        workspace_loader=lambda: _workspace(now[0]),  # type: ignore[arg-type]
         profile_loader=_profile,
         refresh_coordinator=refresh,  # type: ignore[arg-type]
         state_path=tmp_path / "schedule.json",
@@ -145,8 +158,35 @@ def test_scheduler_catches_up_only_latest_window_and_throttles_retry(
     assert first.active_window == "2-hour cadence"
     assert held.status == "waiting"
     assert "retry is held" in held.message
+    assert held.next_window_at == "2026-08-21T12:45:00+00:00"
     assert len(refresh.requests) == 2
     assert retried.status == "running"
+
+
+def test_missing_manager_state_waits_then_resumes_immediately_after_sync(tmp_path: Path) -> None:
+    now = [datetime(2026, 8, 27, 12, 0, tzinfo=UTC)]
+    refresh = FakeRefreshCoordinator()
+    refresh.current = WorkspaceRefreshView(
+        status="not_ready", event=2, manager_entry_id=431892,
+        started_at="2026-08-27T11:59:00+00:00", completed_at=now[0].isoformat(),
+        message="Reconnect FPL for a current manager snapshot.",
+    )
+    profile = [_profile()]
+    scheduler = _scheduler(tmp_path, now=now, refresh=refresh)
+    scheduler.profile_loader = lambda: profile[0]
+    assert scheduler.tick().status == "waiting"
+    now[0] += timedelta(hours=1)
+    waiting = scheduler.tick()
+    assert not refresh.requests
+    assert waiting.next_window_at is None
+    assert "no refresh is running" in waiting.message
+    profile[0] = profile[0].model_copy(update={"last_synced_at": now[0].isoformat()})
+    assert scheduler.tick().status == "running"
+    assert len(refresh.requests) == 1
+    assert refresh.requests[0]["mode"] == "weekly"
+    assert refresh.requests[0]["event"] == 2
+    scheduler.tick()
+    assert len(refresh.requests) == 1
 
 
 def test_scheduler_does_not_retry_deterministic_block_after_timeout(
@@ -211,14 +251,8 @@ def test_live_gameweek_scheduler_targets_the_next_decision_event(
 def test_material_official_change_triggers_once_and_is_covered_after_publish(
     tmp_path: Path,
 ) -> None:
-    # Keep the test clock after the repository's current evidence generation.
-    now = [datetime(2026, 8, 16, 20, tzinfo=UTC)]
+    now = [datetime(2026, 8, 18, 20, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
-    builder = WorkspaceBuilder(
-        active_decision_path=tmp_path / "missing-active.json",
-        profile_path=tmp_path / "profile.json",
-        deadline_status_path=None,
-    )
     probe_calls = 0
 
     def changed_probe() -> OfficialChangeProbeResult:
@@ -232,7 +266,7 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
         )
 
     scheduler = DeadlineRefreshScheduler(
-        workspace_loader=lambda: builder.build(now=now[0]),
+        workspace_loader=lambda: _workspace(now[0]),  # type: ignore[arg-type]
         profile_loader=_profile,
         refresh_coordinator=refresh,  # type: ignore[arg-type]
         material_probe=changed_probe,
@@ -277,15 +311,14 @@ def test_material_official_change_triggers_once_and_is_covered_after_publish(
 
     assert covered.status == "covered"
     assert covered.material_change_detected is False
-    assert covered.next_window_at == "2026-08-17T02:00:30+00:00"
+    assert covered.next_window_at == "2026-08-19T02:00:30+00:00"
     assert len(refresh.requests) == 1
 
 
 def test_material_change_does_not_duplicate_a_blocked_app_open_attempt(
     tmp_path: Path,
 ) -> None:
-    # Keep the test clock after the repository's current evidence generation.
-    now = [datetime(2026, 8, 16, 20, tzinfo=UTC)]
+    now = [datetime(2026, 8, 18, 20, tzinfo=UTC)]
     refresh = FakeRefreshCoordinator()
     refresh.current = WorkspaceRefreshView(
         run_id="app-open-blocked",
@@ -300,13 +333,8 @@ def test_material_change_does_not_duplicate_a_blocked_app_open_attempt(
         failure_code="preseason_role_evidence_incoherent",
         message="Role evidence could not be made coherent.",
     )
-    builder = WorkspaceBuilder(
-        active_decision_path=tmp_path / "missing-active.json",
-        profile_path=tmp_path / "profile.json",
-        deadline_status_path=None,
-    )
     scheduler = DeadlineRefreshScheduler(
-        workspace_loader=lambda: builder.build(now=now[0]),
+        workspace_loader=lambda: _workspace(now[0]),  # type: ignore[arg-type]
         profile_loader=_profile,
         refresh_coordinator=refresh,  # type: ignore[arg-type]
         material_probe=lambda: OfficialChangeProbeResult(
@@ -324,3 +352,47 @@ def test_material_change_does_not_duplicate_a_blocked_app_open_attempt(
     assert result.status == "waiting"
     assert "automatic retries are paused" in result.message.lower()
     assert refresh.requests == []
+
+
+def test_material_probe_does_not_mutate_evidence_during_active_refresh(
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 8, 28, 11, 50, tzinfo=UTC)]
+    refresh = FakeRefreshCoordinator()
+    refresh.current = WorkspaceRefreshView(
+        run_id="manual-weekly",
+        status="running",
+        mode="weekly",
+        reason="manual",
+        requested_at=now[0].isoformat(),
+        started_at=now[0].isoformat(),
+        manager_entry_id=431892,
+        event=2,
+        message="Building the GW2 decision.",
+    )
+    probe_calls = 0
+
+    def material_probe() -> OfficialChangeProbeResult:
+        nonlocal probe_calls
+        probe_calls += 1
+        return OfficialChangeProbeResult(
+            checked_at=now[0].isoformat(),
+            changed=False,
+            local_fingerprint="same",
+            remote_fingerprint="same",
+        )
+
+    scheduler = DeadlineRefreshScheduler(
+        workspace_loader=lambda: _workspace(now[0]),  # type: ignore[arg-type]
+        profile_loader=_profile,
+        refresh_coordinator=refresh,  # type: ignore[arg-type]
+        material_probe=material_probe,
+        state_path=tmp_path / "schedule.json",
+        clock=lambda: now[0],
+    )
+
+    result = scheduler.tick()
+
+    assert result.status == "running"
+    assert result.refresh_run_id == "manual-weekly"
+    assert probe_calls == 0

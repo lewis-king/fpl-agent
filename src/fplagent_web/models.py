@@ -201,6 +201,9 @@ class ModelSquadView(StrictModel):
     budget_spent: float
     bank: float
     selection_basis: str
+    capital_role_gate_passed: bool = False
+    capital_role_excluded_finalists: int = 0
+    capital_role_summary: str = "Premium-role publication gate not recorded."
     starters: list[PlayerView]
     bench: list[PlayerView]
 
@@ -301,7 +304,11 @@ class WeeklyLineupView(StrictModel):
 
 class WeeklyActionView(StrictModel):
     action_id: str
-    route_type: Literal["roll", "one_free_transfer", "multi_free_transfer", "paid_transfer"]
+    configuration_action_id: str | None = None
+    route_type: Literal[
+        "roll", "configuration_roll", "one_free_transfer", "multi_free_transfer", "paid_transfer",
+        "wildcard", "free_hit",
+    ]
     label: str
     transfer_count: int
     transfers: list[WeeklyTransferView]
@@ -329,12 +336,70 @@ class ExecutionTimingView(StrictModel):
     next_price_change_at: str | None = None
 
 
+class ChipOpportunityView(StrictModel):
+    event: int
+    chip: str
+    projected_uplift: float | None = None
+    schedule_note: str | None = None
+
+
+class ChipCandidateStatusView(StrictModel):
+    chip: str
+    status: Literal["play", "retain", "research_only", "needs_review", "not_evaluated"]
+    joint_net_value: float | None = None
+    blockers: list[str] = Field(default_factory=list)
+
+
+class ChipDeadlinePlanView(StrictModel):
+    chip: str
+    planned_event: int
+    latest_safe_event: int
+    play_now: bool = False
+    expected_gain: float | None = None
+
+
 class ChipAdviceView(StrictModel):
-    recommendation: Literal["no_chip"] = "no_chip"
+    needs_review: bool = False
+    recommended_action_id: str | None = None
+    parent_action_id: str | None = None
+    recommendation: Literal["no_chip", "bench_boost", "triple_captain", "wildcard", "free_hit"] = (
+        "no_chip"
+    )
     headline: str
     detail: str
     watched_chips: list[str] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
+    half_expiry_event: int | None = None
+    events_until_expiry: int | None = None
+    next_opportunities: list[ChipOpportunityView] = Field(default_factory=list)
+    candidate_statuses: list[ChipCandidateStatusView] = Field(default_factory=list)
+    deadline_plan: list[ChipDeadlinePlanView] = Field(default_factory=list)
+    expiry_forced: bool = False
+
+
+class RetainedRoleSaleTransferView(StrictModel):
+    outgoing_name: str
+    incoming_name: str
+
+
+class RetainedRoleWatchView(StrictModel):
+    player_id: int
+    player_name: str
+    expected_minutes: float
+    play_probability: float
+    expected_points: float
+    participation_consensus: str
+    selected_action_sells_player: bool
+    best_forced_sale_rank: int
+    best_forced_sale_transfers: list[RetainedRoleSaleTransferView]
+    forced_sale_delta_to_selected: float
+    forced_sale_beats_selected: bool
+
+
+class ObjectiveTradeoffView(StrictModel):
+    worst_case_weight: float
+    mean_points_sacrificed_to_safety_gates: float
+    mean_points_sacrificed_to_robust_ranking: float
 
 
 class WeeklyDecisionView(StrictModel):
@@ -346,6 +411,9 @@ class WeeklyDecisionView(StrictModel):
     expected_gain_vs_roll: float | None = None
     confidence_low: float | None = None
     confidence_high: float | None = None
+    confidence_mean: float | None = None
+    confidence_scenario: str | None = None
+    objective_tradeoff: ObjectiveTradeoffView | None = None
     beat_roll_probability: float | None = None
     worst_scenario_gain: float | None = None
     robust_regret: float | None = None
@@ -353,6 +421,7 @@ class WeeklyDecisionView(StrictModel):
     explanation: str
     execution_timing: ExecutionTimingView | None = None
     chip_advice: ChipAdviceView | None = None
+    retained_role_watches: list[RetainedRoleWatchView] = Field(default_factory=list)
     receipt_path: str | None = None
     receipt_sha256: str | None = None
 
@@ -384,6 +453,26 @@ class CapabilityView(StrictModel):
     write_fpl_changes: bool = False
 
 
+class DeadlineBoundaryView(StrictModel):
+    player_id: int
+    player_name: str
+    trigger_expected_minutes: float | None = None
+    next_incumbent_minutes: float | None = None
+    fallback_candidate_id: str | None = None
+    stable_on_tested_range: bool = False
+
+
+class DeadlineHandoffView(StrictModel):
+    status: Literal["ready", "blocked", "unavailable"]
+    verdict: str
+    chip_label: str
+    chip_detail: str
+    route_count: int = 0
+    precomputed_fallbacks: int = 0
+    boundaries: list[DeadlineBoundaryView] = Field(default_factory=list)
+    receipt_path: str | None = None
+
+
 class WorkspaceView(StrictModel):
     schema_version: Literal["fplagent-workspace-v1"] = "fplagent-workspace-v1"
     generated_at: str
@@ -394,6 +483,7 @@ class WorkspaceView(StrictModel):
     squad: SquadView
     critique: SquadCritique
     decision: DecisionView
+    deadline_handoff: DeadlineHandoffView | None = None
     capabilities: CapabilityView
 
 

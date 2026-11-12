@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import warnings
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import combinations, pairwise
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +24,12 @@ from sklearn.isotonic import IsotonicRegression
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import PROCESSED
 
+from .acceleration import (
+    accelerator_preference,
+    cupy_module,
+    policy_worker_count,
+    use_cuda_for,
+)
 from .models import BACKTEST_FORECAST, CURRENT_FORECAST, MODEL_FILE
 from .optimizer import DECISION_JSON, DEFAULT_HORIZON_DECAY, POSITION_ORDER, _solve, _weights
 from .paths import DECISIONS, MODEL_DATA, REPORTS, ensure_engine_layout
@@ -210,6 +220,7 @@ def _solve_static(
     bench_spend: tuple[float | None, float | None] | None = None,
     horizon_decay: float = DEFAULT_HORIZON_DECAY,
     bench_weight: float = 0.0,
+    highs_threads: int | None = None,
 ) -> dict[str, Any]:
     players = sorted(
         element
@@ -225,6 +236,10 @@ def _solve_static(
     highs.setOptionValue("random_seed", 2026)
     highs.setOptionValue("mip_rel_gap", 1e-8)
     highs.setOptionValue("time_limit", 45.0)
+    if highs_threads is not None:
+        if highs_threads < 1:
+            raise ValueError("highs_threads must be positive")
+        highs.setOptionValue("threads", int(highs_threads))
     integer = highspy.HighsVarType.kInteger
     squad = highs.addVariables(n_players, lb=0, ub=1, type=integer, out_array=True)
     start = highs.addVariables(n_players * n_events, lb=0, ub=1, type=integer, out_array=True)
@@ -368,6 +383,46 @@ def _solve_static(
     }
 
 
+_CANDIDATE_BY_PLAYER: dict[int, dict[int, dict]] | None = None
+_CANDIDATE_META: dict[int, dict] | None = None
+_CANDIDATE_EVENTS: tuple[int, ...] | None = None
+_CANDIDATE_RULES: SquadRules | None = None
+
+
+def _init_candidate_worker(
+    by_player: dict[int, dict[int, dict]],
+    meta: dict[int, dict],
+    events: tuple[int, ...],
+    rules: SquadRules,
+) -> None:
+    global _CANDIDATE_BY_PLAYER, _CANDIDATE_META, _CANDIDATE_EVENTS, _CANDIDATE_RULES
+    _CANDIDATE_BY_PLAYER = by_player
+    _CANDIDATE_META = meta
+    _CANDIDATE_EVENTS = events
+    _CANDIDATE_RULES = rules
+
+
+def _solve_candidate_task(task: dict[str, Any]) -> dict[str, Any] | None:
+    if (
+        _CANDIDATE_BY_PLAYER is None
+        or _CANDIDATE_META is None
+        or _CANDIDATE_EVENTS is None
+        or _CANDIDATE_RULES is None
+    ):
+        raise RuntimeError("candidate worker was not initialized")
+    try:
+        return _solve_static(
+            _CANDIDATE_BY_PLAYER,
+            _CANDIDATE_META,
+            _CANDIDATE_EVENTS,
+            _CANDIDATE_RULES,
+            highs_threads=1,
+            **task,
+        )
+    except RuntimeError:
+        return None
+
+
 def _premium_players(
     meta: dict[int, dict], by_player: dict[int, dict[int, dict]], events: tuple[int, ...]
 ) -> list[int]:
@@ -489,24 +544,6 @@ def generate_candidates(
     premiums = _premium_players(meta, by_player, events)
     premium_forces = [{element} for element in premiums]
     premium_forces.extend(set(pair) for pair in combinations(premiums[:4], 2))
-    for forced in premium_forces:
-        if len(solutions) >= count:
-            break
-        try:
-            solution = _solve_static(
-                by_player,
-                meta,
-                events,
-                rules,
-                excluded_squads=[set(item[0]["selected"]) for item in solutions],
-                force_include=forced,
-                force_start_gw1=forced,
-                bench_weight=0.0,
-            )
-        except RuntimeError:
-            continue
-        names = "+".join(meta[element]["player_name"] for element in sorted(forced))
-        add(solution, f"premium:{names}")
 
     # These bands deliberately surround the 2019/20 top-ten GW1 mean (£18.45m)
     # and the current candidate's unusually deep £23m bench.
@@ -516,96 +553,171 @@ def generate_candidates(
         (201.0, 220.0, "medium-bench"),
         (221.0, None, "deep-bench"),
     ]
-    for minimum, maximum, name in bench_bands:
-        for forced in [set(), *[{element} for element in premiums[:4]]]:
-            if len(solutions) >= count:
-                break
+    workers = min(count, policy_worker_count())
+    executor = (
+        ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=get_context("spawn"),
+            initializer=_init_candidate_worker,
+            initargs=(by_player, meta, events, rules),
+        )
+        if workers > 1
+        else None
+    )
+
+    def solve_tasks(tasks: list[dict[str, Any]]) -> list[dict[str, Any] | None]:
+        if executor is not None:
+            return list(executor.map(_solve_candidate_task, tasks, chunksize=1))
+        output = []
+        for task in tasks:
             try:
-                solution = _solve_static(
-                    by_player,
-                    meta,
-                    events,
-                    rules,
-                    excluded_squads=[set(item[0]["selected"]) for item in solutions],
-                    force_include=forced,
-                    force_start_gw1=forced,
-                    bench_spend=(minimum, maximum),
-                    bench_weight=0.0,
-                )
+                output.append(_solve_static(by_player, meta, events, rules, **task))
             except RuntimeError:
-                continue
-            suffix = "" if not forced else ":" + meta[next(iter(forced))]["player_name"]
-            add(solution, name + suffix)
+                output.append(None)
+        return output
 
-    noise_cycle = (0.12, 0.20, 0.32, 0.48, 0.70)
-    decay_cycle = (0.80, 0.88, 0.95)
-    rng = np.random.default_rng(seed)
-
-    def perturbed_scores(scale: float) -> dict[tuple[int, int], float]:
-        player_shift = {element: rng.normal(0.0, scale) for element in meta}
-        return {
-            (element, event): max(
-                0.0,
-                float(row["expected_points"])
-                + player_shift[element]
-                + rng.normal(0.0, scale * 0.35),
+    try:
+        fixed_specs: list[tuple[dict[str, Any], str]] = []
+        base_exclusions = [set(item[0]["selected"]) for item in solutions]
+        for forced in premium_forces:
+            names = "+".join(meta[element]["player_name"] for element in sorted(forced))
+            fixed_specs.append(
+                (
+                    {
+                        "excluded_squads": base_exclusions,
+                        "force_include": forced,
+                        "force_start_gw1": forced,
+                        "bench_weight": 0.0,
+                    },
+                    f"premium:{names}",
+                )
             )
-            for element, event_rows in by_player.items()
-            for event, row in event_rows.items()
-        }
+        for minimum, maximum, name in bench_bands:
+            for forced in [set(), *[{element} for element in premiums[:4]]]:
+                suffix = "" if not forced else ":" + meta[next(iter(forced))]["player_name"]
+                fixed_specs.append(
+                    (
+                        {
+                            "excluded_squads": base_exclusions,
+                            "force_include": forced,
+                            "force_start_gw1": forced,
+                            "bench_spend": (minimum, maximum),
+                            "bench_weight": 0.0,
+                        },
+                        name + suffix,
+                    )
+                )
+        print(
+            f"Residual tournament: solving {len(fixed_specs)} structured candidates with "
+            f"{workers} workers",
+            flush=True,
+        )
+        for solution, (_, archetype) in zip(
+            solve_tasks([task for task, _ in fixed_specs]), fixed_specs, strict=True
+        ):
+            if solution is not None and len(solutions) < count:
+                add(solution, archetype)
 
-    # Give the bench question enough statistical representation. Five hand-built
-    # examples per band are supplemented to 20 before unconstrained candidates.
-    for minimum, maximum, name in bench_bands:
-        added = 0
-        band_attempts = 0
-        while added < 15 and len(solutions) < count and band_attempts < 80:
-            scale = noise_cycle[band_attempts % len(noise_cycle)]
-            decay = decay_cycle[(band_attempts // len(noise_cycle)) % len(decay_cycle)]
-            solution = _solve_static(
-                by_player,
-                meta,
-                events,
-                rules,
-                score_by_player_event=perturbed_scores(scale),
-                excluded_squads=[set(item[0]["selected"]) for item in solutions],
-                bench_spend=(minimum, maximum),
-                horizon_decay=decay,
-                bench_weight=0.0,
-            )
-            if add(solution, f"{name}:perturbed:{scale:.2f}:d{decay:.2f}"):
-                added += 1
-            band_attempts += 1
+        noise_cycle = (0.12, 0.20, 0.32, 0.48, 0.70)
+        decay_cycle = (0.80, 0.88, 0.95)
+        rng = np.random.default_rng(seed)
 
-    attempts = 0
-    band_cycle = [None, *[(lo, hi) for lo, hi, _ in bench_bands]]
-    while len(solutions) < count and attempts < count * 12:
-        scale = noise_cycle[attempts % len(noise_cycle)]
-        decay = decay_cycle[(attempts // len(noise_cycle)) % len(decay_cycle)]
-        band = band_cycle[(attempts // (len(noise_cycle) * len(decay_cycle))) % len(band_cycle)]
-        scores = perturbed_scores(scale)
-        forced: set[int] = set()
-        if attempts % 7 == 0:
-            forced = {premiums[(attempts // 7) % len(premiums)]}
-        try:
-            solution = _solve_static(
-                by_player,
-                meta,
-                events,
-                rules,
-                score_by_player_event=scores,
-                excluded_squads=[set(item[0]["selected"]) for item in solutions],
-                force_include=forced,
-                force_start_gw1=forced,
-                bench_spend=band,
-                horizon_decay=decay,
-                bench_weight=0.0,
+        def perturbed_scores(scale: float) -> dict[tuple[int, int], float]:
+            player_shift = {element: rng.normal(0.0, scale) for element in meta}
+            return {
+                (element, event): max(
+                    0.0,
+                    float(row["expected_points"])
+                    + player_shift[element]
+                    + rng.normal(0.0, scale * 0.35),
+                )
+                for element, event_rows in by_player.items()
+                for event, row in event_rows.items()
+            }
+
+        # Give each bench band 15 stochastic representatives. Tasks are seeded in
+        # the parent and consumed in stable order, so worker scheduling cannot
+        # alter the candidate population.
+        for minimum, maximum, name in bench_bands:
+            added = 0
+            band_attempts = 0
+            while added < 15 and len(solutions) < count and band_attempts < 80:
+                batch_count = min(max(20, workers * 2), 80 - band_attempts)
+                exclusions = [set(item[0]["selected"]) for item in solutions]
+                batch_specs = []
+                for offset in range(batch_count):
+                    attempt = band_attempts + offset
+                    scale = noise_cycle[attempt % len(noise_cycle)]
+                    decay = decay_cycle[(attempt // len(noise_cycle)) % len(decay_cycle)]
+                    batch_specs.append(
+                        (
+                            {
+                                "score_by_player_event": perturbed_scores(scale),
+                                "excluded_squads": exclusions,
+                                "bench_spend": (minimum, maximum),
+                                "horizon_decay": decay,
+                                "bench_weight": 0.0,
+                            },
+                            f"{name}:perturbed:{scale:.2f}:d{decay:.2f}",
+                        )
+                    )
+                for solution, (_, archetype) in zip(
+                    solve_tasks([task for task, _ in batch_specs]), batch_specs, strict=True
+                ):
+                    if added >= 15:
+                        break
+                    if solution is not None and add(solution, archetype):
+                        added += 1
+                band_attempts += batch_count
+                print(
+                    f"Residual tournament: {name} retained {added}/15 stochastic candidates",
+                    flush=True,
+                )
+
+        attempts = 0
+        band_cycle = [None, *[(lo, hi) for lo, hi, _ in bench_bands]]
+        while len(solutions) < count and attempts < count * 12:
+            remaining_attempts = count * 12 - attempts
+            batch_count = min(max(workers * 2, count - len(solutions) + 8), remaining_attempts)
+            exclusions = [set(item[0]["selected"]) for item in solutions]
+            batch_specs = []
+            for offset in range(batch_count):
+                attempt = attempts + offset
+                scale = noise_cycle[attempt % len(noise_cycle)]
+                decay = decay_cycle[(attempt // len(noise_cycle)) % len(decay_cycle)]
+                band = band_cycle[
+                    (attempt // (len(noise_cycle) * len(decay_cycle))) % len(band_cycle)
+                ]
+                forced: set[int] = set()
+                if attempt % 7 == 0:
+                    forced = {premiums[(attempt // 7) % len(premiums)]}
+                batch_specs.append(
+                    (
+                        {
+                            "score_by_player_event": perturbed_scores(scale),
+                            "excluded_squads": exclusions,
+                            "force_include": forced,
+                            "force_start_gw1": forced,
+                            "bench_spend": band,
+                            "horizon_decay": decay,
+                            "bench_weight": 0.0,
+                        },
+                        f"perturbed:{scale:.2f}:d{decay:.2f}",
+                    )
+                )
+            for solution, (_, archetype) in zip(
+                solve_tasks([task for task, _ in batch_specs]), batch_specs, strict=True
+            ):
+                if solution is not None:
+                    add(solution, archetype)
+            attempts += batch_count
+            print(
+                f"Residual tournament: retained {min(len(solutions), count)}/{count} candidates",
+                flush=True,
             )
-        except RuntimeError:
-            attempts += 1
-            continue
-        add(solution, f"perturbed:{scale:.2f}:d{decay:.2f}")
-        attempts += 1
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
     if len(solutions) < count:
         raise RuntimeError(f"Only generated {len(solutions)} distinct candidates")
 
@@ -677,8 +789,31 @@ def _lag_correlation(rows: list[dict], value_key: str) -> float:
     return float(np.corrcoef(left, right)[0, 1])
 
 
-def calibrate_residuals() -> ResidualCalibration:
-    rows = _load_residual_rows()
+def _safe_mean(values: list[float]) -> float:
+    """Return a finite diagnostic when a simulation has no measurable pairs."""
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    return float(np.mean(finite)) if finite else 0.0
+
+
+def _safe_correlation(left: list[float], right: list[float]) -> float:
+    """Avoid NaN diagnostics when a candidate ranking has no variance."""
+    if len(left) < 2 or len(left) != len(right):
+        return 0.0
+    left_array = np.asarray(left, dtype=np.float64)
+    right_array = np.asarray(right, dtype=np.float64)
+    if np.std(left_array) < 1e-9 or np.std(right_array) < 1e-9:
+        return 0.0
+    return float(np.corrcoef(left_array, right_array)[0, 1])
+
+
+def calibrate_residuals(
+    *, rows: list[dict] | None = None, fixture_rows: list[dict] | None = None
+) -> ResidualCalibration:
+    # Historical experiments must supply their training prefix explicitly. The
+    # live defaults are unchanged. Copy rows: calibration adds derived columns.
+    rows = [dict(row) for row in (rows if rows is not None else _load_residual_rows())]
+    if not rows:
+        raise ValueError("Residual calibration requires training observations")
     for row in rows:
         p_play = float(np.clip(row["p_play"], 0.02, 0.995))
         played = float(row["target_minutes"] > 0)
@@ -731,7 +866,10 @@ def calibrate_residuals() -> ResidualCalibration:
 
     fixtures = [
         row
-        for row in pq.read_table(HISTORICAL_FIXTURES).to_pylist()
+        for row in (
+            fixture_rows if fixture_rows is not None
+            else pq.read_table(HISTORICAL_FIXTURES).to_pylist()
+        )
         if row["season"] in {item[0] for item in event_keys}
         and row["event"] is not None
         and (row["season"], int(row["event"])) in set(event_keys)
@@ -996,6 +1134,9 @@ def _simulate_player_outcomes(
     calibration: ResidualCalibration,
     simulations: int,
     seed: int,
+    *,
+    fixture_map: dict[int, list[tuple[int, int]]] | None = None,
+    residual_scales: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
     n_players = len(player_ids)
@@ -1004,17 +1145,17 @@ def _simulate_player_outcomes(
     played = np.zeros((simulations, n_events, n_players), dtype=bool)
     player_latent = rng.standard_normal((simulations, n_players), dtype=np.float32)
     performance_latent = rng.standard_normal((simulations, n_players), dtype=np.float32)
-    fixture_map = _current_fixture_map(events)
+    fixture_map = _current_fixture_map(events) if fixture_map is None else fixture_map
+    scales = RESIDUAL_SCALE_BY_POSITION if residual_scales is None else residual_scales
+    if set(fixture_map) != set(events) or set(scales) != set(POSITIONS):
+        raise ValueError("Explicit simulation fixtures/scales must cover the requested events/positions")
+    if any(not math.isfinite(v) or v <= 0 for v in scales.values()):
+        raise ValueError("Residual scales must be finite and positive")
     fixture_team_ids = {
-        team_id
-        for fixtures in fixture_map.values()
-        for fixture in fixtures
-        for team_id in fixture
+        team_id for fixtures in fixture_map.values() for fixture in fixtures for team_id in fixture
     }
     player_team_ids = {
-        int(by_player[element][event]["team_id"])
-        for element in player_ids
-        for event in events
+        int(by_player[element][event]["team_id"]) for element in player_ids for event in events
     }
     team_ids = sorted(fixture_team_ids | player_team_ids)
     team_index = {team_id: index for index, team_id in enumerate(team_ids)}
@@ -1026,25 +1167,25 @@ def _simulate_player_outcomes(
         global_draw = calibration.global_shocks[global_indices]
         team_shock = np.zeros((simulations, len(team_ids), len(POSITIONS)), dtype=np.float32)
         position_scales = np.asarray(
-            [RESIDUAL_SCALE_BY_POSITION[position] for position in POSITIONS],
+            [scales[position] for position in POSITIONS],
             dtype=np.float32,
         )
         for home, away in fixture_map[event]:
             fixture_indices = rng.integers(0, len(calibration.fixture_shocks), simulations)
             draws = calibration.fixture_shocks[fixture_indices]
-            team_shock[:, team_index[home], :] = position_scales * (
-                global_draw + draws[:, 0, :]
-            )
-            team_shock[:, team_index[away], :] = position_scales * (
-                global_draw + draws[:, 1, :]
-            )
+            team_shock[:, team_index[home], :] = position_scales * (global_draw + draws[:, 0, :])
+            team_shock[:, team_index[away], :] = position_scales * (global_draw + draws[:, 1, :])
 
         independent_play = rng.standard_normal((simulations, n_players), dtype=np.float32)
         latent_play = player_coefficient * player_latent + event_coefficient * independent_play
         for player_offset, element in enumerate(player_ids):
             row = by_player[element][event]
-            p_play = float(np.clip(row["p_play"], 0.001, 0.999))
+            p_play = float(row["p_play"])
+            if not math.isfinite(p_play) or not 0.0 <= p_play <= 1.0:
+                raise ValueError(f"Invalid appearance probability for element={element}, event={event}")
             plays = ndtr(latent_play[:, player_offset]) < p_play
+            if p_play == 1.0:
+                plays[:] = True  # float32 normal CDF may round to exactly one.
             played[:, event_offset, player_offset] = plays
             position = row["position"]
             position_index = POSITION_INDEX[position]
@@ -1059,7 +1200,7 @@ def _simulate_player_outcomes(
                     * calibration.residual_sd[(position, bin_index)]
                     * performance_latent[:, player_offset]
                 )
-            idio *= RESIDUAL_SCALE_BY_POSITION[position]
+            idio *= scales[position]
             team_id = int(row["team_id"])
             outcome = conditional + team_shock[:, team_index[team_id], position_index] + idio
             outcome = np.rint(np.clip(outcome, -3.0, 24.0)).astype(np.int8)
@@ -1139,30 +1280,123 @@ def _score_candidates(
     played: np.ndarray,
     meta: dict[int, dict],
 ) -> np.ndarray:
+    multiply_count = points.shape[0] * len(candidates) * len(events) * 15
+    if use_cuda_for(multiply_count=multiply_count):
+        try:
+            return _score_candidates_cuda(candidates, player_ids, events, points, played, meta)
+        except Exception as exc:
+            if accelerator_preference() == "cuda":
+                raise
+            warnings.warn(f"CUDA exact candidate scoring failed; using CPU: {exc}", stacklevel=2)
+    return _score_candidates_cpu(candidates, player_ids, events, points, played, meta)
+
+
+def _candidate_simulation_weights(
+    candidate: dict[str, Any],
+    event: int,
+    event_offset: int,
+    global_index: dict[int, int],
+    played: np.ndarray,
+    meta: dict[int, dict],
+    powers: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    squad = [
+        int(element)
+        for element in candidate.get("planned_squads", {}).get(str(event), candidate["selected"])
+    ]
+    squad_global = np.asarray([global_index[element] for element in squad], dtype=np.int32)
+    patterns = (played[:, event_offset, squad_global].astype(np.uint16) @ powers).astype(np.uint16)
+    unique, inverse = np.unique(patterns, return_inverse=True)
+    weight_table = np.vstack(
+        [_autosub_weights(candidate, event, int(pattern), meta) for pattern in unique]
+    )
+    return squad_global, weight_table[inverse]
+
+
+def _score_candidates_cpu(
+    candidates: list[dict[str, Any]],
+    player_ids: list[int],
+    events: tuple[int, ...],
+    points: np.ndarray,
+    played: np.ndarray,
+    meta: dict[int, dict],
+) -> np.ndarray:
     global_index = {element: index for index, element in enumerate(player_ids)}
     simulations = points.shape[0]
     scores = np.zeros((simulations, len(candidates), len(events)), dtype=np.int16)
     powers = (1 << np.arange(15, dtype=np.uint16)).astype(np.uint16)
     for candidate_index, candidate in enumerate(candidates):
         for event_offset, event in enumerate(events):
-            squad = [
-                int(element)
-                for element in candidate.get("planned_squads", {}).get(
-                    str(event), candidate["selected"]
-                )
-            ]
-            squad_global = np.asarray([global_index[element] for element in squad], dtype=np.int64)
-            patterns = (played[:, event_offset, squad_global].astype(np.uint16) @ powers).astype(
-                np.uint16
+            squad_global, weights = _candidate_simulation_weights(
+                candidate,
+                event,
+                event_offset,
+                global_index,
+                played,
+                meta,
+                powers,
             )
-            unique, inverse = np.unique(patterns, return_inverse=True)
-            weight_table = np.vstack(
-                [_autosub_weights(candidate, event, int(pattern), meta) for pattern in unique]
-            )
-            weights = weight_table[inverse]
             scores[:, candidate_index, event_offset] = np.sum(
-                points[:, event_offset, squad_global] * weights, axis=1
+                points[:, event_offset, squad_global].astype(np.int16) * weights.astype(np.int16),
+                axis=1,
             )
+    return scores
+
+
+def _score_candidates_cuda(
+    candidates: list[dict[str, Any]],
+    player_ids: list[int],
+    events: tuple[int, ...],
+    points: np.ndarray,
+    played: np.ndarray,
+    meta: dict[int, dict],
+) -> np.ndarray:
+    cp = cupy_module()
+    if cp is None:
+        raise RuntimeError("CuPy is unavailable")
+    global_index = {element: index for index, element in enumerate(player_ids)}
+    simulations = points.shape[0]
+    scores = np.zeros((simulations, len(candidates), len(events)), dtype=np.int16)
+    powers = (1 << np.arange(15, dtype=np.uint16)).astype(np.uint16)
+    configured_chunk = int(os.environ.get("FPLAGENT_CUDA_CANDIDATE_CHUNK", "64"))
+    chunk_size = max(1, min(configured_chunk, len(candidates)))
+
+    for event_offset, event in enumerate(events):
+        gpu_points = cp.asarray(points[:, event_offset, :], dtype=cp.int16)
+        for start in range(0, len(candidates), chunk_size):
+            stop = min(start + chunk_size, len(candidates))
+            chunk = candidates[start:stop]
+            squad_indices = np.empty((len(chunk), 15), dtype=np.int32)
+            simulation_weights = np.empty(
+                (simulations, len(chunk), 15),
+                dtype=np.int8,
+            )
+            for offset, candidate in enumerate(chunk):
+                indices, weights = _candidate_simulation_weights(
+                    candidate,
+                    event,
+                    event_offset,
+                    global_index,
+                    played,
+                    meta,
+                    powers,
+                )
+                squad_indices[offset] = indices
+                simulation_weights[:, offset, :] = weights
+            gpu_indices = cp.asarray(squad_indices)
+            gpu_weights = cp.asarray(simulation_weights, dtype=cp.int16)
+            gathered = gpu_points[:, gpu_indices]
+            gpu_scores = cp.sum(gathered * gpu_weights, axis=2, dtype=cp.int32)
+            scores[:, start:stop, event_offset] = cp.asnumpy(gpu_scores).astype(
+                np.int16,
+                copy=False,
+            )
+    cp.cuda.get_current_stream().synchronize()
+    print(
+        f"Acceleration: CUDA exact autosub scoring "
+        f"({simulations:,} simulations x {len(candidates):,} candidates x {len(events)} events)",
+        flush=True,
+    )
     return scores
 
 
@@ -1361,7 +1595,11 @@ def _run_scenario(
     simulated_means = points.mean(axis=0)
     simulated_play = played.mean(axis=0)
     first_event_points = points[:, 0, :].astype(np.float64)
-    correlation = np.corrcoef(first_event_points, rowvar=False)
+    # A player with a deterministic simulated outcome has zero variance. NumPy's
+    # correlation matrix quite correctly represents those pairs as NaN, but its
+    # divide warning made a harmless diagnostic look like a scoring failure.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        correlation = np.corrcoef(first_event_points, rowvar=False)
     same_team: list[float] = []
     other_team: list[float] = []
     for left, right in combinations(range(len(player_ids)), 2):
@@ -1377,8 +1615,8 @@ def _run_scenario(
             np.mean(np.abs(simulated_means - expected))
         ),
         "appearance_mean_bias": float(np.mean(simulated_play - p_play)),
-        "same_team_gw1_points_correlation": float(np.mean(same_team)),
-        "other_team_gw1_points_correlation": float(np.mean(other_team)),
+        "same_team_gw1_points_correlation": _safe_mean(same_team),
+        "other_team_gw1_points_correlation": _safe_mean(other_team),
         "simulated_players": len(player_ids),
     }
     scores = _score_candidates(candidates, player_ids, events, points, played, meta)
@@ -1637,9 +1875,7 @@ def _render_report(result: dict[str, Any], candidates: list[dict[str, Any]]) -> 
     for premium in ("Haaland", "Saka", "Palmer", "Isak"):
         eligible = [row for row in metrics if premium in row["premium_names"].split(", ")]
         challenger = max(eligible, key=lambda row: row["recovery_mean_points"])
-        policy_delta = _policy_recovery_delta_cell(
-            policy_result_by_id, challenger["candidate_id"]
-        )
+        policy_delta = _policy_recovery_delta_cell(policy_result_by_id, challenger["candidate_id"])
         lines.append(
             f"| {premium} | {challenger['candidate_id']} | "
             f"£{challenger['gw1_bench_spend']:.1f}m | "
@@ -2027,11 +2263,9 @@ def run_tournament(
     for row in merged:
         row["selection_rank"] = selection_rank[row["candidate_id"]]
         row["holdout_rank"] = holdout_rank[row["candidate_id"]]
-    rank_correlation = float(
-        np.corrcoef(
-            [row["selection_rank"] for row in merged],
-            [row["holdout_rank"] for row in merged],
-        )[0, 1]
+    rank_correlation = _safe_correlation(
+        [row["selection_rank"] for row in merged],
+        [row["holdout_rank"] for row in merged],
     )
     squad_sets = [{int(element) for element in candidate["selected"]} for candidate in candidates]
     pair_overlaps = [len(left & right) for left, right in combinations(squad_sets, 2)]

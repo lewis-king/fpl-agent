@@ -9,7 +9,9 @@ from fplagent_data.cli import parser
 from fplagent_data.event_outcomes import (
     archive_event_outcome,
     build_current_player_history,
+    collect_event_outcome,
     latest_event_outcome,
+    validate_event_outcome,
 )
 from fplagent_data.http import sha256_file
 from fplagent_data.live_snapshots import SnapshotValidationError
@@ -93,6 +95,46 @@ def test_final_event_outcome_is_immutable_and_content_locked(tmp_path: Path) -> 
         )
 
 
+def test_collect_event_outcome_stages_download_before_immutable_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    official = tmp_path / "official"
+    official.mkdir()
+    (official / "bootstrap-static.json").write_text(
+        json.dumps(_bootstrap()), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "fplagent_data.event_outcomes.latest_official_snapshot",
+        lambda: (official, {"observed_at": "2026-09-01T12:00:00+00:00"}),
+    )
+    monkeypatch.setattr(
+        "fplagent_data.event_outcomes.build_current_player_history",
+        lambda **_: {"status": "ready"},
+    )
+    download_targets: list[Path] = []
+
+    def fetcher(_url: str, target: Path, *, force: bool) -> Path:
+        assert force is True
+        download_targets.append(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(_live(), indent=2), encoding="utf-8")
+        return target
+
+    root = tmp_path / "outcomes"
+    result = collect_event_outcome(
+        2,
+        observed_at="2026-09-01T12:00:00+00:00",
+        outcome_root=root,
+        pointer_root=tmp_path / "pointers",
+        fetcher=fetcher,
+    )
+
+    immutable = root / "event-2" / "20260901T120000000000Z" / "event-live.json"
+    assert result["publishable"] is True
+    assert immutable.is_file()
+    assert download_targets[0] != immutable
+
+
 @pytest.mark.parametrize(
     ("bootstrap", "message"),
     [
@@ -126,6 +168,57 @@ def test_event_outcome_requires_exact_bootstrap_player_set(tmp_path: Path) -> No
             outcome_root=tmp_path / "outcomes",
             pointer_root=tmp_path / "pointers",
         )
+
+
+def test_event_outcome_accepts_audited_post_event_bootstrap_additions() -> None:
+    bootstrap = _bootstrap()
+    bootstrap["elements"].append(
+        {
+            "id": 4,
+            "web_name": "Deadline signing",
+            "team_join_date": "2026-08-28",
+        }
+    )
+
+    result = validate_event_outcome(bootstrap, _live(), event=2)
+
+    assert result["publishable"] is True
+    assert result["post_event_bootstrap_additions"] == [
+        {
+            "element": 4,
+            "player_name": "Deadline signing",
+            "team_join_date": "2026-08-28",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "added_player",
+    [
+        {"id": 2, "web_name": "Non-tail omission", "team_join_date": "2026-08-28"},
+        {"id": 4, "web_name": "Old signing", "team_join_date": "2026-08-27"},
+        {"id": 4, "web_name": "Unknown signing"},
+    ],
+)
+def test_event_outcome_rejects_unproven_bootstrap_supersets(
+    added_player: dict,
+) -> None:
+    bootstrap = _bootstrap()
+    if added_player["id"] == 2:
+        bootstrap["elements"] = [
+            row for row in bootstrap["elements"] if row["id"] != 2
+        ]
+        bootstrap["elements"].append(added_player)
+        live = _live()
+        live["elements"] = [row for row in live["elements"] if row["id"] != 2]
+    else:
+        bootstrap["elements"].append(added_player)
+        live = _live()
+
+    result = validate_event_outcome(bootstrap, live, event=2)
+
+    assert result["publishable"] is False
+    assert "player set differs" in result["issues"][0]
 
 
 def test_event_outcome_requires_live_prediction_features(tmp_path: Path) -> None:

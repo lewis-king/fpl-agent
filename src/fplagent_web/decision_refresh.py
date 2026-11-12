@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fplagent_data.http import sha256_file
+from fplagent_engine.deadline_execution import build_complete_deadline_handoff
 from fplagent_engine.deadline_pipeline import (
     WEEKLY_PIPELINE_RECEIPT,
     run_weekly_deadline_pipeline,
+    weekly_pipeline_implementation_sha256,
 )
 from fplagent_engine.preseason_pipeline import (
     GW1_PIPELINE_RECEIPT,
@@ -28,6 +30,11 @@ RefreshMode = Literal["gw1", "weekly"]
 RefreshReason = Literal["app_open", "manual", "scheduled", "material_change"]
 PipelineRunner = Callable[..., Mapping[str, Any]]
 STAGE_LABELS = {
+    "weekly_evidence": "refreshing official data, markets, lineups and forecasts",
+    "weekly_manager_state": "checking your squad, bank, free transfers and chips",
+    "weekly_optimisation": "comparing transfers, all 15 players, captaincy and chips",
+    "weekly_validation": "checking the candidate against deadline evidence",
+    "weekly_publication": "saving and verifying the recommendation",
     "initial_squad": "solving the legal initial squad",
     "residual_tournament": "testing the residual squad field",
     "component_selection": "selecting the component policy",
@@ -36,9 +43,13 @@ STAGE_LABELS = {
     "robust_search": "searching globally robust squads",
     "horizon_audit": "auditing the eight-week horizon",
     "synthesis": "synthesising the decision families",
+    "simulation_configuration": "simulating every legal XI, bench and armband configuration",
+    "bench_allocation": "auditing the multiweek bench allocation",
+    "structure_stress": "stress-testing scoring, formations and autosubs",
     "preseason_role_scenario": "stress-testing preseason roles",
     "preseason_role_threshold": "measuring role-risk thresholds",
     "availability_watch": "checking final availability evidence",
+    "top_player_omission_audit": "challenging the decision with omitted premium players",
 }
 
 
@@ -51,11 +62,7 @@ def decision_refresh_interval(
     """Return the points-first refresh cadence for the actionable deadline."""
     if deadline_at is None:
         return fallback
-    deadline = (
-        datetime.fromisoformat(deadline_at)
-        if isinstance(deadline_at, str)
-        else deadline_at
-    )
+    deadline = datetime.fromisoformat(deadline_at) if isinstance(deadline_at, str) else deadline_at
     if deadline.tzinfo is None:
         raise ValueError("decision deadline must include a timezone")
     remaining = deadline.astimezone(UTC) - now.astimezone(UTC)
@@ -81,6 +88,7 @@ class WorkspaceRefreshCoordinator:
         state_path: Path = DEFAULT_REFRESH_STATE,
         gw1_runner: PipelineRunner = run_gw1_deadline_pipeline,
         weekly_runner: PipelineRunner = run_weekly_deadline_pipeline,
+        gw1_handoff_runner: PipelineRunner | None = None,
         gw1_receipt_path: Path = GW1_PIPELINE_RECEIPT,
         weekly_receipt_path: Path = WEEKLY_PIPELINE_RECEIPT,
         clock: Callable[[], datetime] | None = None,
@@ -89,6 +97,13 @@ class WorkspaceRefreshCoordinator:
         self.state_path = state_path
         self.gw1_runner = gw1_runner
         self.weekly_runner = weekly_runner
+        self.gw1_handoff_runner = (
+            gw1_handoff_runner
+            if gw1_handoff_runner is not None
+            else build_complete_deadline_handoff
+            if gw1_runner is run_gw1_deadline_pipeline
+            else None
+        )
         self.gw1_receipt_path = gw1_receipt_path
         self.weekly_receipt_path = weekly_receipt_path
         self.clock = clock or (lambda: datetime.now(tz=UTC))
@@ -187,11 +202,13 @@ class WorkspaceRefreshCoordinator:
             if state.status == "running" and self._active_run_id is None:
                 interrupted = state.model_copy(
                     update={
-                        "status": "failed",
+                        "status": "blocked",
                         "completed_at": self._now().isoformat(),
+                        "failure_code": "refresh_process_interrupted",
                         "message": (
                             "The previous local process ended before its decision refresh "
-                            "completed. The last valid workspace remains active."
+                            "completed. The last valid workspace remains active and automatic "
+                            "retries are paused until a manual refresh is requested."
                         ),
                     }
                 )
@@ -204,12 +221,13 @@ class WorkspaceRefreshCoordinator:
             ):
                 interrupted = state.model_copy(
                     update={
-                        "status": "failed",
+                        "status": "blocked",
                         "completed_at": self._now().isoformat(),
-                        "failure_code": "refresh_worker_terminated",
+                        "failure_code": "refresh_process_interrupted",
                         "message": (
                             "The local refresh worker ended without a terminal receipt. The "
-                            "last valid workspace was retained; restart the app before retrying."
+                            "last valid workspace was retained and automatic retries are paused "
+                            "until a manual refresh is requested."
                         ),
                     }
                 )
@@ -231,6 +249,25 @@ class WorkspaceRefreshCoordinator:
             }
             if state.mode == "gw1":
                 result = dict(self.gw1_runner(**common))
+                if (
+                    str(result.get("status") or "") == "published"
+                    and self.gw1_handoff_runner is not None
+                ):
+                    handoff = dict(self.gw1_handoff_runner())
+                    result["deadline_handoff"] = handoff
+                    if handoff.get("status") != "published":
+                        result.update(
+                            {
+                                "status": "blocked",
+                                "published": False,
+                                "failure_code": "deadline_handoff_blocked",
+                                "message": (
+                                    "The decision pipeline published, but the canonical GW1 "
+                                    "entry receipt failed closed. The last ready hand-off remains "
+                                    "active."
+                                ),
+                            }
+                        )
             else:
                 result = dict(
                     self.weekly_runner(
@@ -270,7 +307,7 @@ class WorkspaceRefreshCoordinator:
                     "receipt_sha256": receipt_sha256,
                     "completed_stages": stages,
                     "completed_stage_count": len(stages),
-                    "total_stages": len(stages) or None,
+                    "total_stages": result.get("total_stages") or len(stages) or None,
                     "progress_percent": 100 if raw_status == "published" else None,
                     "failure_code": (
                         str(result["failure_code"]) if result.get("failure_code") else None
@@ -335,6 +372,8 @@ class WorkspaceRefreshCoordinator:
             message = f"Completed {completed_count} validated pipeline stages."
         else:
             message = state.message
+        if receipt.get("progress_message"):
+            message += " " + str(receipt["progress_message"])
         return state.model_copy(
             update={
                 "completed_stages": completed_stages,
@@ -391,18 +430,15 @@ class WorkspaceRefreshCoordinator:
         age = now - completed_at.astimezone(UTC)
         if age < timedelta(0) or age >= max_age:
             return None
-        receipt_path = (
-            self.gw1_receipt_path if mode == "gw1" else self.weekly_receipt_path
-        )
+        receipt_path = self.gw1_receipt_path if mode == "gw1" else self.weekly_receipt_path
         try:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             receipt_checked_at = datetime.fromisoformat(str(receipt["checked_at"]))
             if receipt_checked_at.tzinfo is None:
                 raise ValueError("pipeline receipt time is naive")
-            external_terminal_result = (
-                receipt.get("status") == "published"
-                and receipt_checked_at.astimezone(UTC) > completed_at.astimezone(UTC)
-            )
+            external_terminal_result = receipt.get(
+                "status"
+            ) == "published" and receipt_checked_at.astimezone(UTC) > completed_at.astimezone(UTC)
             receipt_identity = receipt.get("input_identity") or {}
             receipt_implementation = (
                 str(receipt_identity.get("implementation_sha256") or "")
@@ -410,9 +446,11 @@ class WorkspaceRefreshCoordinator:
                 else ""
             )
             implementation_changed = (
-                mode == "gw1"
-                and bool(receipt_implementation)
-                and receipt_implementation != gw1_pipeline_implementation_sha256()
+                bool(receipt_identity)
+                and receipt_implementation != (
+                    gw1_pipeline_implementation_sha256() if mode == "gw1"
+                    else weekly_pipeline_implementation_sha256()
+                )
             )
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             external_terminal_result = False
@@ -421,9 +459,7 @@ class WorkspaceRefreshCoordinator:
             return None
         if previous.status in {"published", "reused"}:
             minutes = int(max_age.total_seconds() // 60)
-            cadence = (
-                f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
-            )
+            cadence = f"{minutes // 60}-hour" if minutes % 60 == 0 else f"{minutes}-minute"
             return previous.model_copy(
                 update={
                     "status": "reused",

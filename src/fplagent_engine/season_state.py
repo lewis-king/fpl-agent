@@ -96,6 +96,9 @@ class ManagerState:
     previous_chip: ChipType | None = None
     previous_chip_event: int | None = None
     committed_points_cost: int = 0
+    # Only authenticated held squads / observed real-club transitions can set
+    # this. Any actual fantasy transfer must restore the ordinary club limit.
+    club_overflow_allowed: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,8 @@ def _squad_rows(squad: tuple[PlayerHolding, ...]) -> list[dict]:
 
 
 def validate_manager_state(state: ManagerState, rules: SquadRules) -> None:
+    if not isinstance(state.club_overflow_allowed, bool):
+        raise ValueError("Club-overflow provenance flag must be boolean")  # noqa: TRY004 -- state contract validators use ValueError
     if not 1 <= state.event <= LAST_EVENT:
         raise ValueError("Manager event must be in [1, 38]")
     if state.event_status != EventStatus.DEADLINE_OPEN:
@@ -190,7 +195,10 @@ def validate_manager_state(state: ManagerState, rules: SquadRules) -> None:
     rows = _squad_rows(state.squad)
     # A held squad may appreciate above the initial budget. Transfer affordability is
     # enforced from bank plus exact selling proceeds when an action is applied.
-    validate_squad(rows, rules, enforce_budget=False)
+    held_rules = (
+        replace(rules, club_limit=rules.squad_size) if state.club_overflow_allowed else rules
+    )
+    validate_squad(rows, held_rules, enforce_budget=False)
     validate_lineup(
         rows,
         state.lineup.starters,
@@ -260,7 +268,12 @@ def _apply_transfers(
     transferred = [player for player in state.squad if player.player_id not in set(outgoing)]
     transferred.extend(transfer.incoming.as_holding() for transfer in transfers)
     output = tuple(transferred)
-    validate_squad(_squad_rows(output), rules, enforce_budget=False)
+    held_rules = (
+        replace(rules, club_limit=rules.squad_size)
+        if not transfers and state.club_overflow_allowed
+        else rules
+    )
+    validate_squad(_squad_rows(output), held_rules, enforce_budget=False)
     return output, bank
 
 
@@ -322,6 +335,9 @@ def apply_action(state: ManagerState, action: ActionBundle, rules: SquadRules) -
         previous_chip=action.chip,
         previous_chip_event=state.event if action.chip is not None else None,
         committed_points_cost=0,
+        club_overflow_allowed=state.club_overflow_allowed
+        if free_hit or not action.transfers
+        else False,
     )
     validate_manager_state(next_state, rules)
     return ActionOutcome(gameweek=gameweek, next_manager=next_state)

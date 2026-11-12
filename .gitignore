@@ -10,6 +10,7 @@ htmlcov/
 *.log
 
 # Local credentials and provider keys must never enter version control.
+.local/
 .env
 .env.*
 !.env.example
@@ -32,9 +33,17 @@ llm/evaluations/
 data/raw/
 data/processed/
 data/model/
+!data/model/
+data/model/*
+!data/model/chip_strategy_v2/
+data/model/chip_strategy_v2/*
+!data/model/chip_strategy_v2/retained-value.json
 data/decisions/
 data/web/
 data/manifests/
 data/fpl_history.duckdb*
 data/analysis/
 data/llm/
+
+# Episode video project dependencies and caches.
+episode/node_modules/

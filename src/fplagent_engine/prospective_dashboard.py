@@ -19,6 +19,8 @@ RESULT_ROOT = MODEL_DATA / VERSION
 RESULTS = RESULT_ROOT / "results.json"
 REPORT = REPORTS / "prospective-season-scoreboard.md"
 SCORING_ROOTS = (
+    MODEL_DATA / "prospective_weekly_scoring_v4",
+    MODEL_DATA / "prospective_weekly_scoring_v3",
     MODEL_DATA / "prospective_weekly_scoring_v2",
     MODEL_DATA / "prospective_weekly_scoring_v1",
 )
@@ -39,6 +41,8 @@ def _load_receipts(roots: Iterable[Path]) -> list[dict[str, Any]]:
             if payload.get("version") not in {
                 "prospective_weekly_scoring_v1",
                 "prospective_weekly_scoring_v2",
+                "prospective_weekly_scoring_v3",
+                "prospective_weekly_scoring_v4",
             }:
                 continue
             frozen = payload.get("frozen_evidence", {})

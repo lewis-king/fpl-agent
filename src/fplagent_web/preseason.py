@@ -13,9 +13,10 @@ from typing import Any
 import duckdb
 import numpy as np
 
+from fplagent_engine.capital_efficiency import candidate_publication_role_risks
 from fplagent_engine.optimizer import POSITION_ORDER, _player_rows, _solve
 from fplagent_llm.paths import ROOT
-from fplagent_llm.runtime_tools import DEFAULT_DECISION
+from fplagent_llm.runtime_tools import DEFAULT_DECISION, DEFAULT_FORECASTS
 
 from .models import (
     GenerateSquadRequest,
@@ -58,10 +59,12 @@ class PreseasonSquadService:
         published_decision_path: Path = DEFAULT_DECISION,
         active_decision_path: Path = DEFAULT_ACTIVE_DECISION,
         database_path: Path = DEFAULT_DATABASE,
+        forecast_path: Path = DEFAULT_FORECASTS,
     ) -> None:
         self.published_decision_path = published_decision_path
         self.active_decision_path = active_decision_path
         self.database_path = database_path
+        self.forecast_path = forecast_path
 
     def decision_path(self) -> Path:
         return (
@@ -91,9 +94,7 @@ class PreseasonSquadService:
             published_generated_at=str(published["created_at"]),
             custom_build_estimate_seconds="about 3 seconds for five gameweeks",
             teams=[
-                PreseasonTeamOption(
-                    team_id=int(row[0]), name=str(row[1]), short_name=str(row[2])
-                )
+                PreseasonTeamOption(team_id=int(row[0]), name=str(row[1]), short_name=str(row[2]))
                 for row in rows
             ],
         )
@@ -111,7 +112,7 @@ class PreseasonSquadService:
                 "conflicting_constraint", "A player cannot be both locked and excluded."
             )
 
-        rows, all_events = _player_rows()
+        rows, all_events = _player_rows(self.forecast_path)
         events = all_events[: request.horizon]
         rows = [row for row in rows if int(row["event_number"]) in events]
         available_ids = {int(row["element"]) for row in rows}
@@ -133,20 +134,36 @@ class PreseasonSquadService:
             club_minimums[team_id] = max(club_minimums.get(team_id, 0), item.count)
 
         score = self._score(rows, request.risk_profile)
+        event_rows = {int(row["element"]): row for row in rows if int(row["event_number"]) == 1}
+        role_exclusions: set[int] = set()
         try:
-            solution = _solve(
-                rows,
-                events,
-                score_by_row=score,
-                required_players=locked,
-                excluded_players=excluded,
-                club_minimums=club_minimums,
-            )
+            while True:
+                solution = _solve(
+                    rows,
+                    events,
+                    score_by_row=score,
+                    required_players=locked,
+                    excluded_players=excluded | role_exclusions,
+                    club_minimums=club_minimums,
+                )
+                role_risks = candidate_publication_role_risks(
+                    solution,
+                    event_rows,
+                    solution["player_meta"],
+                )
+                newly_unsafe = {
+                    int(risk["element"])
+                    for risk in role_risks
+                    if int(risk["element"]) not in locked
+                } - role_exclusions
+                if not newly_unsafe:
+                    break
+                role_exclusions.update(newly_unsafe)
         except (RuntimeError, ValueError) as exc:
             raise PreseasonSquadError(
                 "constraints_infeasible",
-                "Those rules do not produce a legal squad. Remove one or more locks, exclusions, "
-                "or club targets and try again.",
+                "Those rules do not produce a legal, role-safe squad. Remove one or more locks, "
+                "exclusions, or club targets and try again.",
             ) from exc
 
         current_ids = self._current_player_ids()
@@ -170,6 +187,7 @@ class PreseasonSquadService:
             created_at=created_at,
             constraints=constraint_payload,
             parent_candidate_id=self._current_candidate_id(),
+            role_integrity_risks=role_risks,
         )
         _atomic_json(self.active_decision_path, payload)
         lineup = solution["lineups"][1]
@@ -183,7 +201,12 @@ class PreseasonSquadService:
             bank=round((1000.0 - float(solution["budget"])) / 10.0, 1),
             changed_player_ids=sorted(set(current_ids) ^ set(solution["selected"])),
             duration_ms=round(duration_ms, 1),
-            message="A new legal candidate squad is now active in the decision workspace.",
+            message=(
+                "A legal candidate is active, but one or more explicitly locked players need a "
+                "role review."
+                if role_risks
+                else "A new legal, role-safe candidate squad is now active in the decision workspace."
+            ),
         )
 
     def use_published(self) -> GenerateSquadResponse:
@@ -211,9 +234,7 @@ class PreseasonSquadService:
         _atomic_json(self.active_decision_path, copied)
         squad = copied["decision"]["squad"]
         lineup = candidate["lineups"]["1"]
-        selected_ids = {
-            int(row["element"]) for row in squad["starters"] + squad["bench"]
-        }
+        selected_ids = {int(row["element"]) for row in squad["starters"] + squad["bench"]}
         return GenerateSquadResponse(
             candidate_id=candidate_id,
             receipt_id=receipt_id,
@@ -238,12 +259,8 @@ class PreseasonSquadService:
         if not isinstance(raw_players, list):
             raise PreseasonSquadError("proposal_missing", "The screenshot players are missing.")
 
-        rows, _ = _player_rows()
-        event_rows = {
-            int(row["element"]): row
-            for row in rows
-            if int(row["event_number"]) == 1
-        }
+        rows, _ = _player_rows(self.forecast_path)
+        event_rows = {int(row["element"]): row for row in rows if int(row["event_number"]) == 1}
         selected_ids = [int(row["player_id"]) for row in raw_players]
         if len(selected_ids) != 15 or len(set(selected_ids)) != 15:
             raise PreseasonSquadError(
@@ -278,8 +295,7 @@ class PreseasonSquadService:
             float(event_rows[element]["expected_points"]) for element in starter_ids
         ) + float(event_rows[captain_id]["expected_points"])
         all_items = {
-            element: self._player_item(event_rows[element], element)
-            for element in selected_ids
+            element: self._player_item(event_rows[element], element) for element in selected_ids
         }
         squad_starters = [
             self._role_item(all_items[element], element, captain_id, vice_id)
@@ -292,12 +308,12 @@ class PreseasonSquadService:
         budget = sum(float(item["price"]) for item in all_items.values())
         created_at = _utc_now()
         image_id = str(proposal.get("source_image_id") or "upload")
-        candidate_id = "U-" + hashlib.sha256(
-            f"{image_id}:{sorted(selected_ids)}".encode()
-        ).hexdigest()[:10]
-        receipt_id = "upload-v1-" + hashlib.sha256(
-            f"{image_id}:{created_at}".encode()
-        ).hexdigest()[:16]
+        candidate_id = (
+            "U-" + hashlib.sha256(f"{image_id}:{sorted(selected_ids)}".encode()).hexdigest()[:10]
+        )
+        receipt_id = (
+            "upload-v1-" + hashlib.sha256(f"{image_id}:{created_at}".encode()).hexdigest()[:16]
+        )
         payload = {
             "created_at": created_at,
             "decision_status": "confirmed-local-draft",
@@ -351,12 +367,8 @@ class PreseasonSquadService:
             raise PreseasonSquadError(
                 "mcp_squad_invalid", "The MCP snapshot did not contain a complete 15-player squad."
             )
-        captain = next(
-            (int(row["element"]) for row in raw_picks if row.get("is_captain")), None
-        )
-        vice = next(
-            (int(row["element"]) for row in raw_picks if row.get("is_vice_captain")), None
-        )
+        captain = next((int(row["element"]) for row in raw_picks if row.get("is_captain")), None)
+        vice = next((int(row["element"]) for row in raw_picks if row.get("is_vice_captain")), None)
         proposal_players = [
             {
                 "source_text": str(row.get("name") or row["element"]),
@@ -393,13 +405,16 @@ class PreseasonSquadService:
             }
             for row in sorted(raw_picks, key=lambda item: int(item["position"]))
         ]
-        candidate_id = "M-" + hashlib.sha256(
-            json.dumps(
-                {"entry_id": entry_id, "picks": squad_identity},
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()[:10]
+        candidate_id = (
+            "M-"
+            + hashlib.sha256(
+                json.dumps(
+                    {"entry_id": entry_id, "picks": squad_identity},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()[:10]
+        )
         payload["created_at"] = observed_at
         payload["decision_status"] = "synced-manager-state"
         payload["decision"]["candidate"]["candidate_id"] = candidate_id
@@ -421,9 +436,7 @@ class PreseasonSquadService:
                 float(snapshot["squad_value"]) / 10.0, 1
             )
         if snapshot.get("bank") is not None:
-            payload["decision"]["squad"]["bank"] = round(
-                float(snapshot["bank"]) / 10.0, 1
-            )
+            payload["decision"]["squad"]["bank"] = round(float(snapshot["bank"]) / 10.0, 1)
         payload["manager_context"] = {
             "entry_id": entry_id,
             "free_transfers": snapshot.get("free_transfers"),
@@ -442,30 +455,29 @@ class PreseasonSquadService:
         meta = current.get("workspace_candidate") or {}
         players = list(squad["starters"]) + list(squad["bench"])
         published_squad = published["decision"]["squad"]
-        published_players = list(published_squad["starters"]) + list(
-            published_squad["bench"]
-        )
+        published_players = list(published_squad["starters"]) + list(published_squad["bench"])
         player_ids = [int(row["element"]) for row in players]
         current_by_id = {int(row["element"]): row for row in players}
-        published_by_id = {
-            int(row["element"]): row for row in published_players
-        }
+        published_by_id = {int(row["element"]): row for row in published_players}
         current_only_ids = sorted(set(current_by_id) - set(published_by_id))
         published_only_ids = sorted(set(published_by_id) - set(current_by_id))
-        rows, _ = _player_rows()
+        rows, _ = _player_rows(self.forecast_path)
         forecasts = {
             int(row["element"]): row
             for row in rows
             if int(row["event_number"]) == 1 and int(row["element"]) in player_ids
         }
-        benchmark = float(
-            published["decision"]["candidate"]["lineups"]["1"]["expected_points"]
-        )
+        benchmark = float(published["decision"]["candidate"]["lineups"]["1"]["expected_points"])
         expected = float(lineup["expected_points"])
         delta = expected - benchmark
-        risky = [
-            row for row in players if float(forecasts[int(row["element"])]["p_play"]) < 0.85
-        ]
+        candidate_for_gate = dict(current["decision"]["candidate"])
+        candidate_for_gate.setdefault("selected", player_ids)
+        role_risks = candidate_publication_role_risks(
+            candidate_for_gate,
+            forecasts,
+            forecasts,
+        )
+        risky_ids = {int(risk["element"]) for risk in role_risks}
         bench_spend = sum(float(row["price"]) for row in squad["bench"])
         starter_ids = {int(value) for value in lineup["starters"]}
         starters = [row for row in players if int(row["element"]) in starter_ids]
@@ -489,12 +501,12 @@ class PreseasonSquadService:
                 "player_ids": [],
             }
         ]
-        if len(risky) <= 1:
+        if not role_risks:
             strengths.append(
                 {
                     "code": "minutes_floor",
-                    "title": "Useful minutes floor",
-                    "detail": "At least 14 squad players clear the current 85% appearance threshold.",
+                    "title": "Actionable roles clear the safety floor",
+                    "detail": "The XI, armbands and ordered outfield bench clear their role-specific minutes and appearance gates.",
                     "player_ids": [],
                 }
             )
@@ -518,14 +530,20 @@ class PreseasonSquadService:
             )
 
         concerns: list[dict[str, Any]] = []
-        if risky:
-            names = ", ".join(str(row["name"]) for row in risky[:3])
+        if role_risks:
+            names = ", ".join(str(risk["player_name"]) for risk in role_risks[:3])
+            details = "; ".join(
+                f"{risk['player_name']} ({risk.get('action', 'premium capital')}: "
+                f"{float(risk['expected_minutes']):.1f} expected minutes, "
+                f"{float(risk['p_play']) * 100:.0f}% plays)"
+                for risk in role_risks[:3]
+            )
             concerns.append(
                 {
-                    "code": "appearance_risk",
-                    "title": "Minutes need checking",
-                    "detail": f"{names} currently fall below the 85% appearance threshold.",
-                    "player_ids": [int(row["element"]) for row in risky],
+                    "code": "role_integrity_risk",
+                    "title": "Actionable roles need changing",
+                    "detail": f"{names} fail a role-specific safety gate: {details}.",
+                    "player_ids": sorted(risky_ids),
                 }
             )
         if bench_spend > 22.5:
@@ -547,13 +565,14 @@ class PreseasonSquadService:
                 }
             )
         if current_only_ids or published_only_ids:
-            current_names = ", ".join(
-                str(current_by_id[element]["name"]) for element in current_only_ids
-            ) or "no alternatives"
-            benchmark_names = ", ".join(
-                str(published_by_id[element]["name"])
-                for element in published_only_ids
-            ) or "no alternatives"
+            current_names = (
+                ", ".join(str(current_by_id[element]["name"]) for element in current_only_ids)
+                or "no alternatives"
+            )
+            benchmark_names = (
+                ", ".join(str(published_by_id[element]["name"]) for element in published_only_ids)
+                or "no alternatives"
+            )
             concerns.append(
                 {
                     "code": "published_squad_delta",
@@ -604,14 +623,10 @@ class PreseasonSquadService:
                 (
                     "Why does the benchmark use "
                     + ", ".join(
-                        str(published_by_id[element]["name"])
-                        for element in published_only_ids
+                        str(published_by_id[element]["name"]) for element in published_only_ids
                     )
                     + " instead of "
-                    + ", ".join(
-                        str(current_by_id[element]["name"])
-                        for element in current_only_ids
-                    )
+                    + ", ".join(str(current_by_id[element]["name"]) for element in current_only_ids)
                     + "?"
                 ),
             )
@@ -633,7 +648,8 @@ class PreseasonSquadService:
     def handle_optimize_squad(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         if int(arguments["manager_id"]) != 1 or int(arguments["start_event"]) != 1:
             raise PreseasonSquadError(
-                "unsupported_context", "The local preseason optimiser currently supports manager 1 and GW1."
+                "unsupported_context",
+                "The local preseason optimiser currently supports manager 1 and GW1.",
             )
         raw = arguments.get("constraints")
         constraints = dict(raw) if isinstance(raw, Mapping) else {}
@@ -739,9 +755,7 @@ class PreseasonSquadService:
                     "snapshot_at": str(row[8]),
                 }
             )
-        candidates.sort(
-            key=lambda item: (-float(item["match_confidence"]), str(item["name"]))
-        )
+        candidates.sort(key=lambda item: (-float(item["match_confidence"]), str(item["name"])))
         return {
             "schema_version": "player-search-v1",
             "query": arguments["query"],
@@ -758,6 +772,7 @@ class PreseasonSquadService:
         created_at: str,
         constraints: Mapping[str, Any],
         parent_candidate_id: str | None,
+        role_integrity_risks: list[dict[str, Any]],
     ) -> dict[str, Any]:
         lineup = solution["lineups"][1]
         captain = int(lineup["captain"])
@@ -803,6 +818,7 @@ class PreseasonSquadService:
                 "horizon": constraints.get("horizon", 5),
                 "constraints": dict(constraints),
                 "receipt_id": receipt_id,
+                "role_integrity_risks": role_integrity_risks,
             },
             "decision": {
                 "candidate": {
@@ -833,8 +849,7 @@ class PreseasonSquadService:
         if risk_profile == "upside":
             return np.asarray(
                 [
-                    float(row["expected_points"])
-                    + 0.18 * max(float(row["model_sd"]), 0.0)
+                    float(row["expected_points"]) + 0.18 * max(float(row["model_sd"]), 0.0)
                     for row in rows
                 ],
                 dtype=np.float64,

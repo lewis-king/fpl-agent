@@ -1,7 +1,12 @@
 # Wildcard, Free Hit and retained-chip decision shadow
 
-**Status:** exact legal search and historical replay, zero decision authority  
-**Updated:** 8 August 2026
+**Status:** superseded retained-value design; WC/FH exact branches remain advisory
+**Updated:** 30 August 2026
+
+> Version 2 now solves the four-chip calendar jointly and has promoted BB/TC timing behind strict
+> live uncertainty gates. See [Season-long chip strategy v2](chip-strategy-v2.md). The document
+> below is retained as the audit trail for the original shadow implementation and its rejected
+> gates.
 
 FPLAgent can now generate and simulate legal Wildcard and Free Hit counterfactuals alongside roll,
 ordinary-transfer and hit routes. This closes the squad-search gap; it does not yet mean the engine

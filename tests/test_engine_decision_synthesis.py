@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from fplagent_engine.decision_synthesis import champion_intervals, synthesis_rows
+from fplagent_engine.decision_synthesis import (
+    annotate_future_transfer_policy,
+    champion_intervals,
+    synthesis_rows,
+)
 
 
 def _row(candidate_id: str, regret: float) -> dict:
@@ -61,3 +65,41 @@ def test_synthesis_rejects_invalid_weights() -> None:
             horizon_family_weight=1.1,
             family_worst_weight=0.2,
         )
+
+
+def test_future_transfer_policy_is_scenario_only_and_exposes_current_role_conflict() -> None:
+    policy = {
+        "6": {
+            "available": 2,
+            "used": 1,
+            "in": [{"element": 55, "name": "Watkins"}],
+            "out": [{"element": 99, "name": "Other"}],
+        }
+    }
+    rows = [
+        {
+            "event_number": event,
+            "element": 55,
+            "position": "FWD",
+            "market_price": 80.0,
+            "player_name": "Watkins",
+            "p_play": 0.78 if event == 1 else 0.95,
+            "expected_minutes": 35.3 if event == 1 else 75.0,
+            "live_participation_consensus": (
+                "predicted_bench_consensus" if event == 1 else "not_covered"
+            ),
+        }
+        for event in (1, 6)
+    ]
+
+    result = annotate_future_transfer_policy(
+        policy,
+        rows,
+        {55: {"position": "FWD", "market_price": 80.0, "player_name": "Watkins"}},
+    )
+
+    assert result["6"]["execution_status"] == "conditional_recompute_required"
+    assert result["6"]["authority"] == "scenario_only_not_an_action_recommendation"
+    assert result["6"]["requires_live_role_revalidation"] is True
+    assert result["6"]["current_role_conflicts"][0]["element"] == 55
+    assert result["6"]["planned_event_role_conflicts"] == []

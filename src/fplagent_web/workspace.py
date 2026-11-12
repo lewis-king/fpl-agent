@@ -11,6 +11,8 @@ import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
 from fplagent_data.participation_consensus import CONSENSUS as DEFAULT_PARTICIPATION_CONSENSUS
+from fplagent_engine.deadline_pack import deadline_pack_currentness
+from fplagent_engine.preseason_pipeline import GW1_PIPELINE_RECEIPT
 from fplagent_llm.paths import ROOT
 from fplagent_llm.runtime_tools import (
     DEFAULT_COMPONENTS,
@@ -25,6 +27,9 @@ from .models import (
     CapabilityView,
     CaptainInsight,
     ChipAdviceView,
+    CritiqueItem,
+    DeadlineBoundaryView,
+    DeadlineHandoffView,
     DecisionView,
     EvidenceItem,
     ExecutionTimingView,
@@ -40,6 +45,7 @@ from .models import (
     RecommendedSquadView,
     SquadChangePlayerView,
     SquadComparisonView,
+    SquadCritique,
     SquadView,
     UserView,
     WeeklyActionView,
@@ -57,6 +63,9 @@ DEFAULT_WEEKLY_DECISION = ROOT / "data" / "decisions" / "2026-27-weekly-current.
 DEFAULT_REFRESH_STATE = ROOT / "data" / "web" / "state" / "workspace-refresh.json"
 DEFAULT_AVAILABILITY_WATCH = ROOT / "data" / "manifests" / "fpl-availability-watch.json"
 DEFAULT_DEADLINE_PACK = ROOT / "data" / "manifests" / "gw1-deadline-pack.json"
+PUBLISHED_PARTICIPATION_CONSENSUS = (
+    ROOT / "data" / "decisions" / "published" / "gw1" / "participation-consensus.parquet"
+)
 
 
 class WorkspaceBuildError(RuntimeError):
@@ -76,10 +85,14 @@ class WorkspaceBuilder:
         profile_path: Path = DEFAULT_PROFILE_PATH,
         deadline_status_path: Path | None = DEFAULT_DEADLINE_STATUS,
         weekly_decision_path: Path | None = DEFAULT_WEEKLY_DECISION,
+        weekly_forecast_path: Path | None = None,
+        weekly_component_path: Path | None = None,
+        weekly_participation_consensus_path: Path | None = None,
         refresh_state_path: Path | None = None,
         availability_watch_path: Path | None = DEFAULT_AVAILABILITY_WATCH,
         participation_consensus_path: Path | None = None,
         deadline_pack_path: Path | None = DEFAULT_DEADLINE_PACK,
+        deadline_pipeline_path: Path = GW1_PIPELINE_RECEIPT,
     ) -> None:
         self.decision_path = decision_path
         self.forecast_path = forecast_path
@@ -90,16 +103,24 @@ class WorkspaceBuilder:
         self.profile_path = profile_path
         self.deadline_status_path = deadline_status_path
         self.weekly_decision_path = weekly_decision_path
+        self.weekly_forecast_path = weekly_forecast_path
+        self.weekly_component_path = weekly_component_path
+        self.weekly_participation_consensus_path = weekly_participation_consensus_path
         self.refresh_state_path = refresh_state_path
         self.availability_watch_path = availability_watch_path
         self.participation_consensus_path = participation_consensus_path
         self.deadline_pack_path = deadline_pack_path
+        self.deadline_pipeline_path = deadline_pipeline_path
         if (
             self.participation_consensus_path is None
             and availability_watch_path == DEFAULT_AVAILABILITY_WATCH
             and forecast_path == DEFAULT_FORECASTS
         ):
-            self.participation_consensus_path = DEFAULT_PARTICIPATION_CONSENSUS
+            self.participation_consensus_path = (
+                PUBLISHED_PARTICIPATION_CONSENSUS
+                if PUBLISHED_PARTICIPATION_CONSENSUS.is_file()
+                else DEFAULT_PARTICIPATION_CONSENSUS
+            )
 
     def build(self, *, now: datetime | None = None) -> WorkspaceView:
         current = now or datetime.now(tz=UTC)
@@ -108,22 +129,48 @@ class WorkspaceBuilder:
         resolved_decision_path = self._resolved_decision_path()
         payload = self._read_decision(resolved_decision_path)
         published_payload = (
-            self._read_decision(self.decision_path)
-            if self.decision_path.is_file()
-            else None
+            self._read_decision(self.decision_path) if self.decision_path.is_file() else None
         )
         phase = self._phase(current, self._event_calendar())
         analysis_event = phase.decision_event or phase.event
+        forecast_path, component_path = self._analysis_forecast_paths(analysis_event)
+        evidence_decision_path = (
+            self.weekly_decision_path
+            if analysis_event > 1 and self.weekly_decision_path is not None
+            else self.decision_path
+        )
+        evidence_gate = self._deadline_evidence_status(
+            forecast_path=forecast_path,
+            component_path=component_path,
+            decision_path=evidence_decision_path,
+        )
         candidate_meta = payload.get("workspace_candidate") or {}
         risk_profile = str(candidate_meta.get("risk_profile") or "safer")
         captain_policy = "robust" if risk_profile == "safer" else "expected_points"
         managers = LocalManagerRepository(resolved_decision_path, manager_id=self.manager_id)
         state = managers.get_state(self.manager_id, current.isoformat())
         weekly_decision = self._weekly_decision(event=analysis_event)
+        if (
+            analysis_event > 1
+            and evidence_gate is not None
+            and not evidence_gate.get("publishable")
+        ):
+            issues = list(map(str, evidence_gate.get("issues") or []))
+            weekly_decision = WeeklyDecisionView(
+                status="blocked",
+                event=analysis_event,
+                promotion_status="deadline_evidence_blocked",
+                explanation=(
+                    "The previous weekly recommendation is hidden until current manager and "
+                    "model evidence passes validation: "
+                    + ("; ".join(issues[:3]) if issues else "evidence gate did not pass")
+                ),
+                receipt_path=str(self.weekly_decision_path),
+            )
         captain_result = CaptainComparisonService(
             managers,
-            self.forecast_path,
-            self.component_path,
+            forecast_path,
+            component_path,
         ).compare(
             {
                 "manager_id": self.manager_id,
@@ -151,11 +198,33 @@ class WorkspaceBuilder:
         forecast_player_ids = list(
             dict.fromkeys([*player_ids, *published_player_ids, *weekly_player_ids])
         )
-        forecasts = self._forecasts(forecast_player_ids, event=analysis_event)
+        forecasts = self._forecasts(
+            forecast_player_ids,
+            event=analysis_event,
+            forecast_path=forecast_path,
+            component_path=component_path,
+        )
         participation, participation_by_id = self._participation_context(
             resolved_decision_path,
             {player_id: forecasts[player_id] for player_id in player_ids},
+            forecast_path=forecast_path,
+            consensus_path=(
+                self.weekly_participation_consensus_path
+                if analysis_event > 1
+                else self.participation_consensus_path
+            ),
         )
+        # Keep the summary scoped to the current 15, but do not lose evidence
+        # for incoming players when rendering the separate recommended squad.
+        incoming_ids = set(weekly_player_ids) - set(player_ids)
+        if incoming_ids:
+            _, incoming_participation = self._participation_context(
+                self.weekly_decision_path or resolved_decision_path,
+                {player_id: forecasts[player_id] for player_id in incoming_ids},
+                forecast_path=forecast_path,
+                consensus_path=self.weekly_participation_consensus_path,
+            )
+            participation_by_id = {**participation_by_id, **incoming_participation}
         fixtures = self._fixtures(event=analysis_event)
         teams = self._teams()
         lineup = payload["decision"]["candidate"]["lineups"]["1"]
@@ -174,9 +243,7 @@ class WorkspaceBuilder:
             for index, row in enumerate(squad_payload["starters"], start=1)
         ]
         bench = [
-            self._player_view(
-                row, "bench", index, forecasts, fixtures, teams, participation_by_id
-            )
+            self._player_view(row, "bench", index, forecasts, fixtures, teams, participation_by_id)
             for index, row in enumerate(squad_payload["bench"], start=1)
         ]
         names = {row.player_id: row.name for row in starters + bench}
@@ -192,7 +259,10 @@ class WorkspaceBuilder:
             participation_by_id=participation_by_id,
         )
         names.update(
-            {row.player_id: row.name for row in recommended_squad.starters + recommended_squad.bench}
+            {
+                row.player_id: row.name
+                for row in recommended_squad.starters + recommended_squad.bench
+            }
         )
         forecast_observed_at = datetime.fromisoformat(str(captain_result["forecast_observed_at"]))
         if forecast_observed_at.tzinfo is None:
@@ -203,9 +273,12 @@ class WorkspaceBuilder:
         if forecast_model_created_at.tzinfo is None:
             forecast_model_created_at = forecast_model_created_at.replace(tzinfo=UTC)
         age_seconds = max(0.0, (current - forecast_observed_at).total_seconds())
-        evidence_gate = self._deadline_evidence_status()
         evidence_blocked = bool(evidence_gate and not evidence_gate.get("publishable"))
-        refresh_required = bool(state["refresh_required"]) or evidence_blocked
+        refresh_required = (
+            bool(state["refresh_required"]) or evidence_blocked
+            if analysis_event == 1
+            else weekly_decision.status != "ready" or evidence_blocked
+        )
         freshness_status = "stale" if evidence_blocked else self._freshness_status(age_seconds)
         captain = captain_result["captain"]
         vice = captain_result["vice_captain"]
@@ -236,8 +309,7 @@ class WorkspaceBuilder:
             stored_captain = {
                 **stored_captain,
                 "captaincy_aligned": (
-                    selected_action.captain_player_id
-                    == int(stored_captain["captain_player_id"])
+                    selected_action.captain_player_id == int(stored_captain["captain_player_id"])
                     and selected_action.vice_captain_player_id
                     == int(stored_captain["vice_captain_player_id"])
                 ),
@@ -249,11 +321,29 @@ class WorkspaceBuilder:
         requires_confirmation = bool(
             candidate_meta.get("requires_confirmation", state["requires_confirmation"])
         )
-        critique = PreseasonSquadService(
-            published_decision_path=self.decision_path,
-            active_decision_path=resolved_decision_path,
-            database_path=self.database_path,
-        ).critique(payload)
+        current_expected_points = round(
+            sum(
+                forecasts[int(row["element"])]["expected_points"]
+                for row in squad_payload["starters"]
+            )
+            + forecasts[int(lineup["captain"])]["expected_points"],
+            2,
+        )
+        critique = (
+            PreseasonSquadService(
+                published_decision_path=self.decision_path,
+                active_decision_path=resolved_decision_path,
+                database_path=self.database_path,
+            ).critique(payload)
+            if analysis_event == 1
+            else self._weekly_critique(
+                event=analysis_event,
+                weekly_decision=weekly_decision,
+                recommended_squad=recommended_squad,
+                current_expected_points=current_expected_points,
+                lineup_aligned=bool(recommended_lineup["aligned_with_current_xi"]),
+            )
+        )
         profile = ManagerProfileStore(self.profile_path).get()
         recommendation_parts: list[str] = []
         if not recommended_lineup["aligned_with_current_xi"]:
@@ -267,6 +357,10 @@ class WorkspaceBuilder:
         if stored_captain["captaincy_aligned"]:
             recommendation_parts.append(
                 f"Keep {captain['name']} captain with {vice['name']} vice-captain."
+            )
+        elif stored_captain["captain_player_id"] == captain["player_id"]:
+            recommendation_parts.append(
+                f"Keep {captain['name']} captain and change vice-captain to {vice['name']}."
             )
         else:
             recommendation_parts.append(
@@ -309,14 +403,6 @@ class WorkspaceBuilder:
                 )
             ]
 
-        current_expected_points = round(
-            sum(
-                forecasts[int(row["element"])]["expected_points"]
-                for row in squad_payload["starters"]
-            )
-            + forecasts[int(lineup["captain"])]["expected_points"],
-            2,
-        )
         comparison = self._squad_comparison(
             phase=phase,
             incumbent_candidate_id=str(payload["decision"]["candidate"]["candidate_id"]),
@@ -325,6 +411,13 @@ class WorkspaceBuilder:
             model_squad=model_squad,
             recommended_squad=recommended_squad,
             evidence_blocked=evidence_blocked,
+            weekly_decision=weekly_decision,
+            evidence_gate=evidence_gate,
+        )
+        deadline_handoff = (
+            self._deadline_handoff_view(self._deadline_pack())
+            if analysis_event == 1 and phase.phase in {"preseason", "pre_deadline"}
+            else None
         )
 
         return WorkspaceView(
@@ -349,7 +442,12 @@ class WorkspaceBuilder:
                 message=(
                     self._deadline_evidence_message(evidence_gate)
                     if evidence_blocked
-                    else str(state["refresh_reason"])
+                    else (
+                        f"The published GW{analysis_event} decision is aligned to the current "
+                        "official snapshot, forecast generation and manager state."
+                        if analysis_event > 1 and weekly_decision.status == "ready"
+                        else str(state["refresh_reason"])
+                    )
                 ),
             ),
             participation=participation,
@@ -433,10 +531,96 @@ class WorkspaceBuilder:
                 horizon=horizon,
                 evidence=decision_evidence,
                 recommendation=" ".join(recommendation_parts),
-                caveat=str(payload["deadline_rule"]),
+                caveat=(
+                    str(payload["deadline_rule"])
+                    if analysis_event == 1
+                    else (
+                        f"Refresh official availability, predicted lineups, prices, fixtures and "
+                        f"forecasts before the GW{analysis_event} deadline. FPLAgent is advisory "
+                        "and does not write team changes to FPL."
+                    )
+                ),
                 weekly=weekly_decision,
             ),
+            deadline_handoff=deadline_handoff,
             capabilities=CapabilityView(),
+        )
+
+    @staticmethod
+    def _weekly_critique(
+        *,
+        event: int,
+        weekly_decision: WeeklyDecisionView,
+        recommended_squad: RecommendedSquadView,
+        current_expected_points: float,
+        lineup_aligned: bool,
+    ) -> SquadCritique:
+        selected = weekly_decision.selected
+        is_roll = selected is not None and selected.route_type in {"roll", "configuration_roll"}
+        delta = round(recommended_squad.expected_points - current_expected_points, 2)
+        strengths = [
+            CritiqueItem(
+                code="full_squad_policy",
+                title="The complete 15-player squad was evaluated",
+                detail=(
+                    "The weekly search jointly optimised transfers, the legal XI, bench order, "
+                    "captaincy and chip retention rather than rating the visible starters alone."
+                ),
+            ),
+            CritiqueItem(
+                code="transfer_value",
+                title="Future transfer flexibility is priced into the call",
+                detail=(
+                    f"Rolling leaves {selected.next_free_transfers} free transfers for GW{event + 1}."
+                    if is_roll and selected is not None
+                    else "Transfer costs and the value of retained free transfers are included."
+                ),
+            ),
+        ]
+        concerns: list[CritiqueItem] = []
+        if not lineup_aligned:
+            concerns.append(
+                CritiqueItem(
+                    code="lineup_change",
+                    title="Your submitted XI differs from the model call",
+                    detail="Apply the recommended starters, bench order and armband in FPL before the deadline.",
+                )
+            )
+        if is_roll and weekly_decision.strongest_rejected is not None:
+            concerns.append(
+                CritiqueItem(
+                    code="uncertain_transfer",
+                    title="A higher-upside transfer was deliberately rejected",
+                    detail=(
+                        f"{weekly_decision.strongest_rejected.label} did not remain strong enough "
+                        "across the scenario families to justify spending the transfer."
+                    ),
+                )
+            )
+        status = "strong" if weekly_decision.status == "ready" else "needs_attention"
+        return SquadCritique(
+            status=status,
+            headline=(
+                f"Hold the squad and optimise the GW{event} lineup"
+                if is_roll
+                else f"The GW{event} action has cleared publication"
+            ),
+            summary=(
+                "The last valid weekly receipt is based on current official data, two forecast "
+                "families and shared-scenario policy simulation."
+            ),
+            benchmark_expected_points=recommended_squad.expected_points,
+            expected_points_delta=delta,
+            strengths=strengths,
+            concerns=concerns,
+            suggested_questions=[
+                f"Why should I roll my transfer in GW{event}?"
+                if is_roll
+                else f"Why is this the best transfer for GW{event}?",
+                f"Who should start and captain for GW{event}?",
+                "Which player is the biggest risk in my squad?",
+                f"What would make the GW{event} recommendation change before the deadline?",
+            ],
         )
 
     def _squad_comparison(
@@ -449,6 +633,8 @@ class WorkspaceBuilder:
         model_squad: ModelSquadView | None,
         recommended_squad: RecommendedSquadView,
         evidence_blocked: bool,
+        weekly_decision: WeeklyDecisionView,
+        evidence_gate: dict[str, Any] | None,
     ) -> SquadComparisonView:
         if phase.phase == "preseason" and model_squad is not None:
             authority = "model"
@@ -464,9 +650,7 @@ class WorkspaceBuilder:
                 *recommended_squad.starters,
                 *recommended_squad.bench,
             ]
-            selection_reason = (
-                "The weekly policy beat the roll route after transfer costs and scenario stress."
-            )
+            selection_reason = weekly_decision.explanation
         else:
             return SquadComparisonView(
                 status="aligned",
@@ -495,21 +679,42 @@ class WorkspaceBuilder:
         ]
         change_count = max(len(incoming), len(outgoing))
         points_delta = round(recommended_points - current_expected_points, 2)
-        pack = self._deadline_pack()
-        gates = pack.get("gates") if isinstance(pack.get("gates"), dict) else {}
-        passed_gates = sum(
-            bool(gate.get("passed"))
-            for gate in gates.values()
-            if isinstance(gate, dict)
-        )
-        total_gates = sum(isinstance(gate, dict) for gate in gates.values())
-        churn_protected = bool(
-            gates
-            and isinstance(gates.get("historical_selector"), dict)
-            and gates["historical_selector"].get("passed")
-            and isinstance(gates.get("global_search"), dict)
-            and gates["global_search"].get("passed")
-        )
+        if authority == "weekly":
+            gate_sections = (
+                "official",
+                "direct_forecast",
+                "component_forecast",
+                "manager",
+                "decision",
+            )
+            gate_values = [
+                evidence_gate.get(section)
+                for section in gate_sections
+                if evidence_gate and isinstance(evidence_gate.get(section), dict)
+            ]
+            passed_gates = sum(bool(gate.get("publishable")) for gate in gate_values)
+            total_gates = len(gate_values)
+            churn_protected = weekly_decision.promotion_status in {
+                "promoted",
+                "retained_roll",
+                "rejected_uncertain_gain",
+                "roll_due_to_uncertainty",
+                "roll_is_robust_leader",
+            }
+        else:
+            pack = self._deadline_pack()
+            gates = pack.get("gates") if isinstance(pack.get("gates"), dict) else {}
+            passed_gates = sum(
+                bool(gate.get("passed")) for gate in gates.values() if isinstance(gate, dict)
+            )
+            total_gates = sum(isinstance(gate, dict) for gate in gates.values())
+            churn_protected = bool(
+                gates
+                and isinstance(gates.get("historical_selector"), dict)
+                and gates["historical_selector"].get("passed")
+                and isinstance(gates.get("global_search"), dict)
+                and gates["global_search"].get("passed")
+            )
         aligned = not incoming and not outgoing
         if aligned:
             status = "aligned"
@@ -524,9 +729,7 @@ class WorkspaceBuilder:
             )
         else:
             status = "adopt_recommendation"
-            headline = (
-                f"Make {change_count} squad change{'s' if change_count != 1 else ''}"
-            )
+            headline = f"Make {change_count} squad change{'s' if change_count != 1 else ''}"
             detail = (
                 "This is the validated 15-player decision. The app will not replace it for a "
                 "small unvalidated fluctuation."
@@ -535,7 +738,8 @@ class WorkspaceBuilder:
             f"The recommendation adds {points_delta:.2f} modelled points in the decision event."
             if points_delta >= 0
             else (
-                f"It accepts {abs(points_delta):.2f} fewer opening-event points for the stronger "
+                f"It accepts {abs(points_delta):.2f} fewer GW{phase.decision_event or phase.event} "
+                "points for the stronger "
                 "validated multiweek policy."
             )
         )
@@ -585,7 +789,91 @@ class WorkspaceBuilder:
             value = json.loads(self.deadline_pack_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        currentness = deadline_pack_currentness(
+            pack_path=self.deadline_pack_path,
+            decision_path=self.decision_path,
+            pipeline_path=self.deadline_pipeline_path,
+        )
+        if currentness["current"]:
+            return value
+        return {
+            **value,
+            "verdict": "STALE",
+            "publishable": False,
+            "currentness": currentness,
+        }
+
+    @staticmethod
+    def _deadline_handoff_view(pack: dict[str, Any]) -> DeadlineHandoffView | None:
+        if not pack:
+            return None
+        chip = pack.get("chip") if isinstance(pack.get("chip"), dict) else {}
+        contingency = (
+            pack.get("contingencies") if isinstance(pack.get("contingencies"), dict) else {}
+        )
+        participation = (
+            pack.get("participation_break_even")
+            if isinstance(pack.get("participation_break_even"), dict)
+            else {}
+        )
+        boundaries: list[DeadlineBoundaryView] = []
+        for row in participation.get("players") or []:
+            if not isinstance(row, dict):
+                continue
+            boundary = row.get("boundary") if isinstance(row.get("boundary"), dict) else {}
+            trigger = boundary.get("highest_supported_challenger_minutes")
+            boundaries.append(
+                DeadlineBoundaryView(
+                    player_id=int(row["element"]),
+                    player_name=str(row["name"]),
+                    trigger_expected_minutes=float(trigger) if trigger is not None else None,
+                    next_incumbent_minutes=(
+                        float(boundary["next_tested_incumbent_minutes"])
+                        if boundary.get("next_tested_incumbent_minutes") is not None
+                        else None
+                    ),
+                    fallback_candidate_id=(
+                        str(boundary["highest_supported_challenger_squad_id"])
+                        if boundary.get("highest_supported_challenger_squad_id")
+                        else None
+                    ),
+                    stable_on_tested_range=(
+                        boundary.get("classification") == "incumbent_stable_on_tested_minutes"
+                    ),
+                )
+            )
+        shadow = (
+            chip.get("strongest_immediate_signal")
+            if isinstance(chip.get("strongest_immediate_signal"), dict)
+            else {}
+        )
+        if shadow:
+            chip_name = str(shadow.get("chip") or "chip").replace("_", " ").title()
+            chip_detail = (
+                f"{chip_name} has a {float(shadow.get('cross_family_floor') or 0):+.2f} "
+                "cross-model floor but remains shadow-only without timing authority."
+            )
+        else:
+            chip_detail = "The selected chip action passed its retained-option gate."
+        verdict = str(pack.get("verdict") or "UNAVAILABLE")
+        return DeadlineHandoffView(
+            status=(
+                "ready"
+                if verdict == "DEADLINE_READY" and pack.get("publishable") is True
+                else "blocked"
+                if verdict != "UNAVAILABLE"
+                else "unavailable"
+            ),
+            verdict=verdict,
+            chip_label=str(chip.get("label") or "UNRESOLVED"),
+            chip_detail=chip_detail,
+            route_count=int(contingency.get("routes") or 0),
+            precomputed_fallbacks=int(contingency.get("precomputed_fallbacks") or 0),
+            boundaries=boundaries,
+            receipt_path="reports/gw1-deadline-execution.html",
+        )
 
     @staticmethod
     def _freshness_status(age_seconds: float) -> str:
@@ -600,7 +888,24 @@ class WorkspaceBuilder:
             return self.active_decision_path
         return self.decision_path
 
-    def _deadline_evidence_status(self) -> dict[str, Any] | None:
+    def _analysis_forecast_paths(self, event: int) -> tuple[Path, Path]:
+        if (
+            event > 1
+            and self.weekly_forecast_path is not None
+            and self.weekly_component_path is not None
+            and self.weekly_forecast_path.is_file()
+            and self.weekly_component_path.is_file()
+        ):
+            return self.weekly_forecast_path, self.weekly_component_path
+        return self.forecast_path, self.component_path
+
+    def _deadline_evidence_status(
+        self,
+        *,
+        forecast_path: Path | None = None,
+        component_path: Path | None = None,
+        decision_path: Path | None = None,
+    ) -> dict[str, Any] | None:
         if self.deadline_status_path is None or not self.deadline_status_path.is_file():
             return None
         try:
@@ -610,7 +915,26 @@ class WorkspaceBuilder:
                 "publishable": False,
                 "issues": ["The deadline evidence receipt cannot be read."],
             }
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        issues = list(map(str, value.get("issues") or []))
+        expected = (
+            ("direct_forecast", forecast_path or self.forecast_path),
+            ("component_forecast", component_path or self.component_path),
+            ("decision", decision_path or self.decision_path),
+        )
+        for section, path in expected:
+            recorded = value.get(section) or {}
+            recorded_sha = recorded.get("sha256")
+            if not path.is_file():
+                issues.append(f"The published {section.replace('_', ' ')} is missing.")
+            elif not recorded_sha or str(recorded_sha) != sha256_file(path):
+                issues.append(
+                    f"The published {section.replace('_', ' ')} is from a different generation."
+                )
+        if issues:
+            return {**value, "publishable": False, "issues": list(dict.fromkeys(issues))}
+        return value
 
     def _refresh_evidence(self) -> EvidenceItem | None:
         if self.refresh_state_path is None or not self.refresh_state_path.is_file():
@@ -659,12 +983,12 @@ class WorkspaceBuilder:
         )
         if evidence is None:
             return PlayerParticipationView(
-                evidence_status="refreshing",
+                evidence_status="uncovered",
                 confidence="low",
-                headline="Role evidence refreshing",
+                headline="Role evidence unavailable",
                 detail=(
                     "The minute-band forecast is available, but the attributable official and "
-                    "lineup evidence is not aligned to this decision yet."
+                    "lineup evidence is not aligned to this decision. This does not mean a refresh is running."
                 ),
                 states=states,
             )
@@ -675,17 +999,22 @@ class WorkspaceBuilder:
         sensitivity = evidence.get("supported_edge_sensitivity") or {}
         predicted = evidence.get("predicted_lineups") or {}
         predicted_consensus = str(predicted.get("consensus") or "") or None
-        predicted_start_sources = list(
-            map(str, predicted.get("predicted_start_sources") or [])
-        )
+        predicted_start_sources = list(map(str, predicted.get("predicted_start_sources") or []))
         predicted_not_start_sources = list(
             map(str, predicted.get("predicted_not_start_sources") or [])
         )
+        participation_applied = bool(forecast.get("live_participation_applied"))
+        participation_weight = float(forecast.get("live_participation_weight") or 0.0)
         source_support = len(predicted_start_sources)
         source_suffix = (
             f" {source_support} current predicted-XI source"
             f"{'s' if source_support != 1 else ''} also include this player; this is "
-            "prospective evidence with zero production weight."
+            + (
+                f"applied through the bounded participation policy at "
+                f"{participation_weight:.0%} weight."
+                if participation_applied
+                else "shown as prospective evidence without a forecast adjustment."
+            )
             if source_support
             else ""
         )
@@ -697,13 +1026,20 @@ class WorkspaceBuilder:
             status, confidence = "official_attention", "medium"
             headline = "Official update needs review"
             detail = str(official.get("news") or "Official FPL carries an availability flag.")
-        elif "predicted_bench_consensus_shadow" in attention:
+        elif "predicted_bench_consensus_shadow" in attention or predicted_consensus in {
+            "predicted_bench_consensus",
+            "single_source_bench",
+        }:
             status, confidence = "lineup_watch", "low"
             headline = "Predicted XIs flag a bench role"
-            detail = (
-                f"{len(predicted_not_start_sources)} independent current sources omit this "
-                "player from the predicted XI. This opens a deadline review; it does not yet "
-                "override the validated minute model."
+            detail = f"{len(predicted_not_start_sources)} independent current sources omit this "
+            detail += (
+                "player from the predicted XI. The bounded participation adjustment is already "
+                f"reflected in minutes and xP at {participation_weight:.0%} weight; recheck at "
+                "the deadline."
+                if participation_applied
+                else "player from the predicted XI. This opens a deadline review without "
+                "changing the current forecast."
             )
         elif "predicted_lineup_disagreement" in attention:
             status, confidence = "lineup_watch", "medium"
@@ -736,8 +1072,7 @@ class WorkspaceBuilder:
             status, confidence = "clear", "high"
             headline = (
                 "Predicted XI support"
-                if predicted_consensus
-                in {"predicted_start_consensus", "single_source_start"}
+                if predicted_consensus in {"predicted_start_consensus", "single_source_start"}
                 else "No current participation flag"
             )
             matches = int(preseason.get("eligible_team_matches") or 0)
@@ -746,8 +1081,13 @@ class WorkspaceBuilder:
                 confidence = "high" if source_support >= 2 else "medium"
                 detail = (
                     f"Included in {source_support} current predicted XI source"
-                    f"{'s' if source_support != 1 else ''}. The source vote is shown separately "
-                    "and retains zero model weight until prospective validation."
+                    f"{'s' if source_support != 1 else ''}. "
+                    + (
+                        "The bounded participation adjustment is reflected in this player's "
+                        f"minutes and xP at {participation_weight:.0%} weight."
+                        if participation_applied
+                        else "The source vote is shown separately without changing the forecast."
+                    )
                 )
             else:
                 detail = (
@@ -777,13 +1117,9 @@ class WorkspaceBuilder:
                 if preseason.get("squad_listings") is not None
                 else None
             ),
-            starts=(
-                int(preseason["starts"]) if preseason.get("starts") is not None else None
-            ),
+            starts=(int(preseason["starts"]) if preseason.get("starts") is not None else None),
             appearances=(
-                int(preseason["appearances"])
-                if preseason.get("appearances") is not None
-                else None
+                int(preseason["appearances"]) if preseason.get("appearances") is not None else None
             ),
             last_match_listed=preseason.get("last_match_listed"),
             last_match_started=preseason.get("last_match_started"),
@@ -795,11 +1131,16 @@ class WorkspaceBuilder:
             predicted_lineup_consensus=predicted_consensus,
             predicted_start_sources=predicted_start_sources,
             predicted_not_start_sources=predicted_not_start_sources,
-            predicted_lineup_production_weight=0.0,
+            predicted_lineup_production_weight=participation_weight,
         )
 
     def _participation_context(
-        self, decision_path: Path, forecasts: dict[int, dict[str, Any]]
+        self,
+        decision_path: Path,
+        forecasts: dict[int, dict[str, Any]],
+        *,
+        forecast_path: Path | None = None,
+        consensus_path: Path | None = None,
     ) -> tuple[ParticipationSummaryView, dict[int, dict[str, Any]]]:
         path = self.availability_watch_path
         refreshing = self._refresh_is_running()
@@ -807,9 +1148,7 @@ class WorkspaceBuilder:
         fallback = ParticipationSummaryView(
             status=fallback_status,
             headline=(
-                "Checking lineup confidence"
-                if refreshing
-                else "Lineup evidence is not available"
+                "Checking lineup confidence" if refreshing else "Lineup evidence is not available"
             ),
             detail=(
                 "The last decision remains visible while official and role evidence is aligned."
@@ -818,17 +1157,47 @@ class WorkspaceBuilder:
             ),
             selected_players=len(forecasts),
         )
-        if path is None or not path.is_file():
-            return fallback, {}
         try:
-            watch = json.loads(path.read_text(encoding="utf-8"))
-            lineage = watch.get("lineage") or {}
-            forecast_aligned = lineage.get("forecast_sha256") == sha256_file(
-                self.forecast_path
+            watch = (
+                json.loads(path.read_text(encoding="utf-8"))
+                if path is not None and path.is_file()
+                else {}
             )
+            lineage = watch.get("lineage") or {}
+            direct_path = forecast_path or self.forecast_path
+            forecast_aligned = lineage.get("forecast_sha256") == sha256_file(direct_path)
             decision_aligned = lineage.get("decision_sha256") == sha256_file(decision_path)
             if not forecast_aligned or not watch.get("current"):
-                return fallback, {}
+                consensus_rows = self._consensus_participation_rows(
+                    forecasts,
+                    consensus_path=consensus_path,
+                )
+                if not consensus_rows:
+                    return fallback, {}
+                checked_at = datetime.fromtimestamp(
+                    (consensus_path or Path()).stat().st_mtime,
+                    tz=UTC,
+                ).isoformat()
+                eligible_sources = {
+                    str(source)
+                    for row in consensus_rows.values()
+                    for key in ("predicted_start_sources", "predicted_not_start_sources")
+                    for source in (row.get("predicted_lineups") or {}).get(key) or []
+                }
+                watch = {
+                    "current": True,
+                    "checked_at": checked_at,
+                    "players": list(consensus_rows.values()),
+                    "scenario_stability": {},
+                    "coverage": {},
+                    "predicted_lineup_consensus": {
+                        "current": True,
+                        "status": "current_consensus",
+                        "eligible_source_count": len(eligible_sources),
+                        "captured_source_count": len(eligible_sources),
+                    },
+                }
+                decision_aligned = False
             rows = {
                 int(row["element"]): row
                 for row in watch.get("players") or []
@@ -839,10 +1208,10 @@ class WorkspaceBuilder:
             predicted_layer = watch.get("predicted_lineup_consensus") or {}
             if (
                 predicted_layer.get("current")
-                and self.participation_consensus_path is not None
-                and self.participation_consensus_path.is_file()
+                and consensus_path is not None
+                and consensus_path.is_file()
             ):
-                for predicted in pq.read_table(self.participation_consensus_path).to_pylist():
+                for predicted in pq.read_table(consensus_path).to_pylist():
                     element = int(predicted["element"])
                     if element not in forecasts or element in rows:
                         continue
@@ -899,25 +1268,27 @@ class WorkspaceBuilder:
             )
             predicted_bench = sum(
                 (row.get("predicted_lineups") or {}).get("consensus")
-                == "predicted_bench_consensus"
+                in {"predicted_bench_consensus", "single_source_bench"}
                 for row in rows.values()
             )
             predicted_disagreement = sum(
-                (row.get("predicted_lineups") or {}).get("consensus")
-                == "source_disagreement"
+                (row.get("predicted_lineups") or {}).get("consensus") == "source_disagreement"
+                for row in rows.values()
+            )
+            clear_players = sum(
+                not set(map(str, row.get("attention") or []))
+                and (row.get("predicted_lineups") or {}).get("consensus")
+                not in {
+                    "predicted_bench_consensus",
+                    "single_source_bench",
+                    "source_disagreement",
+                }
                 for row in rows.values()
             )
             missing = len(set(forecasts) - set(rows))
-            baseline_stable = (
-                bool(stability.get("baseline_stable")) if decision_aligned else None
-            )
-            moderate_stable = (
-                bool(stability.get("moderate_stable")) if decision_aligned else None
-            )
-            unstable = bool(
-                decision_aligned
-                and (not baseline_stable or not moderate_stable)
-            )
+            baseline_stable = bool(stability.get("baseline_stable")) if decision_aligned else None
+            moderate_stable = bool(stability.get("moderate_stable")) if decision_aligned else None
+            unstable = bool(decision_aligned and (not baseline_stable or not moderate_stable))
             needs_attention = bool(
                 official_attention
                 or role_verification
@@ -952,9 +1323,13 @@ class WorkspaceBuilder:
                 )
             elif predicted_bench or predicted_disagreement:
                 detail = (
-                    f"{predicted_bench} selected players carry a two-source bench flag and "
+                    f"{predicted_bench} selected player{'s' if predicted_bench != 1 else ''} "
+                    f"{'carry' if predicted_bench != 1 else 'carries'} a current predicted-XI "
+                    "bench flag "
+                    "and "
                     f"{predicted_disagreement} have contradictory predicted XIs. These are "
-                    "review triggers, not automatic forecast changes."
+                    "visible review triggers; current agreement also applies a bounded minutes "
+                    "update before the action-level safety gate."
                 )
             elif unstable:
                 detail = (
@@ -978,7 +1353,8 @@ class WorkspaceBuilder:
                 detail = (
                     f"{predicted_start_support} of {len(forecasts)} selected players appear in "
                     "the currently eligible predicted XI feed. This is independently visible "
-                    "but remains zero-weight while the prospective scoreboard accumulates."
+                    "and contributes only through the bounded participation policy while the "
+                    "prospective scoreboard accumulates."
                 )
             else:
                 detail = "No selected player carries a current official or observed-role flag."
@@ -989,7 +1365,7 @@ class WorkspaceBuilder:
                     headline=headline,
                     detail=detail,
                     selected_players=len(forecasts),
-                    clear_players=sum(not values for values in attentions),
+                    clear_players=clear_players,
                     official_clear_players=official_clear,
                     official_attention=official_attention,
                     role_verification=role_verification,
@@ -1003,9 +1379,7 @@ class WorkspaceBuilder:
                     predicted_lineup_captured_sources=int(
                         predicted_layer.get("captured_source_count") or 0
                     ),
-                    predicted_lineup_status=str(
-                        predicted_layer.get("status") or "not_collected"
-                    ),
+                    predicted_lineup_status=str(predicted_layer.get("status") or "not_collected"),
                     baseline_stable=baseline_stable,
                     moderate_stable=moderate_stable,
                     teams_with_confirmed_lineups=(
@@ -1014,9 +1388,7 @@ class WorkspaceBuilder:
                         else None
                     ),
                     teams_total=(
-                        int(coverage["teams"])
-                        if coverage.get("teams") is not None
-                        else None
+                        int(coverage["teams"]) if coverage.get("teams") is not None else None
                     ),
                     alternatives=alternatives,
                 ),
@@ -1026,8 +1398,47 @@ class WorkspaceBuilder:
             return fallback, {}
 
     @staticmethod
+    def _consensus_participation_rows(
+        forecasts: dict[int, dict[str, Any]],
+        *,
+        consensus_path: Path | None,
+    ) -> dict[int, dict[str, Any]]:
+        if consensus_path is None or not consensus_path.is_file():
+            return {}
+        rows: dict[int, dict[str, Any]] = {}
+        for predicted in pq.read_table(consensus_path).to_pylist():
+            element = int(predicted["element"])
+            if element not in forecasts:
+                continue
+            rows[element] = {
+                "element": element,
+                "attention": list(map(str, predicted.get("attention") or [])),
+                "official": {
+                    "chance": predicted.get("official_chance"),
+                    "news": str(predicted.get("official_news") or ""),
+                },
+                "preseason": {},
+                "supported_edge_sensitivity": None,
+                "predicted_lineups": {
+                    "consensus": str(predicted.get("consensus") or ""),
+                    "predicted_start_sources": list(
+                        map(str, predicted.get("predicted_start_sources") or [])
+                    ),
+                    "predicted_not_start_sources": list(
+                        map(str, predicted.get("predicted_not_start_sources") or [])
+                    ),
+                    "complete_source_count": int(predicted.get("complete_source_count") or 0),
+                    "production_weight": float(predicted.get("production_weight") or 0.0),
+                    "production_adjustment_authorized": bool(
+                        predicted.get("production_adjustment_authorized")
+                    ),
+                },
+            }
+        return rows
+
+    @staticmethod
     def _weekly_action_label(route_type: str, transfer_count: int, points_cost: int) -> str:
-        if route_type == "roll":
+        if route_type in {"roll", "configuration_roll"}:
             return "Roll the transfer"
         if route_type == "one_free_transfer":
             return "Make one free transfer"
@@ -1035,6 +1446,10 @@ class WorkspaceBuilder:
             return f"Use {transfer_count} free transfers"
         if route_type == "paid_transfer":
             return f"Make {transfer_count} transfers for a {points_cost}-point hit"
+        if route_type == "wildcard":
+            return f"Play Wildcard: {transfer_count} transfers, no hit"
+        if route_type == "free_hit":
+            return f"Play Free Hit: {transfer_count} one-week transfers"
         raise ValueError(f"Unknown weekly route type: {route_type}")
 
     @classmethod
@@ -1054,9 +1469,7 @@ class WorkspaceBuilder:
             )
             for row in summary.get("event_lineups", [])
         ]
-        starter_player_ids = [
-            int(value) for value in summary.get("starter_player_ids", [])
-        ]
+        starter_player_ids = [int(value) for value in summary.get("starter_player_ids", [])]
         bench_player_ids = [int(value) for value in summary.get("bench_player_ids", [])]
         if event_lineups and not starter_player_ids:
             starter_player_ids = event_lineups[0].starter_player_ids
@@ -1064,6 +1477,7 @@ class WorkspaceBuilder:
             bench_player_ids = event_lineups[0].bench_player_ids
         return WeeklyActionView(
             action_id=str(summary["action_id"]),
+            configuration_action_id=summary.get("configuration_action_id"),
             route_type=route_type,
             label=cls._weekly_action_label(route_type, transfer_count, points_cost),
             transfer_count=transfer_count,
@@ -1083,9 +1497,7 @@ class WorkspaceBuilder:
             ],
             formation=str(summary["formation"]),
             captain_player_id=int(summary["captain_player_id"]),
-            captain_name=str(
-                summary.get("captain_name") or f"#{summary['captain_player_id']}"
-            ),
+            captain_name=str(summary.get("captain_name") or f"#{summary['captain_player_id']}"),
             vice_captain_player_id=int(summary["vice_captain_player_id"]),
             vice_captain_name=str(
                 summary.get("vice_captain_name") or f"#{summary['vice_captain_player_id']}"
@@ -1138,7 +1550,28 @@ class WorkspaceBuilder:
                 str(summary["action_id"]): summary for summary in payload["action_summaries"]
             }
             selected_id = str(payload["selected_action_id"])
-            selected = self._weekly_action_view(summaries[selected_id])
+            selected_summary = summaries[selected_id]
+            execution = payload.get("execution_plan")
+            if execution:
+                strategy = payload.get("chip_strategy") or {}
+                if (execution.get("configuration_action_id") != strategy.get("recommended_action_id")
+                        or execution.get("chip") != strategy.get("operational_recommendation")):
+                    raise ValueError("Published chip configuration and strategy disagree")
+                if execution.get("chip") in {"wildcard", "free_hit"}:
+                    # A squad chip is its own rebuild with no ordinary parent.
+                    # Metrics stay keyed to the ordinary route; chip deltas are
+                    # layered on below from the squad-chip simulations.
+                    if not execution.get("squad_chip_metrics"):
+                        raise ValueError("Published squad-chip plan has no simulation metrics")
+                else:
+                    selected_id = str(execution["action_id"])
+                    parent = summaries[selected_id]
+                    if execution.get("transfers") != parent.get("transfers"):
+                        raise ValueError(
+                            "Published chip configuration has different parent transfers"
+                        )
+                selected_summary = execution
+            selected = self._weekly_action_view(selected_summary)
             rejected_row = payload.get("strongest_rejected")
             rejected = (
                 self._weekly_action_view(summaries[str(rejected_row["action_id"])])
@@ -1150,12 +1583,9 @@ class WorkspaceBuilder:
                 for name, weight in payload["method"]["scenario_weights"].items()
             }
             scenario_metrics = payload["scenario_metrics_by_action"]
-            selected_metrics = {
-                name: scenario_metrics[name][selected_id] for name in weights
-            }
+            selected_metrics = {name: scenario_metrics[name][selected_id] for name in weights}
             central_name = str(
-                payload["promotion_gate"].get("central_scenario")
-                or max(weights, key=weights.get)
+                payload["promotion_gate"].get("central_scenario") or max(weights, key=weights.get)
             )
             central = selected_metrics[central_name]
             expected_gain = sum(
@@ -1167,16 +1597,48 @@ class WorkspaceBuilder:
                 for name, metric in selected_metrics.items()
             )
             worst_gain = min(
-                float(metric["mean_delta_to_roll"])
-                for metric in selected_metrics.values()
+                float(metric["mean_delta_to_roll"]) for metric in selected_metrics.values()
             )
+            confidence = {
+                "low": float(central["delta_to_roll_95ci_low"]),
+                "high": float(central["delta_to_roll_95ci_high"]),
+                "mean": float(central["mean_delta_to_roll"]),
+            }
+            squad_metrics = (execution or {}).get("squad_chip_metrics") or {}
+            if squad_metrics:
+                # Squad-chip deltas are measured against the best ordinary
+                # route, which is the selected route here: add them on.
+                chip_delta = {
+                    name: float(squad_metrics[name]["mean_raw_delta_to_best_ordinary"])
+                    for name in weights
+                }
+                expected_gain += sum(weights[name] * chip_delta[name] for name in weights)
+                beat_probability = sum(
+                    weights[name] * float(squad_metrics[name]["probability_beats_best_ordinary"])
+                    for name in weights
+                )
+                worst_gain = min(
+                    float(selected_metrics[name]["mean_delta_to_roll"]) + chip_delta[name]
+                    for name in weights
+                )
+                central_chip = squad_metrics[central_name]
+                confidence = {
+                    "low": confidence["mean"] + float(central_chip["raw_delta_95ci_low"]),
+                    "high": confidence["mean"] + float(central_chip["raw_delta_95ci_high"]),
+                    "mean": confidence["mean"] + chip_delta[central_name],
+                }
             promotion_status = str(payload["promotion_gate"]["status"])
-            if selected.route_type == "roll" and promotion_status == "roll_is_robust_leader":
+            if selected.route_type in {"roll", "configuration_roll"} and promotion_status == "roll_is_robust_leader":
                 explanation = "Rolling has the lowest robust regret across every model world."
-            elif selected.route_type == "roll":
+            elif selected.route_type in {"roll", "configuration_roll"}:
                 explanation = (
-                    "The leading move did not clear the uncertainty gate, so the safer action is "
+                    "No higher-ranked move cleared all action gates, so the selected action is "
                     "to preserve the transfer."
+                )
+            elif promotion_status == "promoted_after_rejections":
+                explanation = (
+                    "Higher-ranked moves failed safety checks. This is the highest-ranked "
+                    "remaining route that cleared the after-cost, scenario and role gates."
                 )
             else:
                 explanation = (
@@ -1186,10 +1648,46 @@ class WorkspaceBuilder:
             execution_timing = self._execution_timing_view(
                 (payload.get("diagnostics") or {}).get("early_transfer_shadow") or {}
             )
+            configuration = (payload.get("diagnostics") or {}).get("configuration_optimisation") or {}
+            if execution:
+                explanation = (
+                    "This is the exact combined transfer, lineup and chip plan. "
+                    "The transfer comparison excludes chip points; the joint chip value is shown separately."
+                )
+            if configuration.get("message"):
+                explanation += " " + str(configuration["message"])
             chip_advice = self._chip_advice_view(
+                payload.get("chip_strategy") or {},
                 payload.get("chip_shadow") or {},
                 payload.get("squad_chip_shadow") or {},
             )
+            retained_role_watches = []
+            for watch in (
+                (payload.get("diagnostics") or {}).get("retained_role_counterfactuals") or {}
+            ).get("watches") or []:
+                retained_role_watches.append(
+                    {
+                        "player_id": int(watch["element"]),
+                        "player_name": str(watch["player_name"]),
+                        "expected_minutes": float(watch["expected_minutes"]),
+                        "play_probability": float(watch["p_play"]),
+                        "expected_points": float(watch["expected_points"]),
+                        "participation_consensus": str(watch["participation_consensus"]),
+                        "selected_action_sells_player": bool(watch["selected_action_sells_player"]),
+                        "best_forced_sale_rank": int(watch["best_forced_sale_rank"]),
+                        "best_forced_sale_transfers": [
+                            {
+                                "outgoing_name": str(transfer["outgoing_name"]),
+                                "incoming_name": str(transfer["incoming_name"]),
+                            }
+                            for transfer in watch["best_forced_sale_transfers"]
+                        ],
+                        "forced_sale_delta_to_selected": float(
+                            watch["forced_sale_delta_to_selected"]
+                        ),
+                        "forced_sale_beats_selected": bool(watch["forced_sale_beats_selected"]),
+                    }
+                )
             return WeeklyDecisionView(
                 status="ready",
                 event=decision_event,
@@ -1197,8 +1695,22 @@ class WorkspaceBuilder:
                 selected=selected,
                 strongest_rejected=rejected,
                 expected_gain_vs_roll=expected_gain,
-                confidence_low=float(central["delta_to_roll_95ci_low"]),
-                confidence_high=float(central["delta_to_roll_95ci_high"]),
+                confidence_low=confidence["low"],
+                confidence_high=confidence["high"],
+                confidence_mean=confidence["mean"],
+                confidence_scenario=central_name,
+                objective_tradeoff=(
+                    {
+                        key: payload["objective_tradeoff"][key]
+                        for key in (
+                            "worst_case_weight",
+                            "mean_points_sacrificed_to_safety_gates",
+                            "mean_points_sacrificed_to_robust_ranking",
+                        )
+                    }
+                    if payload.get("objective_tradeoff")
+                    else None
+                ),
                 beat_roll_probability=beat_probability,
                 worst_scenario_gain=worst_gain,
                 robust_regret=float(payload["selected_robust_metrics"]["robust_regret"]),
@@ -1206,6 +1718,7 @@ class WorkspaceBuilder:
                 explanation=explanation,
                 execution_timing=execution_timing,
                 chip_advice=chip_advice,
+                retained_role_watches=retained_role_watches,
                 receipt_path=str(path),
                 receipt_sha256=sha256_file(path),
             )
@@ -1261,10 +1774,165 @@ class WorkspaceBuilder:
 
     @staticmethod
     def _chip_advice_view(
-        team_chip: dict[str, Any], squad_chip: dict[str, Any]
+        joint_strategy: dict[str, Any],
+        team_chip: dict[str, Any],
+        squad_chip: dict[str, Any],
     ) -> ChipAdviceView | None:
-        if not team_chip and not squad_chip:
+        if not joint_strategy and not team_chip and not squad_chip:
             return None
+        if joint_strategy:
+            recommendation = str(joint_strategy.get("operational_recommendation") or "no_chip")
+            watched = [
+                str(row["chip"])
+                for row in (joint_strategy.get("candidates") or [])[:4]
+                if row.get("chip")
+            ]
+            blockers: list[str] = []
+            candidate_statuses = []
+            authorities = (joint_strategy.get("calibration") or {}).get("authority_by_chip") or {}
+            candidates_by_chip = {str(c["chip"]): c for c in joint_strategy.get("candidates") or []}
+            for chip in joint_strategy.get("available_chips") or list(candidates_by_chip):
+                candidate = candidates_by_chip.get(chip)
+                if candidate is None:
+                    candidate_statuses.append({"chip": chip, "status": "not_evaluated"})
+                    continue
+                checks = candidate.get("checks") or []
+                authority = authorities.get(chip)
+                timing = (joint_strategy.get("squad_timing") or {}).get("verdict")
+                if chip == "wildcard" and timing:
+                    # The live full-half planner owns Wildcard timing: a
+                    # "later" verdict is a dated retain, not an open question.
+                    authority = True
+                elif chip == "free_hit" and (joint_strategy.get("policy") or {}).get(
+                    "free_hit_timing"
+                ):
+                    authority = True
+                elif chip == "wildcard" and (joint_strategy.get("policy") or {}).get(
+                    "wildcard_timing"
+                ):
+                    authority = None
+                if authority is None:
+                    authority = next(
+                        (
+                            check.get("passed")
+                            for check in checks
+                            if check.get("name") == "historical outcome authority"
+                        ),
+                        None,
+                    )
+                failed = [
+                    str(check.get("name") or "chip safety gate")
+                    for check in checks
+                    if not check.get("passed")
+                ]
+                status = "needs_review"
+                if authority is False:
+                    status = "research_only"
+                elif authority is True:
+                    status = "play" if recommendation == chip else "retain"
+                candidate_statuses.append(
+                    {
+                        "chip": chip,
+                        "status": status,
+                        "joint_net_value": candidate.get("joint_net_value"),
+                        "blockers": failed,
+                    }
+                )
+            for candidate in joint_strategy.get("candidates") or []:
+                for check in candidate.get("checks") or []:
+                    if not check.get("passed"):
+                        name = str(check.get("name") or "chip safety gate")
+                        if name not in blockers:
+                            blockers.append(name)
+            opportunities = []
+            for row in joint_strategy.get("visible_calendar") or []:
+                if row.get("chip"):
+                    opportunities.append(
+                        {
+                            "event": int(row["event"]),
+                            "chip": str(row["chip"]),
+                            "projected_uplift": float(row["projected_uplift"]),
+                            "schedule_note": None,
+                        }
+                    )
+                elif int(row.get("blank_team_count") or 0) or int(
+                    row.get("double_team_count") or 0
+                ):
+                    opportunities.append(
+                        {
+                            "event": int(row["event"]),
+                            "chip": "schedule_watch",
+                            "projected_uplift": None,
+                            "schedule_note": (
+                                f"{int(row.get('blank_team_count') or 0)} blank teams; "
+                                f"{int(row.get('double_team_count') or 0)} double teams"
+                            ),
+                        }
+                    )
+            opportunities.sort(
+                key=lambda row: (
+                    int(row["event"]),
+                    -float(row.get("projected_uplift") or 0.0),
+                )
+            )
+            promoted_chip = next(
+                (
+                    row for row in joint_strategy.get("candidates") or []
+                    if row.get("action_id") == joint_strategy.get("recommended_action_id")
+                    and row.get("chip") == recommendation
+                ),
+                {},
+            )
+            unresolved_positive = [
+                row for row in candidate_statuses
+                if row["status"] in {"research_only", "needs_review"}
+                and float(row.get("joint_net_value") or 0) > 0
+            ]
+            needs_review = recommendation == "no_chip" and bool(unresolved_positive)
+            headline = str(joint_strategy.get("headline") or "No chip authorised")
+            detail = str(joint_strategy.get("reason") or "No chip route cleared the gate.")
+            if needs_review:
+                headline = "Chip decision unresolved — review before taking a hit"
+                detail = (
+                    "A chip route has a positive modelled advantage but has not cleared its "
+                    "evidence checks. No chip is currently authorised; this does NOT establish "
+                    "that saving it beats playing it. The transfer recommendation is conditional "
+                    "on not using that chip. Compare adaptive future transfers and later chip "
+                    "dates before treating this as the final plan."
+                )
+            return ChipAdviceView(
+                needs_review=needs_review,
+                recommended_action_id=joint_strategy.get("recommended_action_id"),
+                parent_action_id=promoted_chip.get("parent_action_id"),
+                recommendation=recommendation,
+                headline=headline,
+                detail=detail,
+                watched_chips=watched,
+                blockers=blockers[:4],
+                half_expiry_event=(
+                    int(joint_strategy["half_expiry_event"])
+                    if joint_strategy.get("half_expiry_event") is not None
+                    else None
+                ),
+                events_until_expiry=(
+                    int(joint_strategy["events_until_expiry"])
+                    if joint_strategy.get("events_until_expiry") is not None
+                    else None
+                ),
+                next_opportunities=opportunities[:6],
+                candidate_statuses=candidate_statuses,
+                deadline_plan=[
+                    {
+                        "chip": str(row["chip"]),
+                        "planned_event": int(row["planned_event"]),
+                        "latest_safe_event": int(row["latest_safe_event"]),
+                        "play_now": bool(row.get("play_now")),
+                        "expected_gain": row.get("expected_gain"),
+                    }
+                    for row in joint_strategy.get("deadline_plan") or []
+                ],
+                expiry_forced=bool(joint_strategy.get("expiry_forced")),
+            )
         watched = []
         for payload in (team_chip, squad_chip):
             preference = payload.get("shadow_preference") or {}
@@ -1308,24 +1976,40 @@ class WorkspaceBuilder:
             raise WorkspaceBuildError("the GW1 decision artifact is unavailable") from exc
         return payload
 
-    def _forecasts(self, player_ids: list[int], event: int) -> dict[int, dict[str, Any]]:
-        for path in (self.forecast_path, self.component_path):
+    def _forecasts(
+        self,
+        player_ids: list[int],
+        event: int,
+        *,
+        forecast_path: Path | None = None,
+        component_path: Path | None = None,
+    ) -> dict[int, dict[str, Any]]:
+        direct = forecast_path or self.forecast_path
+        components = component_path or self.component_path
+        for path in (direct, components):
             if not path.exists():
                 raise WorkspaceBuildError(f"forecast artifact is unavailable: {path}")
+        direct_columns = set(pq.read_schema(direct).names)
+        participation_reason = (
+            "f.live_participation_reason" if "live_participation_reason" in direct_columns else "''"
+        )
         connection = duckdb.connect()
         try:
             rows = connection.execute(
-                """
+                f"""
                 SELECT f.element, f.team_id, f.team_short_name, f.expected_points,
                        f.robust_points, f.p_play, f.status, f.news,
-                       coalesce(c.expected_minutes, 0.0),
-                       f.p_dnp, f.p_1_59, f.p_60_89, f.p_90_or_more
+                       coalesce(f.live_participation_expected_minutes,
+                                c.expected_minutes, 0.0),
+                       f.p_dnp, f.p_1_59, f.p_60_89, f.p_90_or_more,
+                       f.live_participation_applied, f.live_participation_weight,
+                       f.live_participation_consensus, {participation_reason}
                 FROM read_parquet(?) f
                 LEFT JOIN read_parquet(?) c USING (season, event_number, element)
                 WHERE f.event_number = ?
                   AND f.element IN (SELECT * FROM unnest(?))
                 """,
-                [str(self.forecast_path), str(self.component_path), event, player_ids],
+                [str(direct), str(components), event, player_ids],
             ).fetchall()
         finally:
             connection.close()
@@ -1343,6 +2027,10 @@ class WorkspaceBuilder:
                 "p_1_59": float(row[10]),
                 "p_60_89": float(row[11]),
                 "p_90_or_more": float(row[12]),
+                "live_participation_applied": bool(row[13]),
+                "live_participation_weight": float(row[14] or 0.0),
+                "live_participation_consensus": str(row[15] or ""),
+                "live_participation_reason": str(row[16] or ""),
             }
             for row in rows
         }
@@ -1383,13 +2071,15 @@ class WorkspaceBuilder:
             connection.close()
         fixtures: dict[int, list[FixtureView]] = {}
         for row in sorted(rows, key=lambda value: (str(value[4]), int(value[0]))):
-            fixtures.setdefault(int(row[0]), []).append(FixtureView(
-                opponent=str(row[1]),
-                venue=str(row[2]),
-                difficulty=int(row[3]),
-                kickoff_time=str(row[4]),
-                label=f"{row[1]} ({row[2]})",
-            ))
+            fixtures.setdefault(int(row[0]), []).append(
+                FixtureView(
+                    opponent=str(row[1]),
+                    venue=str(row[2]),
+                    difficulty=int(row[3]),
+                    kickoff_time=str(row[4]),
+                    label=f"{row[1]} ({row[2]})",
+                )
+            )
         return fixtures
 
     def _player_metadata_rows(self, player_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -1441,9 +2131,7 @@ class WorkspaceBuilder:
             candidate_id = str(payload["decision"]["candidate"]["candidate_id"])
         except (KeyError, TypeError) as exc:
             raise WorkspaceBuildError("the published model squad is incomplete") from exc
-        model_ids = {
-            int(row["element"]) for row in [*raw_starters, *raw_bench]
-        }
+        model_ids = {int(row["element"]) for row in [*raw_starters, *raw_bench]}
         missing = model_ids - set(forecasts)
         if missing:
             raise WorkspaceBuildError(
@@ -1483,16 +2171,24 @@ class WorkspaceBuilder:
             )
             for index, row in enumerate(raw_bench, start=1)
         ]
+        capital = payload.get("capital_efficiency") or {}
+        selected_capital_risks = list(capital.get("selected_candidate_risks") or [])
+        capital_gate_passed = bool(capital) and not selected_capital_risks
+        excluded_finalists = int(capital.get("excluded_common_finalists") or 0)
+        capital_summary = (
+            f"Passed: {excluded_finalists} finalist"
+            f"{'s' if excluded_finalists != 1 else ''} carrying unresolved premium role capital "
+            "were barred from publication."
+            if capital_gate_passed
+            else "Not passed: the published decision has no clean premium-role receipt."
+        )
         return ModelSquadView(
             event=1,
             candidate_id=candidate_id,
             generated_at=str(payload["created_at"]),
             formation=str(squad["formation"]),
             expected_points=round(
-                sum(
-                    forecasts[int(row["element"])]["expected_points"]
-                    for row in raw_starters
-                )
+                sum(forecasts[int(row["element"])]["expected_points"] for row in raw_starters)
                 + forecasts[captain_id]["expected_points"],
                 2,
             ),
@@ -1502,6 +2198,9 @@ class WorkspaceBuilder:
                 "Lowest combined regret across the independent five-week robust and "
                 "eight-week horizon audit families."
             ),
+            capital_role_gate_passed=capital_gate_passed,
+            capital_role_excluded_finalists=excluded_finalists,
+            capital_role_summary=capital_summary,
             starters=starters,
             bench=bench,
         )
@@ -1666,11 +2365,7 @@ class WorkspaceBuilder:
             None,
         )
         previous = next(
-            (
-                (row, deadline)
-                for row, deadline in reversed(calendar)
-                if now >= deadline
-            ),
+            ((row, deadline) for row, deadline in reversed(calendar) if now >= deadline),
             None,
         )
 
@@ -1854,6 +2549,8 @@ class WorkspaceBuilder:
 
     @staticmethod
     def _evidence_label(path: str) -> str:
+        if "manager-decision" in path or "manager" in path and "state" in path:
+            return "Connected manager state"
         if "decisions" in path:
             return "Squad decision"
         if "components" in path:

@@ -61,6 +61,26 @@ def test_global_proxy_solver_respects_legality_and_seed_distance() -> None:
     assert minimum_distance(solution, [set(incumbent)]) >= 3
 
 
+def test_global_proxy_solver_honours_exact_club_count() -> None:
+    meta, _ = _pool()
+    players = sorted(meta)
+    objective = np.arange(len(players), dtype=np.float64)
+
+    solution = solve_global_proxy_squad(
+        players,
+        meta,
+        objective,
+        budget=1_000,
+        club_limit=3,
+        distant_from=[],
+        minimum_seed_distance=1,
+        exact_club_counts={1: 2},
+    )
+
+    assert sum(int(meta[element]["team_id"]) == 1 for element in solution) == 2
+    assert is_legal_squad(solution, meta, budget=1_000, club_limit=3)
+
+
 def test_crossover_and_mutation_keep_squads_legal() -> None:
     meta, by_position = _pool()
     left = _squad(by_position, 0)

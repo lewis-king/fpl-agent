@@ -23,6 +23,10 @@ def _snapshot(*, observed_at: str = "2026-08-07T12:00:00+00:00") -> dict:
         "squad_value": 985,
         "free_transfers": 1,
         "transfer_cost": 0,
+        "transfer_cost_per_additional": 4,
+        "transfer_limit": 1,
+        "transfers_made": 0,
+        "transfer_accounting_version": 2,
         "chips": [{"name": "wildcard", "status_for_entry": "available"}],
         "ignored_extra_field": "must not be persisted",
         "picks": [

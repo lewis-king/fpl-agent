@@ -172,6 +172,123 @@ def test_exact_selling_value_and_bank_block_unaffordable_upgrade() -> None:
     assert all(move.incoming.player_id != 16 for move in transfer.action.transfers)
 
 
+def test_incoming_transfer_cannot_bypass_current_event_role_gate() -> None:
+    rows = _rows()
+    rows = [
+        {
+            **row,
+            **(
+                {
+                    "robust_points": 99.0,
+                    "expected_points": 99.0,
+                    "p_play": 0.20,
+                    "expected_minutes": 15.0,
+                    "live_participation_consensus": "predicted_bench_consensus",
+                }
+                if int(row["element"]) == 16 and int(row["event_number"]) == 2
+                else {}
+            ),
+        }
+        for row in rows
+    ]
+
+    actions = generate_weekly_actions(
+        _state(free_transfers=1),
+        rows,
+        _rules(),
+        events=(2, 3),
+        alternatives_per_transfer_count=1,
+        max_total_transfers=1,
+    )
+
+    transfer = next(action for action in actions if action.route_type == "one_free_transfer")
+    assert all(move.incoming.player_id != 16 for move in transfer.action.transfers)
+
+
+def test_severe_retained_role_risk_preserves_an_exact_sale_counterfactual() -> None:
+    rows = [
+        {
+            **row,
+            **(
+                {
+                    "last_minutes": 0.0,
+                    "p_play": 0.45,
+                    "expected_minutes": 20.0,
+                    "live_participation_consensus": "single_source_bench",
+                }
+                if int(row["element"]) == 15 and int(row["event_number"]) == 2
+                else {}
+            ),
+        }
+        for row in _rows()
+    ]
+
+    actions = generate_weekly_actions(
+        _state(free_transfers=1),
+        rows,
+        _rules(),
+        events=(2, 3),
+        alternatives_per_transfer_count=1,
+        max_total_transfers=1,
+    )
+
+    protected = [
+        action for action in actions if "retained-role-sale:15" in action.protected_counterfactuals
+    ]
+    assert len(protected) == 1
+    assert protected[0].action.transfers[0].outgoing_player_id == 15
+
+
+def test_severe_retained_role_risk_gets_the_same_alternative_depth() -> None:
+    base_rows = _rows()
+    rows = [
+        {
+            **row,
+            **(
+                {
+                    "last_minutes": 0.0,
+                    "p_play": 0.45,
+                    "expected_minutes": 20.0,
+                    "live_participation_consensus": "single_source_bench",
+                }
+                if int(row["element"]) == 15 and int(row["event_number"]) == 2
+                else {}
+            ),
+        }
+        for row in base_rows
+    ]
+    for event in (2, 3):
+        alternative = next(
+            row
+            for row in base_rows
+            if int(row["element"]) == 18 and int(row["event_number"]) == event
+        )
+        rows.append(
+            {
+                **alternative,
+                "element": 19,
+                "team_id": 9,
+                "robust_points": 6.0,
+                "expected_points": 6.0,
+            }
+        )
+
+    actions = generate_weekly_actions(
+        _state(free_transfers=1),
+        rows,
+        _rules(),
+        events=(2, 3),
+        alternatives_per_transfer_count=2,
+        max_total_transfers=1,
+    )
+
+    protected = [
+        action for action in actions if "retained-role-sale:15" in action.protected_counterfactuals
+    ]
+    assert len(protected) == 2
+    assert all(action.action.transfers[0].outgoing_player_id == 15 for action in protected)
+
+
 def test_terminal_transfer_curve_values_the_bank_after_the_fixed_horizon() -> None:
     curve = {0: 0.0, 1: 1.0, 2: 2.5, 3: 3.5, 4: 4.0, 5: 4.2}
     actions = generate_weekly_actions(
@@ -262,20 +379,17 @@ def test_wildcard_and_free_hit_search_have_distinct_persistent_state() -> None:
         ChipType.WILDCARD,
         ChipType.FREE_HIT,
     }
-    wildcard = next(
-        variant for variant in variants if variant.action.chip == ChipType.WILDCARD
-    )
-    free_hit = next(
-        variant for variant in variants if variant.action.chip == ChipType.FREE_HIT
-    )
+    wildcard = next(variant for variant in variants if variant.action.chip == ChipType.WILDCARD)
+    free_hit = next(variant for variant in variants if variant.action.chip == ChipType.FREE_HIT)
     original = tuple(sorted(player.player_id for player in state.squad))
 
     assert wildcard.incremental_points_cost == 0
     assert wildcard.next_free_transfers == 3
     assert wildcard.outcome.next_manager is not None
-    assert tuple(
-        sorted(player.player_id for player in wildcard.outcome.next_manager.squad)
-    ) == wildcard.selected_player_ids
+    assert (
+        tuple(sorted(player.player_id for player in wildcard.outcome.next_manager.squad))
+        == wildcard.selected_player_ids
+    )
     assert dict(wildcard.event_squads) == {
         2: wildcard.selected_player_ids,
         3: wildcard.selected_player_ids,
@@ -312,10 +426,7 @@ def test_squad_chip_search_respects_gw1_and_consecutive_free_hit_rules() -> None
     assert (
         generate_squad_chip_shadow_actions(
             event_one,
-            [
-                {**row, "event_number": int(row["event_number"]) - 1}
-                for row in _rows()
-            ],
+            [{**row, "event_number": int(row["event_number"]) - 1} for row in _rows()],
             _rules(),
             events=(1, 2),
             alternatives_per_chip=1,
@@ -338,3 +449,30 @@ def test_squad_chip_search_respects_gw1_and_consecutive_free_hit_rules() -> None
         alternatives_per_chip=1,
     )
     assert {variant.action.chip for variant in variants} == {ChipType.WILDCARD}
+
+
+def test_pinned_wildcard_squad_is_published_and_falls_back_when_unbuildable() -> None:
+    state = _state(free_transfers=3, bank=20)
+    kwargs = {"events": (2, 3), "alternatives_per_chip": 2}
+    free = [
+        v for v in generate_squad_chip_shadow_actions(state, _rows(), _rules(), **kwargs)
+        if v.action.chip == ChipType.WILDCARD
+    ]
+    assert len(free) == 2
+    second_best = free[1].selected_player_ids
+
+    pinned = [
+        v for v in generate_squad_chip_shadow_actions(
+            state, _rows(), _rules(), wildcard_squad=second_best, **kwargs
+        )
+        if v.action.chip == ChipType.WILDCARD
+    ]
+    assert [v.selected_player_ids for v in pinned] == [second_best]
+
+    unbuildable = [
+        v for v in generate_squad_chip_shadow_actions(
+            state, _rows(), _rules(), wildcard_squad=(999_999,), **kwargs
+        )
+        if v.action.chip == ChipType.WILDCARD
+    ]
+    assert unbuildable[0].selected_player_ids == free[0].selected_player_ids

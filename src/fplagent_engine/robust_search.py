@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import multiprocessing
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,12 +17,20 @@ import pyarrow.parquet as pq
 from scipy import sparse
 
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import CONSENSUS as PARTICIPATION_CONSENSUS
 
+from .acceleration import (
+    cuda_device,
+    policy_worker_count,
+    release_cuda_memory,
+    sparse_dense_matmul,
+)
 from .artifact_lineage import (
     load_json_artifact,
     require_current_forecast,
     require_recorded_hash,
 )
+from .capital_efficiency import candidate_publication_role_risks
 from .component_candidates import (
     COMPONENT_CANDIDATES_JSON,
     _component_means,
@@ -33,7 +43,10 @@ from .component_simulator import (
     simulate_component_outcomes,
     train_goal_model,
 )
-from .global_search import generate_global_squads, minimum_distance
+from .global_search import (
+    generate_global_squads,
+    minimum_distance,
+)
 from .models import CURRENT_FORECAST, require_cuda
 from .optimizer import _solve
 from .paths import DECISIONS, MODEL_DATA, REPORTS, ensure_engine_layout
@@ -81,6 +94,25 @@ BENCHMARK_ORIGINS = {
     ADAPTIVE_ORIGIN,
 }
 GLOBAL_ORIGINS = {"global-milp", "global-evolution"}
+PROTECTED_ORIGIN_PREFIXES = (
+    "archetype-",
+    "omission-player-",
+    "captain-counterfactual-",
+    "club-stack-",
+    "role-safe-",
+)
+PROTECTED_CLUB_STACKS = 10
+CLUB_STACK_COUNTS = (2, 3)
+ROLE_SAFE_FINALIST_MINIMUM = 8
+
+
+def protected_candidate(
+    candidate: dict[str, Any], mandatory_origins: set[str] | None = None
+) -> bool:
+    origins = set(map(str, candidate.get("origin_ids") or []))
+    return bool((mandatory_origins or set()) & origins) or any(
+        origin.startswith(PROTECTED_ORIGIN_PREFIXES) for origin in origins
+    )
 
 
 def _candidate_id(squad: Iterable[int]) -> str:
@@ -129,8 +161,7 @@ def _load_seed_squads(
         adaptive = load_json_artifact(ADAPTIVE_RESULTS, "adaptive preseason challenger")
         gate = adaptive.get("tournament", {}).get("full_pipeline_request_gate", {})
         same_forecast = (
-            adaptive.get("lineage", {}).get("current_forecast_sha256")
-            == current_forecast_sha256
+            adaptive.get("lineage", {}).get("current_forecast_sha256") == current_forecast_sha256
         )
         if (
             adaptive.get("verdict") == "REQUEST_FULL_PIPELINE"
@@ -214,13 +245,11 @@ def _proxy_utilities(
                 xp = float(row["expected_points"])
                 component = float(raw[(element, event)])
                 blended = (
-                    definition["raw_weight"] * component
-                    + (1.0 - definition["raw_weight"]) * xp
+                    definition["raw_weight"] * component + (1.0 - definition["raw_weight"]) * xp
                 )
-                risk_adjusted = (
-                    (1.0 - definition["risk_weight"]) * blended
-                    + definition["risk_weight"] * float(row["robust_points"])
-                )
+                risk_adjusted = (1.0 - definition["risk_weight"]) * blended + definition[
+                    "risk_weight"
+                ] * float(row["robust_points"])
                 total += definition["decay"] ** (event - DEFAULT_EVENTS[0]) * risk_adjusted
             utilities[player_offset, scenario_offset] = total
     return utilities, definitions
@@ -246,7 +275,12 @@ def _prefilter_squads(
         (np.ones(len(column_indices), dtype=np.int8), (row_indices, column_indices)),
         shape=(len(keys), len(player_index)),
     )
-    scores = np.asarray(membership @ utilities, dtype=np.float32)
+    scores, _ = sparse_dense_matmul(
+        membership,
+        utilities,
+        label="squad utility screen",
+    )
+    scores = np.asarray(scores, dtype=np.float32)
     scale = np.maximum(scores.std(axis=0), 1e-6)
     standardized = (scores - scores.max(axis=0)) / scale
     aggregate = standardized.mean(axis=1)
@@ -277,21 +311,36 @@ def _record_candidate(
     meta: dict[int, dict[str, Any]],
     origins: set[str],
     proxy_score: float,
+    forced_captain: int | None = None,
 ) -> dict[str, Any]:
     rules = load_rules()
     selected = list(squad)
     lineups = {
-        str(event): _lineup_for_squad(selected, event, by_player, rules)
-        for event in DEFAULT_EVENTS
+        str(event): _lineup_for_squad(selected, event, by_player, rules) for event in DEFAULT_EVENTS
     }
     gw1 = lineups[str(DEFAULT_EVENTS[0])]
+    if forced_captain is not None:
+        forced_captain = int(forced_captain)
+        if forced_captain not in set(map(int, gw1["starters"])):
+            raise ValueError("forced captain must be in the GW1 starting XI")
+        old_captain = int(gw1["captain"])
+        gw1["captain"] = forced_captain
+        if int(gw1["vice_captain"]) == forced_captain:
+            gw1["vice_captain"] = old_captain
+        gw1["expected_points"] = sum(
+            float(by_player[int(element)][1]["expected_points"]) for element in gw1["starters"]
+        ) + float(by_player[forced_captain][1]["expected_points"])
     bench = [int(element) for element in gw1["bench_order"]]
     budget_spent = sum(float(meta[element]["market_price"]) for element in selected) / 10.0
     bench_spend = sum(float(meta[element]["market_price"]) for element in bench) / 10.0
     captain = meta[int(gw1["captain"])]["player_name"]
     formation = _formation(gw1)
     return {
-        "candidate_id": _candidate_id(squad),
+        "candidate_id": (
+            f"{_candidate_id(squad)}:captain-{forced_captain}"
+            if forced_captain is not None
+            else _candidate_id(squad)
+        ),
         "display_name": f"{formation} · {captain} captain · £{bench_spend:.1f}m bench",
         "archetype": "robust-neighbourhood",
         "origin_ids": sorted(origins) if origins else ["swap-neighbourhood"],
@@ -308,7 +357,267 @@ def _record_candidate(
         / 10.0,
         "gw1_formation": formation,
         "proxy_score": proxy_score,
+        "forced_gw1_captain": forced_captain,
     }
+
+
+_EXACT_COUNTERFACTUAL_ROWS: list[dict[str, Any]] | None = None
+
+
+def _initialize_exact_counterfactual_worker(rows: list[dict[str, Any]]) -> None:
+    global _EXACT_COUNTERFACTUAL_ROWS
+    _EXACT_COUNTERFACTUAL_ROWS = rows
+
+
+def _solve_exact_counterfactual_worker(
+    task: dict[str, Any],
+) -> tuple[str, tuple[int, ...]]:
+    if _EXACT_COUNTERFACTUAL_ROWS is None:
+        raise RuntimeError("exact counterfactual worker was not initialized")
+    solution = _solve(
+        _EXACT_COUNTERFACTUAL_ROWS,
+        list(DEFAULT_EVENTS),
+        required_players=set(map(int, task.get("required_players") or [])),
+        excluded_players=set(map(int, task.get("excluded_players") or [])),
+        initial_club_counts={
+            int(team_id): int(count)
+            for team_id, count in (task.get("initial_club_counts") or {}).items()
+        },
+        highs_threads=1,
+    )
+    return str(task["key"]), _squad_key(solution["selected"])
+
+
+def _solve_exact_counterfactuals(
+    rows: list[dict[str, Any]],
+    tasks: list[dict[str, Any]],
+    *,
+    progress_label: str,
+) -> dict[str, tuple[int, ...]]:
+    """Solve protected initial structures with lineup/captain/transfer economics."""
+
+    if not tasks:
+        return {}
+    workers = min(policy_worker_count(), len(tasks))
+    if workers <= 1:
+        _initialize_exact_counterfactual_worker(rows)
+        return dict(_solve_exact_counterfactual_worker(task) for task in tasks)
+    print(
+        f"Acceleration: {progress_label} using {workers} CPU workers for "
+        f"{len(tasks)} exact policy MILPs",
+        flush=True,
+    )
+    solved: dict[str, tuple[int, ...]] = {}
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=context,
+        initializer=_initialize_exact_counterfactual_worker,
+        initargs=(rows,),
+    ) as executor:
+        futures = {
+            executor.submit(_solve_exact_counterfactual_worker, task): task for task in tasks
+        }
+        interval = max(1, len(tasks) // 6)
+        for completed, future in enumerate(as_completed(futures), start=1):
+            key, squad = future.result()
+            solved[key] = squad
+            if completed % interval == 0 or completed == len(tasks):
+                print(
+                    f"{progress_label}: solved {completed}/{len(tasks)} structures",
+                    flush=True,
+                )
+    return solved
+
+
+def _generate_archetype_squads(
+    *,
+    rows: list[dict[str, Any]],
+    player_ids: list[int],
+    eligible_meta: dict[int, dict[str, Any]],
+    by_player: dict[int, dict[int, dict[str, Any]]],
+) -> tuple[dict[tuple[int, ...], set[str]], set[tuple[int, ...]], list[int], int]:
+    """Build exact premium, captain and no-leader structures before pruning."""
+
+    # Omission protection deliberately reaches below the normal high-confidence
+    # starter band. A material, currently available player must be deeply tested
+    # even when the very signal under audit has pushed his p(play) below 0.35.
+    all_by_price = sorted(
+        player_ids,
+        key=lambda element: float(eligible_meta[element]["market_price"]),
+        reverse=True,
+    )
+    all_by_ownership = sorted(
+        player_ids,
+        key=lambda element: float(by_player[element][1].get("ownership_percentile") or 0.0),
+        reverse=True,
+    )
+    material_counterfactuals = {
+        element
+        for element in {*all_by_price[:15], *all_by_ownership[:15]}
+        if str(by_player[element][1].get("status") or "a") == "a"
+    }
+    eligible = [
+        element
+        for element in player_ids
+        if float(by_player[element][1]["p_play"]) >= 0.35 or element in material_counterfactuals
+    ]
+    by_points = sorted(
+        eligible,
+        key=lambda element: float(by_player[element][1]["expected_points"]),
+        reverse=True,
+    )
+    by_price = sorted(
+        eligible,
+        key=lambda element: float(eligible_meta[element]["market_price"]),
+        reverse=True,
+    )
+    by_ownership = sorted(
+        eligible,
+        key=lambda element: float(by_player[element][1].get("ownership_percentile") or 0.0),
+        reverse=True,
+    )
+    disagreement_risks = [
+        element
+        for element in eligible
+        if str(by_player[element][1].get("live_participation_consensus")) == "source_disagreement"
+        and float(eligible_meta[element]["market_price"]) >= 70.0
+    ]
+    captain_players = {
+        *by_points[:10],
+        *[
+            element
+            for element in by_price
+            if str(eligible_meta[element]["position"]) in {"MID", "FWD"}
+        ][:8],
+    }
+    archetype_players = list(
+        dict.fromkeys(
+            [
+                *by_points[:15],
+                *by_price[:15],
+                *by_ownership[:15],
+                *disagreement_risks,
+            ]
+        )
+    )
+    leader = by_points[0]
+    origins: dict[tuple[int, ...], set[str]] = defaultdict(set)
+    mandatory: set[tuple[int, ...]] = set()
+    tasks = [
+        {"key": f"player-{element}", "required_players": [element]} for element in archetype_players
+    ]
+    tasks.append({"key": f"no-leader-{leader}", "excluded_players": [leader]})
+    solved = _solve_exact_counterfactuals(
+        rows,
+        tasks,
+        progress_label="Exact premium counterfactuals",
+    )
+    for element in archetype_players:
+        squad = solved[f"player-{element}"]
+        prefix = "archetype-player" if element in captain_players else "omission-player"
+        origins[squad].add(f"{prefix}-{element}")
+        mandatory.add(squad)
+    no_leader = solved[f"no-leader-{leader}"]
+    origins[no_leader].add(f"archetype-no-leader-{leader}")
+    mandatory.add(no_leader)
+    return origins, mandatory, archetype_players, leader
+
+
+def _strong_club_outlook(
+    by_player: dict[int, dict[int, dict[str, Any]]],
+    meta: dict[int, dict[str, Any]],
+    *,
+    limit: int = PROTECTED_CLUB_STACKS,
+) -> list[dict[str, Any]]:
+    """Rank clubs from fixture-level attack and clean-sheet opportunity.
+
+    This is deliberately independent of which individual players currently look
+    selectable. It prevents uncertain roles at a strong club from eliminating
+    the very multi-player counterfactual that the deep tournament should test.
+    """
+
+    if limit < 1:
+        raise ValueError("protected club-stack limit must be positive")
+    team_events: dict[tuple[int, int], dict[str, Any]] = {}
+    for player_events in by_player.values():
+        for event in DEFAULT_EVENTS:
+            row = player_events[event]
+            team_events.setdefault((int(row["team_id"]), event), row)
+    scores: dict[int, float] = defaultdict(float)
+    for (team_id, event), row in team_events.items():
+        weight = 0.88 ** (event - DEFAULT_EVENTS[0])
+        attack = float(row.get("team_expected_goals") or 0.0)
+        clean_sheet = float(row.get("team_clean_sheet_probability") or 0.0)
+        scores[team_id] += weight * (attack + 2.0 * clean_sheet)
+    ranked = sorted(scores, key=lambda team_id: (-scores[team_id], team_id))[:limit]
+    return [
+        {
+            "team_id": team_id,
+            "team_name": str(
+                next(
+                    row.get("team_name") or row.get("team_short_name") or team_id
+                    for row in meta.values()
+                    if int(row["team_id"]) == team_id
+                )
+            ),
+            "outlook_score": scores[team_id],
+        }
+        for team_id in ranked
+    ]
+
+
+def _generate_club_stack_squads(
+    *,
+    rows: list[dict[str, Any]],
+    eligible_meta: dict[int, dict[str, Any]],
+    by_player: dict[int, dict[int, dict[str, Any]]],
+    club_limit_count: int = PROTECTED_CLUB_STACKS,
+) -> tuple[
+    dict[tuple[int, ...], set[str]],
+    set[tuple[int, ...]],
+    list[dict[str, Any]],
+]:
+    """Generate exact two/three-player stacks and protect them through holdout."""
+
+    clubs = _strong_club_outlook(by_player, eligible_meta, limit=club_limit_count)
+    origins: dict[tuple[int, ...], set[str]] = defaultdict(set)
+    mandatory: set[tuple[int, ...]] = set()
+    audit: list[dict[str, Any]] = []
+    tasks = [
+        {
+            "key": f"club-{int(club['team_id'])}-{count}",
+            "initial_club_counts": {int(club["team_id"]): count},
+        }
+        for club in clubs
+        for count in CLUB_STACK_COUNTS
+    ]
+    solved = _solve_exact_counterfactuals(
+        rows,
+        tasks,
+        progress_label="Exact club-stack counterfactuals",
+    )
+    for club in clubs:
+        team_id = int(club["team_id"])
+        for count in CLUB_STACK_COUNTS:
+            origin = f"club-stack-{team_id}-{count}"
+            squad = solved[f"club-{team_id}-{count}"]
+            origins[squad].add(origin)
+            mandatory.add(squad)
+            audit.append(
+                {
+                    **club,
+                    "count": count,
+                    "origin_id": origin,
+                    "candidate_id": _candidate_id(squad),
+                    "selected_club_players": [
+                        int(element)
+                        for element in squad
+                        if int(eligible_meta[element]["team_id"]) == team_id
+                    ],
+                }
+            )
+    return origins, mandatory, audit
 
 
 def _fast_nominal_scores(
@@ -333,8 +642,12 @@ def _fast_nominal_scores(
             (np.asarray(values, dtype=np.int8), (rows, columns)),
             shape=(len(candidates), len(player_ids)),
         )
-        event_scores = weights @ points[:, event_offset, :].T
-        total += np.asarray(event_scores.T, dtype=np.int16)
+        event_scores, _ = sparse_dense_matmul(
+            weights,
+            points[:, event_offset, :].T,
+            label=f"nominal GW{event} candidate scoring",
+        )
+        total += np.rint(event_scores.T).astype(np.int16)
     return total
 
 
@@ -369,7 +682,7 @@ def _diverse_indices(
     chosen: set[int] = {
         index
         for index, candidate in enumerate(candidates)
-        if mandatory_origins & set(candidate["origin_ids"])
+        if protected_candidate(candidate, mandatory_origins)
     }
 
     def add_ranked(values: np.ndarray, count: int, *, descending: bool = True) -> None:
@@ -423,9 +736,7 @@ def _diverse_indices(
             if len(chosen) >= limit:
                 break
     mandatory = {
-        index
-        for index in chosen
-        if mandatory_origins & set(candidates[index]["origin_ids"])
+        index for index in chosen if protected_candidate(candidates[index], mandatory_origins)
     } | global_protected
     remaining = sorted(chosen - mandatory, key=lambda index: score[index], reverse=True)
     output = [*sorted(mandatory, key=lambda index: score[index], reverse=True)]
@@ -469,7 +780,7 @@ def _component_finalist_indices(
     mandatory = {
         index
         for index, candidate in enumerate(candidates)
-        if mandatory_origins & set(candidate.get("origin_ids", []))
+        if protected_candidate(candidate, mandatory_origins)
     }
     if len(mandatory) > limit:
         raise ValueError("mandatory finalists exceed finalist limit")
@@ -519,6 +830,56 @@ def _component_finalist_indices(
     return output
 
 
+def _protect_role_safe_finalists(
+    candidates: list[dict[str, Any]],
+    metrics: dict[str, np.ndarray],
+    safe_indices: list[int],
+    *,
+    limit: int,
+    minimum: int = ROLE_SAFE_FINALIST_MINIMUM,
+    mandatory_origins: set[str] | None = None,
+) -> list[int]:
+    """Protect a competitively ranked role-safe field before the deep holdout.
+
+    Role integrity is part of the legal decision policy, not an after-the-fact report. The global
+    search still retains its deliberately unsafe premium/captain counterfactuals for diagnosis,
+    while reserving enough finalist capacity for candidates that can actually be published.
+    """
+
+    if minimum < 1 or limit < minimum:
+        raise ValueError("role-safe finalist minimum must fit inside the finalist limit")
+    unique_safe = sorted(set(map(int, safe_indices)))
+    if len(unique_safe) < minimum:
+        raise RuntimeError(
+            f"role-safe discovery guard found only {len(unique_safe)} candidates; "
+            f"at least {minimum} are required"
+        )
+    existing_mandatory = {
+        index
+        for index, candidate in enumerate(candidates)
+        if protected_candidate(candidate, mandatory_origins)
+    }
+    if len(existing_mandatory) + minimum > limit:
+        raise RuntimeError(
+            "role-safe finalist reserve does not fit beside the protected benchmark field"
+        )
+    ranked_safe = sorted(
+        unique_safe,
+        key=lambda index: (
+            float(metrics["evidence_mean"][index]),
+            float(metrics["cvar10"][index]),
+            str(candidates[index].get("candidate_id") or index),
+        ),
+        reverse=True,
+    )
+    protected = ranked_safe[:minimum]
+    for index in protected:
+        candidates[index]["origin_ids"] = sorted(
+            {*map(str, candidates[index].get("origin_ids") or []), "role-safe-finalist"}
+        )
+    return protected
+
+
 def _transfer_policy(solution: dict[str, Any]) -> dict[str, Any]:
     return {
         str(event): {
@@ -548,6 +909,8 @@ def _policy_variant(
     rows: list[dict[str, Any]],
     kind: str,
     events: tuple[int, ...] = DEFAULT_EVENTS,
+    *,
+    highs_threads: int | None = None,
 ) -> dict[str, Any]:
     output = dict(candidate)
     output["root_candidate_id"] = candidate["candidate_id"]
@@ -562,13 +925,12 @@ def _policy_variant(
         list(events),
         initial_squad=set(map(int, candidate["selected"])),
         forbid_transfer_events={events[1]} if kind == "roll-gw2" else set(),
+        highs_threads=highs_threads,
     )
     output["planned_squads"] = {
         str(event): list(solution["planned_squads"][event]) for event in events
     }
-    output["lineups"] = {
-        str(event): dict(solution["lineups"][event]) for event in events
-    }
+    output["lineups"] = {str(event): dict(solution["lineups"][event]) for event in events}
     output["transfer_policy"] = _transfer_policy(solution)
     output["transfer_count_after_gw1"] = sum(
         int(plan["used"]) for plan in output["transfer_policy"].values()
@@ -576,12 +938,96 @@ def _policy_variant(
     return output
 
 
+_POLICY_WORKER_ROWS: list[dict[str, Any]] | None = None
+_POLICY_WORKER_EVENTS: tuple[int, ...] | None = None
+
+
+def _initialize_policy_worker(
+    rows: list[dict[str, Any]],
+    events: tuple[int, ...],
+) -> None:
+    global _POLICY_WORKER_ROWS, _POLICY_WORKER_EVENTS
+    _POLICY_WORKER_ROWS = rows
+    _POLICY_WORKER_EVENTS = events
+
+
+def _solve_policy_worker(task: tuple[int, dict[str, Any], str]) -> tuple[int, str, dict[str, Any]]:
+    index, candidate, kind = task
+    if _POLICY_WORKER_ROWS is None or _POLICY_WORKER_EVENTS is None:
+        raise RuntimeError("policy worker was not initialized")
+    return (
+        index,
+        kind,
+        _policy_variant(
+            candidate,
+            _POLICY_WORKER_ROWS,
+            kind,
+            _POLICY_WORKER_EVENTS,
+            highs_threads=1,
+        ),
+    )
+
+
+def parallel_policy_variants(
+    candidates: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    events: tuple[int, ...] = DEFAULT_EVENTS,
+    *,
+    progress_label: str = "Policy solve",
+) -> list[dict[str, Any]]:
+    """Solve independent open/roll policies across CPU processes in stable order."""
+
+    fixed = {
+        index: _policy_variant(candidate, rows, "fixed", events)
+        for index, candidate in enumerate(candidates)
+    }
+    tasks = [
+        (index, candidate, kind)
+        for index, candidate in enumerate(candidates)
+        for kind in ("open", "roll-gw2")
+    ]
+    workers = min(policy_worker_count(), len(tasks))
+    if workers <= 1:
+        solved = {
+            (index, kind): _policy_variant(candidate, rows, kind, events)
+            for index, candidate, kind in tasks
+        }
+    else:
+        print(
+            f"Acceleration: {progress_label} using {workers} CPU workers "
+            f"for {len(tasks)} independent MILPs",
+            flush=True,
+        )
+        solved: dict[tuple[int, str], dict[str, Any]] = {}
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=context,
+            initializer=_initialize_policy_worker,
+            initargs=(rows, events),
+        ) as executor:
+            futures = {executor.submit(_solve_policy_worker, task): task for task in tasks}
+            interval = max(1, len(tasks) // 12)
+            for completed, future in enumerate(as_completed(futures), start=1):
+                index, kind, variant = future.result()
+                solved[(index, kind)] = variant
+                if completed % interval == 0 or completed == len(tasks):
+                    print(
+                        f"{progress_label}: solved {completed}/{len(tasks)} policies",
+                        flush=True,
+                    )
+    return [
+        fixed[index] if kind == "fixed" else solved[(index, kind)]
+        for index in range(len(candidates))
+        for kind in ("fixed", "open", "roll-gw2")
+    ]
+
+
 def _weighted_regret(
     scenario_values: dict[str, float], scenario_bests: dict[str, float]
 ) -> dict[str, Any]:
     regrets = {
-        name: float(scenario_bests[name] - scenario_values[name])
-        for name in SCENARIO_WEIGHTS
+        name: float(scenario_bests[name] - scenario_values[name]) for name in SCENARIO_WEIGHTS
     }
     weighted_mean = sum(SCENARIO_WEIGHTS[name] * regrets[name] for name in SCENARIO_WEIGHTS)
     worst = max(regrets.values())
@@ -677,6 +1123,7 @@ def run_robust_search(
     evolution_generations: int = 10,
     evolution_offspring: int = 2_048,
     minimum_seed_distance: int = 3,
+    participation_consensus_path: Path = PARTICIPATION_CONSENSUS,
     report_path: Path = REPORT,
 ) -> dict[str, Any]:
     _validate_config(
@@ -702,9 +1149,7 @@ def run_robust_search(
     current_forecast_sha256 = require_current_forecast(
         residual_payload, CURRENT_FORECAST, "residual seed candidates"
     )
-    component_payload = load_json_artifact(
-        COMPONENT_CANDIDATES_JSON, "component seed candidates"
-    )
+    component_payload = load_json_artifact(COMPONENT_CANDIDATES_JSON, "component seed candidates")
     require_recorded_hash(
         component_payload,
         ("forecast_sha256",),
@@ -716,6 +1161,26 @@ def run_robust_search(
     rows, loaded = _load_rows(DEFAULT_EVENTS)
     by_player = loaded["by_player"]
     meta = loaded["meta"]
+    if not participation_consensus_path.is_file():
+        raise FileNotFoundError(
+            "Run participation-consensus collection before robust search: "
+            f"{participation_consensus_path}"
+        )
+    participation_consensus = {
+        int(row["element"]): str(row.get("consensus") or "not_covered")
+        for row in pq.read_table(participation_consensus_path).to_pylist()
+        if int(row["event"]) == 1
+    }
+    role_gate_forecasts = {
+        int(row["element"]): {
+            **row,
+            "live_participation_consensus": participation_consensus.get(
+                int(row["element"]), "not_covered"
+            ),
+        }
+        for row in rows
+        if int(row["event_number"]) == 1
+    }
     eligible_meta = _eligible_meta(rows)
     player_ids = sorted(eligible_meta)
     player_index = {element: index for index, element in enumerate(player_ids)}
@@ -726,6 +1191,38 @@ def run_robust_search(
     origins, seeds = _load_seed_squads(current_forecast_sha256)
     mandatory = set(seeds)
     utilities, scenario_definitions = _proxy_utilities(rows, player_ids)
+    (
+        archetype_origins,
+        archetype_squads,
+        archetype_players,
+        incumbent_captain_leader,
+    ) = _generate_archetype_squads(
+        rows=[row for row in rows if int(row["element"]) in eligible_meta],
+        player_ids=player_ids,
+        eligible_meta=eligible_meta,
+        by_player=by_player,
+    )
+    for squad, labels in archetype_origins.items():
+        origins[squad].update(labels)
+    mandatory.update(archetype_squads)
+    print(
+        "Robust search: generated "
+        f"{len(archetype_squads)} protected premium/captain archetype squads",
+        flush=True,
+    )
+    club_stack_origins, club_stack_squads, club_stack_audit = _generate_club_stack_squads(
+        rows=[row for row in rows if int(row["element"]) in eligible_meta],
+        eligible_meta=eligible_meta,
+        by_player=by_player,
+    )
+    for squad, labels in club_stack_origins.items():
+        origins[squad].update(labels)
+    mandatory.update(club_stack_squads)
+    print(
+        "Robust search: generated "
+        f"{len(club_stack_squads)} protected two/three-player club-stack squads",
+        flush=True,
+    )
 
     print(
         "Robust search: generating globally distant MILP and evolutionary squads",
@@ -746,7 +1243,7 @@ def run_robust_search(
     )
     global_milp = set(global_result.milp_squads)
     global_evolution = set(global_result.evolution_squads)
-    global_universe = global_milp | global_evolution
+    global_universe = global_milp | global_evolution | archetype_squads | club_stack_squads
     for squad in global_milp:
         origins[squad].add("global-milp")
     for squad in global_evolution:
@@ -768,6 +1265,8 @@ def run_robust_search(
             sources.append("global-milp")
         if squad in global_evolution:
             sources.append("global-evolution")
+        sources.extend(sorted(archetype_origins.get(squad, set())))
+        sources.extend(sorted(club_stack_origins.get(squad, set())))
         global_rows.append(
             {
                 "candidate_id": _candidate_id(squad),
@@ -844,38 +1343,66 @@ def run_robust_search(
     discovery_rows = []
     for squad in discovered:
         candidate_origins = origins.get(squad, set())
-        record = _record_candidate(
-            squad, by_player, meta, candidate_origins, proxy_scores.get(squad, 0.0)
-        )
         distance = 15 - max(len(set(squad) & seed) for seed in seed_sets)
-        record["minimum_seed_swap_distance"] = distance
-        records.append(record)
-        discovery_rows.append(
-            {
-                "candidate_id": record["candidate_id"],
-                "display_name": record["display_name"],
-                "origin_ids": record["origin_ids"],
-                "selected": record["selected"],
-                "budget_spent": record["budget_spent"],
-                "bank": record["bank"],
-                "gw1_bench_spend": record["gw1_bench_spend"],
-                "gw1_formation": record["gw1_formation"],
-                "proxy_score": record["proxy_score"],
-                "minimum_seed_swap_distance": distance,
-            }
-        )
-        squad_rows = [meta[element] for element in record["selected"]]
-        validate_squad(squad_rows, rules)
-        for event in DEFAULT_EVENTS:
-            lineup = record["lineups"][str(event)]
-            validate_lineup(
-                squad_rows,
-                lineup["starters"],
-                lineup["bench_order"],
-                lineup["captain"],
-                lineup["vice_captain"],
-                rules,
+        candidate_records = [
+            _record_candidate(
+                squad, by_player, meta, candidate_origins, proxy_scores.get(squad, 0.0)
             )
+        ]
+        base_captain = int(candidate_records[0]["lineups"]["1"]["captain"])
+        starters = set(map(int, candidate_records[0]["lineups"]["1"]["starters"]))
+        forced = {
+            int(origin.rsplit("-", 1)[1])
+            for origin in candidate_origins
+            if origin.startswith("archetype-player-")
+        }
+        for element in sorted(forced & starters):
+            if element == base_captain:
+                continue
+            forced_origins = {
+                *candidate_origins,
+                f"captain-counterfactual-{element}",
+            }
+            candidate_records.append(
+                _record_candidate(
+                    squad,
+                    by_player,
+                    meta,
+                    forced_origins,
+                    proxy_scores.get(squad, 0.0),
+                    forced_captain=element,
+                )
+            )
+        for record in candidate_records:
+            record["minimum_seed_swap_distance"] = distance
+            records.append(record)
+            discovery_rows.append(
+                {
+                    "candidate_id": record["candidate_id"],
+                    "display_name": record["display_name"],
+                    "origin_ids": record["origin_ids"],
+                    "selected": record["selected"],
+                    "budget_spent": record["budget_spent"],
+                    "bank": record["bank"],
+                    "gw1_bench_spend": record["gw1_bench_spend"],
+                    "gw1_formation": record["gw1_formation"],
+                    "proxy_score": record["proxy_score"],
+                    "minimum_seed_swap_distance": distance,
+                    "forced_gw1_captain": record["forced_gw1_captain"],
+                }
+            )
+            squad_rows = [meta[element] for element in record["selected"]]
+            validate_squad(squad_rows, rules)
+            for event in DEFAULT_EVENTS:
+                lineup = record["lineups"][str(event)]
+                validate_lineup(
+                    squad_rows,
+                    lineup["starters"],
+                    lineup["bench_order"],
+                    lineup["captain"],
+                    lineup["vice_captain"],
+                    rules,
+                )
     _write_parquet(discovery_rows, DISCOVERY_PARQUET)
 
     calibration = calibrate_residuals()
@@ -923,9 +1450,7 @@ def run_robust_search(
 
     goal_metrics = train_goal_model(force=False, seed=selection_seed)
     component_backtest = json.loads(COMPONENT_BACKTEST_METRICS.read_text(encoding="utf-8"))
-    evidence_raw_weight = float(
-        component_backtest["blend_selection"]["selected_raw_weight"]
-    )
+    evidence_raw_weight = float(component_backtest["blend_selection"]["selected_raw_weight"])
     goal_rates, goal_diagnostics = predict_current_goal_rates(by_player, DEFAULT_EVENTS)
     empirical = calibrate_empirical_components()
     (
@@ -962,6 +1487,48 @@ def run_robust_search(
     component_selection_metrics, _ = _summarize_component_scores(
         selection_raw_scores, selection_anchored_scores, evidence_raw_weight
     )
+    role_safe_indices = [
+        index
+        for index, candidate in enumerate(shortlisted)
+        if not candidate_publication_role_risks(
+            candidate,
+            role_gate_forecasts,
+            meta,
+        )
+    ]
+    protected_role_safe_indices = _protect_role_safe_finalists(
+        shortlisted,
+        component_selection_metrics,
+        role_safe_indices,
+        limit=finalists,
+        mandatory_origins=BENCHMARK_ORIGINS,
+    )
+    SHORTLIST_JSON.write_text(
+        json.dumps(
+            {
+                "version": VERSION,
+                "created_at": datetime.now(UTC).isoformat(),
+                "discovery_seed": discovery_seed,
+                "screen_simulations": screen_simulations,
+                "candidate_count": len(shortlisted),
+                "forecast_sha256": current_forecast_sha256,
+                "role_safe_candidates": len(role_safe_indices),
+                "protected_role_safe_candidates": len(protected_role_safe_indices),
+                "participation_consensus_sha256": sha256_file(participation_consensus_path),
+                "candidates": shortlisted,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(
+        "Robust search: protected "
+        f"{len(protected_role_safe_indices)}/{len(role_safe_indices)} publication-eligible "
+        "shortlist candidates",
+        flush=True,
+    )
     finalist_indices = _component_finalist_indices(
         shortlisted,
         component_selection_metrics,
@@ -971,17 +1538,80 @@ def run_robust_search(
     selection_rows = _metric_rows(shortlisted, component_selection_metrics)
     _write_parquet(selection_rows, SELECTION_PARQUET)
     finalist_candidates = [shortlisted[index] for index in finalist_indices]
+    finalist_origin_ids = {
+        str(origin)
+        for candidate in finalist_candidates
+        for origin in candidate.get("origin_ids", [])
+    }
+    expected_stack_origins = {str(item["origin_id"]) for item in club_stack_audit}
+    missing_stack_origins = sorted(expected_stack_origins - finalist_origin_ids)
+    if missing_stack_origins:
+        raise RuntimeError(
+            "club-stack publication guard failed; protected stacks did not reach deep holdout: "
+            + ", ".join(missing_stack_origins)
+        )
+    finalist_captains = Counter(
+        int(candidate["lineups"]["1"]["captain"]) for candidate in finalist_candidates
+    )
+    captain_counterfactuals = [
+        candidate
+        for candidate in finalist_candidates
+        if any(
+            str(origin).startswith("captain-counterfactual-") for origin in candidate["origin_ids"]
+        )
+    ]
+    no_leader_finalists = [
+        candidate
+        for candidate in finalist_candidates
+        if incumbent_captain_leader not in set(map(int, candidate["selected"]))
+    ]
+    if len(finalist_captains) < 3 or len(captain_counterfactuals) < 2:
+        raise RuntimeError(
+            "captain-diversity publication guard failed: the deep holdout requires at "
+            "least three captains and two explicit captain counterfactuals"
+        )
+    if not no_leader_finalists:
+        raise RuntimeError(
+            "squad-diversity publication guard failed: no deep finalist excludes the "
+            "incumbent mean-xP leader"
+        )
+    captain_diversity_audit = {
+        "passed": True,
+        "distinct_captains": len(finalist_captains),
+        "captain_counts": {
+            str(element): {
+                "player_name": str(meta[element]["player_name"]),
+                "finalists": count,
+            }
+            for element, count in finalist_captains.items()
+        },
+        "explicit_captain_counterfactuals": len(captain_counterfactuals),
+        "no_incumbent_leader_finalists": len(no_leader_finalists),
+        "incumbent_leader": {
+            "element": incumbent_captain_leader,
+            "player_name": str(meta[incumbent_captain_leader]["player_name"]),
+        },
+        "protected_archetype_players": [
+            {
+                "element": element,
+                "player_name": str(meta[element]["player_name"]),
+                "position": str(meta[element]["position"]),
+                "price": float(meta[element]["market_price"]) / 10.0,
+            }
+            for element in archetype_players
+        ],
+    }
     print(
         f"Robust search: component selection retained {len(finalist_candidates):,} finalists",
         flush=True,
     )
 
     print("Robust search: solving open and rolled-GW2 transfer policies", flush=True)
-    variants = [
-        _policy_variant(candidate, rows, kind)
-        for candidate in finalist_candidates
-        for kind in ("fixed", "open", "roll-gw2")
-    ]
+    variants = parallel_policy_variants(
+        finalist_candidates,
+        rows,
+        progress_label="Robust policy solve",
+    )
     (
         holdout_player_ids,
         holdout_raw_points,
@@ -1063,13 +1693,9 @@ def run_robust_search(
             "base_evidence_roll_gw2": float(
                 holdout_evidence_scores[:, rolled, :].sum(axis=1).mean()
             ),
-            "base_evidence_fixed": float(
-                holdout_evidence_scores[:, fixed, :].sum(axis=1).mean()
-            ),
+            "base_evidence_fixed": float(holdout_evidence_scores[:, fixed, :].sum(axis=1).mean()),
             "base_raw_open": float(holdout_raw_scores[:, opened, :].sum(axis=1).mean()),
-            "base_anchored_open": float(
-                holdout_anchored_scores[:, opened, :].sum(axis=1).mean()
-            ),
+            "base_anchored_open": float(holdout_anchored_scores[:, opened, :].sum(axis=1).mean()),
             "high_goal_open": float(stress_scores[:, opened, :].sum(axis=1).mean()),
             "high_goal_roll_gw2": float(stress_scores[:, rolled, :].sum(axis=1).mean()),
             "high_goal_fixed": float(stress_scores[:, fixed, :].sum(axis=1).mean()),
@@ -1146,18 +1772,27 @@ def run_robust_search(
     comparison = _paired_comparison(
         central_paths[leader["candidate_id"]], central_paths[runner_up["candidate_id"]]
     )
-    robust_rank = {
-        row["candidate_id"]: rank
-        for rank, row in enumerate(robust_rows, start=1)
-    }
+    robust_rank = {row["candidate_id"]: rank for rank, row in enumerate(robust_rows, start=1)}
+    club_stack_challenge = []
+    for stack in club_stack_audit:
+        origin = str(stack["origin_id"])
+        eligible = [row for row in robust_rows if origin in set(row["origin_ids"])]
+        if not eligible:
+            raise RuntimeError(f"protected club stack {origin} has no deep-holdout result")
+        best = min(eligible, key=lambda row: robust_rank[row["candidate_id"]])
+        club_stack_challenge.append(
+            {
+                **stack,
+                "deep_candidate_id": best["candidate_id"],
+                "robust_rank": robust_rank[best["candidate_id"]],
+                "central_mean": best["scenario_values"]["base_evidence_open"],
+                "robust_regret": best["robust_regret"],
+            }
+        )
     benchmark_comparisons = []
     for origin in sorted(BENCHMARK_ORIGINS):
         benchmark = next(
-            (
-                row
-                for row in robust_rows
-                if origin in set(row["origin_ids"])
-            ),
+            (row for row in robust_rows if origin in set(row["origin_ids"])),
             None,
         )
         if benchmark is None:
@@ -1175,11 +1810,7 @@ def run_robust_search(
                 ),
             }
         )
-    global_finalist_rows = [
-        row
-        for row in robust_rows
-        if GLOBAL_ORIGINS & set(row["origin_ids"])
-    ]
+    global_finalist_rows = [row for row in robust_rows if GLOBAL_ORIGINS & set(row["origin_ids"])]
     best_global = global_finalist_rows[0] if global_finalist_rows else None
     global_challenge = {
         "milp_generated": len(global_milp),
@@ -1212,6 +1843,7 @@ def run_robust_search(
         for kind in ("fixed", "open", "roll-gw2")
     }
     all_squad_sets = [set(record["selected"]) for record in records]
+    array_acceleration = cuda_device()
     result = {
         "version": VERSION,
         "created_at": datetime.now(UTC).isoformat(),
@@ -1237,6 +1869,8 @@ def run_robust_search(
             "holdout_simulations": holdout_simulations,
             "stress_simulations": holdout_simulations,
             "policy_variants_per_finalist": 3,
+            "role_safe_shortlist_candidates": len(role_safe_indices),
+            "protected_role_safe_finalists": len(protected_role_safe_indices),
         },
         "diversity": {
             "unique_players": len(set().union(*all_squad_sets)),
@@ -1247,6 +1881,13 @@ def run_robust_search(
             "maximum_seed_swap_distance": max(
                 int(record["minimum_seed_swap_distance"]) for record in records
             ),
+            "captain_publication_guard": captain_diversity_audit,
+            "club_stack_publication_guard": {
+                "passed": True,
+                "protected_clubs": len({item["team_id"] for item in club_stack_audit}),
+                "protected_stack_constraints": len(club_stack_audit),
+                "stack_counts": list(CLUB_STACK_COUNTS),
+            },
         },
         "model": {
             "evidence_raw_weight": evidence_raw_weight,
@@ -1254,6 +1895,7 @@ def run_robust_search(
             "scenario_weights": SCENARIO_WEIGHTS,
             "central_regret_cap": CENTRAL_REGRET_CAP,
             "cuda": cuda,
+            "array_acceleration": array_acceleration or {"backend": "numpy"},
             "goal_model_acceptance": goal_metrics["acceptance"],
             "goal_rate_diagnostics": goal_diagnostics,
         },
@@ -1262,6 +1904,7 @@ def run_robust_search(
         "central_paired_comparison": comparison,
         "benchmark_comparisons": benchmark_comparisons,
         "global_challenge": global_challenge,
+        "club_stack_challenge": club_stack_challenge,
         "decision_sensitivity": sensitivity,
         "leader_candidate": leader_candidate,
         "leader_transfer_policies": {
@@ -1278,6 +1921,7 @@ def run_robust_search(
             "residual_candidates_sha256": sha256_file(CANDIDATES_JSON),
             "component_candidates_sha256": sha256_file(COMPONENT_CANDIDATES_JSON),
             "global_shortlist_sha256": sha256_file(SHORTLIST_JSON),
+            "participation_consensus_sha256": sha256_file(participation_consensus_path),
             "discovery": str(DISCOVERY_PARQUET),
             "screening": str(SCREENING_PARQUET),
             "selection": str(SELECTION_PARQUET),
@@ -1294,10 +1938,10 @@ def run_robust_search(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(_render_report(result, meta), encoding="utf-8")
     print(
-        f"Robust search: complete; leader {leader['candidate_id']} "
-        f"({leader['display_name']})",
+        f"Robust search: complete; leader {leader['candidate_id']} ({leader['display_name']})",
         flush=True,
     )
+    release_cuda_memory()
     return result
 
 

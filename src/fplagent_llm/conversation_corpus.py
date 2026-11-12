@@ -517,12 +517,9 @@ def _row(
 
 
 def _concepts() -> tuple[tuple[str, str, str], ...]:
-    glossary = json.loads(
-        (TRAINING_SEEDS / "glossary_v1.json").read_text(encoding="utf-8")
-    )
+    glossary = json.loads((TRAINING_SEEDS / "glossary_v1.json").read_text(encoding="utf-8"))
     seeded = tuple(
-        (str(item["term"]), str(item["definition"]), str(item["caveat"]))
-        for item in glossary
+        (str(item["term"]), str(item["definition"]), str(item["caveat"])) for item in glossary
     )
     return seeded + EXTENDED_CONCEPTS
 
@@ -901,11 +898,7 @@ def _tool_scenario(
         squad = _squad_for(context, squad_cache, group_index, seed)
         state = _manager_result(context, squad, group_index)
         owned_ids = {item.player_id for item in squad.players}
-        owned = [
-            item
-            for item in squad.players
-            if item.player_id in context.forecasts_by_player
-        ]
+        owned = [item for item in squad.players if item.player_id in context.forecasts_by_player]
         outgoing = owned[(group_index + variant) % len(owned)]
         out_fact = context.players_by_id[outgoing.player_id]
         candidates = [
@@ -1124,9 +1117,7 @@ def _tool_scenario(
     else:
         squad = _squad_for(context, squad_cache, group_index, seed)
         result = _manager_result(context, squad, group_index)
-        user = (
-            f"Load the confirmed state for {manager_id} before we discuss a move. {suffix}"
-        )
+        user = f"Load the confirmed state for {manager_id} before we discuss a move. {suffix}"
         assistant = (
             f"The confirmed state for {manager_id} at {as_of} contains 15 players, "
             f"£{result['bank']:.1f}m in "
@@ -1589,9 +1580,7 @@ def _safety_scenario(
             "returned. Until then there is no grounded numeric recommendation."
         )
     elif subtype == "stale_news":
-        user = (
-            f"A four-day-old post says {player.name} is out. Is that still true? {suffix}"
-        )
+        user = f"A four-day-old post says {player.name} is out. Is that still true? {suffix}"
         snapshot = {
             "snapshot_at": as_of,
             "players": [
@@ -1737,7 +1726,9 @@ def _safety_scenario(
             "silently; the provisional proposal needs correction, revalidation and confirmation."
         )
         grounded = (str(player.player_id), str(player.team_id))
-    assistant = f"For the GW{decision_event} context: {assistant} {SAFETY_RESPONSE_SUFFIXES[variant]}"
+    assistant = (
+        f"For the GW{decision_event} context: {assistant} {SAFETY_RESPONSE_SUFFIXES[variant]}"
+    )
     return user, assistant, exchanges, subtype, grounded
 
 
@@ -2351,9 +2342,7 @@ def _visible_layout(
         badge = " (C)" if item.player_id == squad.captain_player_id else ""
         if item.player_id == squad.vice_captain_player_id:
             badge = " (V)"
-        rows.append(
-            f"{item.squad_role} {item.order}: {fact.name}, {item.position}{badge}"
-        )
+        rows.append(f"{item.squad_role} {item.order}: {fact.name}, {item.position}{badge}")
     return "; ".join(rows)
 
 
@@ -2436,9 +2425,7 @@ def _format_scenario(
             "issues": [issue],
             "requires_confirmation": True,
         }
-        user = (
-            f"Validate upload {source_id}; it may contain a structural squad error. {suffix}"
-        )
+        user = f"Validate upload {source_id}; it may contain a structural squad error. {suffix}"
         exchanges = (
             (
                 "resolve_team_upload",
@@ -2535,9 +2522,7 @@ def _assert_no_near_eval_contamination(rows: list[dict[str, Any]]) -> float:
         prompt = _normalise_prompt(_prompt_text(row))
         prompt_tokens = set(prompt.split())
         for eval_prompt, case_id, eval_tokens in eval_prompts:
-            length_ratio = min(len(prompt), len(eval_prompt)) / max(
-                len(prompt), len(eval_prompt)
-            )
+            length_ratio = min(len(prompt), len(eval_prompt)) / max(len(prompt), len(eval_prompt))
             if length_ratio < 0.62:
                 continue
             union = prompt_tokens | eval_tokens
@@ -2597,9 +2582,7 @@ def _audit_text_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "unique_assistant_targets": len(assistant_hashes),
         "maximum_repeated_assistant_target": max(assistant_hashes.values()),
         "estimated_tokens": estimated_tokens,
-        "languages": dict(
-            sorted(Counter(row["metadata"]["language"] for row in rows).items())
-        ),
+        "languages": dict(sorted(Counter(row["metadata"]["language"] for row in rows).items())),
     }
 
 
@@ -2685,9 +2668,7 @@ def build_conversation_corpus(
     combined_counts = {}
     for split in ("train", "validation", "test"):
         combined = text_by_split[split] + image_by_split[split]
-        random.Random(seed + {"train": 1, "validation": 2, "test": 3}[split]).shuffle(
-            combined
-        )
+        random.Random(seed + {"train": 1, "validation": 2, "test": 3}[split]).shuffle(combined)
         validate_sft_rows(combined)
         combined_files[split] = _write_split(output_dir, f"combined_{split}", combined)
         combined_counts[split] = len(combined)
@@ -2706,9 +2687,7 @@ def build_conversation_corpus(
         }
         for row in text_rows
     ]
-    manifest_count, manifest_sha = _write_jsonl(
-        output_dir / "text_manifest.jsonl", manifest_rows
-    )
+    manifest_count, manifest_sha = _write_jsonl(output_dir / "text_manifest.jsonl", manifest_rows)
     summary = {
         "generator_version": GENERATOR_VERSION,
         "seed": seed,

@@ -75,6 +75,108 @@ def _selling_loss_after_fall(purchase_price: int, current_price: int) -> int:
     return max(0, current - fallen)
 
 
+def evaluate_retained_asset_price_risks(
+    state: ManagerState,
+    selected_action: Any,
+    *,
+    deadline_at: str | datetime,
+    as_of: str | datetime,
+    feature_path: Path = CURRENT_FEATURES,
+    feature_receipt_path: Path = CURRENT_FEATURE_RECEIPT,
+) -> dict[str, Any]:
+    """Expose near-term price pressure for players the selected route retains.
+
+    Price telemetry remains diagnostic until its prospective calibration clears the
+    promotion gate. This report makes the opportunity cost visible without allowing
+    noisy transfer volume to override the points objective.
+    """
+    checked = _aware(as_of)
+    deadline = _aware(deadline_at)
+    base = {
+        "decision_authority": False,
+        "checked_at": checked.isoformat(),
+        "deadline_at": deadline.isoformat(),
+    }
+    if checked >= deadline:
+        return {**base, "status": "not_ready", "reason": "The FPL deadline has passed."}
+    try:
+        features, feature_receipt = _load_features(
+            feature_path,
+            feature_receipt_path,
+            as_of=checked,
+        )
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+        return {**base, "status": "not_ready", "reason": str(error)}
+
+    outgoing_ids = {
+        int(transfer.outgoing_player_id) for transfer in selected_action.action.transfers
+    }
+    next_midnight = _next_uk_midnight(checked)
+    price_change_before_deadline = next_midnight < deadline
+    missing_player_ids: list[int] = []
+    watched: list[dict[str, Any]] = []
+    for holding in state.squad:
+        player_id = int(holding.player_id)
+        if player_id in outgoing_ids:
+            continue
+        feature = features.get(player_id)
+        if feature is None:
+            missing_player_ids.append(player_id)
+            continue
+        progress = float(feature["price_change_percent"])
+        velocity = float(feature["net_transfer_velocity_per_hour"])
+        if progress >= 0.0 and velocity >= 0.0:
+            continue
+        threshold_fall = price_change_before_deadline and progress <= -100.0
+        watched.append(
+            {
+                "player_id": player_id,
+                "player_name": str(feature.get("player_name") or f"#{player_id}"),
+                "purchase_price": int(holding.purchase_price),
+                "current_price": int(holding.current_price),
+                "selling_price_now": calculated_selling_price(
+                    int(holding.purchase_price), int(holding.current_price)
+                ),
+                "price_change_percent": progress,
+                "net_transfer_velocity_per_hour": velocity,
+                "expected_to_fall_at_next_update": threshold_fall,
+                "one_fall_sale_value_loss": (
+                    _selling_loss_after_fall(
+                        int(holding.purchase_price), int(holding.current_price)
+                    )
+                    if threshold_fall
+                    else 0
+                ),
+            }
+        )
+    watched.sort(
+        key=lambda row: (
+            not bool(row["expected_to_fall_at_next_update"]),
+            float(row["price_change_percent"]),
+            float(row["net_transfer_velocity_per_hour"]),
+        )
+    )
+    return {
+        **base,
+        "status": "ready" if not missing_player_ids else "ready_partial",
+        "price_change_before_deadline": price_change_before_deadline,
+        "next_price_change_at": next_midnight.isoformat(),
+        "retained_player_count": len(state.squad) - len(outgoing_ids),
+        "watched_player_count": len(watched),
+        "watched_players": watched,
+        "missing_player_ids": sorted(missing_player_ids),
+        "feature_artifact": str(feature_path),
+        "feature_artifact_sha256": feature_receipt["output_sha256"],
+        "feature_receipt": str(feature_receipt_path),
+        "feature_receipt_sha256": sha256_file(feature_receipt_path),
+        "promotion_policy": (
+            "Retained-player price pressure is diagnostic only until timestamp-safe "
+            "prospective calibration proves net-points lift. A predicted price fall "
+            "does not by itself justify spending a free transfer."
+        ),
+    }
+
+
 def evaluate_early_transfer_shadow(
     state: ManagerState,
     selected_action: Any,

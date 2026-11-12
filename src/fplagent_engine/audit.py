@@ -170,18 +170,39 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
         )
         check("current_unique_keys", duplicate_current == 0, duplicate_current, "0")
 
-        current_players, current_rows, horizon = connection.execute(
+        (
+            current_players,
+            current_rows,
+            first_event,
+            last_event,
+            event_count,
+        ) = connection.execute(
             f"""
-            SELECT count(DISTINCT element), count(*), max(event_number)
+            SELECT
+                count(DISTINCT element),
+                count(*),
+                min(event_number),
+                max(event_number),
+                count(DISTINCT event_number)
             FROM read_parquet('{current}')
             """
         ).fetchone()
-        complete_grid = current_rows == current_players * expected_horizon
+        complete_grid = (
+            current_rows == current_players * expected_horizon
+            and event_count == expected_horizon
+            and last_event - first_event + 1 == expected_horizon
+        )
         check(
             "current_player_horizon_grid",
-            complete_grid and horizon == expected_horizon,
-            {"players": current_players, "rows": current_rows, "horizon": horizon},
-            f"players x {expected_horizon}",
+            complete_grid,
+            {
+                "players": current_players,
+                "rows": current_rows,
+                "first_event": first_event,
+                "last_event": last_event,
+                "event_count": event_count,
+            },
+            f"players x {expected_horizon} contiguous events",
         )
 
         required_missing = scalar(
@@ -194,9 +215,19 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
         )
         check("current_required_fields", required_missing == 0, required_missing, "0 missing")
 
-        official_selectable, modelled_players = connection.execute(
+        official_actionable, official_selectable, modelled_players = connection.execute(
             f"""
             SELECT
+                (
+                    SELECT count(*)
+                    FROM read_parquet('{official_players}')
+                    WHERE element_type BETWEEN 1 AND 4
+                      AND (
+                          coalesce(can_select, true)
+                          OR coalesce(can_transact, false)
+                      )
+                      AND NOT coalesce(removed, false)
+                ),
                 (
                     SELECT count(*)
                     FROM read_parquet('{official_players}')
@@ -225,7 +256,7 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
                 """
             ).fetchall()
         ]
-        extra_modelled = [
+        invalid_extra_modelled = [
             int(row[0])
             for row in connection.execute(
                 f"""
@@ -234,7 +265,10 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
                 SELECT id
                 FROM read_parquet('{official_players}')
                 WHERE element_type BETWEEN 1 AND 4
-                  AND coalesce(can_select, true)
+                  AND (
+                      coalesce(can_select, true)
+                      OR coalesce(can_transact, false)
+                  )
                   AND NOT coalesce(removed, false)
                 ORDER BY element
                 """
@@ -242,16 +276,36 @@ def audit_features(expected_horizon: int = 8) -> dict[str, Any]:
         ]
         check(
             "current_selectable_universe_exact",
-            official_selectable == modelled_players
+            official_actionable == modelled_players
             and not missing_selectable
-            and not extra_modelled,
+            and not invalid_extra_modelled,
             {
                 "official_selectable": official_selectable,
+                "official_actionable": official_actionable,
                 "modelled_players": modelled_players,
                 "missing_player_ids": missing_selectable,
-                "extra_player_ids": extra_modelled,
+                "invalid_extra_player_ids": invalid_extra_modelled,
             },
-            "every currently selectable official player appears exactly once per horizon",
+            (
+                "every selectable player plus legitimate transactable sale-only player "
+                "appears exactly once per horizon"
+            ),
+        )
+
+        sale_only_with_availability = scalar(
+            f"""
+            SELECT count(*)
+            FROM read_parquet('{current}')
+            WHERE NOT coalesce(can_select, true)
+              AND coalesce(can_transact, false)
+              AND availability_chance <> 0
+            """
+        )
+        check(
+            "sale_only_players_zero_availability",
+            sale_only_with_availability == 0,
+            sale_only_with_availability,
+            "0 sale-only player-horizons with non-zero availability",
         )
 
         cold_start_rows = connection.execute(

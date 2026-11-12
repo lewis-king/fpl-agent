@@ -19,29 +19,28 @@ These factors thin appearances already present in the production simulation. The
 
 | Not-listed retention | Role-watch retention | Challenger | Changes | Challenger shape / captain | Incumbent shape / captain | Residual delta | Component delta | Supported |
 | ---: | ---: | --- | --- | --- | --- | ---: | ---: | --- |
-| 50.0% | 75.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.541 [+0.505, +0.577] | +0.881 [+0.801, +0.961] | True |
-| 50.5% | 75.3% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.544 [+0.508, +0.580] | +0.883 [+0.803, +0.963] | True |
-| 51.0% | 75.6% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.547 [+0.510, +0.583] | +0.888 [+0.808, +0.968] | True |
-| 51.5% | 75.9% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.547 [+0.511, +0.583] | +0.894 [+0.813, +0.974] | True |
-| 52.0% | 76.2% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.551 [+0.515, +0.587] | +0.898 [+0.818, +0.978] | True |
-| 52.5% | 76.5% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.555 [+0.518, +0.591] | +0.898 [+0.818, +0.978] | True |
-| 55.0% | 78.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.566 [+0.530, +0.603] | +0.913 [+0.833, +0.993] | True |
-| 57.5% | 79.5% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 4-4-2 / Bruno Fernandes | +0.581 [+0.545, +0.617] | +0.928 [+0.848, +1.008] | True |
-| 60.0% | 81.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.609 [+0.571, +0.647] | +0.882 [+0.800, +0.964] | True |
-| 62.5% | 82.5% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.619 [+0.582, +0.656] | +0.894 [+0.812, +0.976] | True |
-| 65.0% | 84.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.631 [+0.594, +0.668] | +0.908 [+0.826, +0.990] | True |
-| 67.5% | 85.5% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.604 [+0.567, +0.640] | +0.944 [+0.862, +1.026] | True |
-| 70.0% | 87.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.614 [+0.578, +0.651] | +0.951 [+0.869, +1.033] | True |
-| 72.5% | 88.5% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.626 [+0.590, +0.662] | +0.966 [+0.884, +1.048] | True |
-| 75.0% | 90.0% | `R-1ca68907f5` | Hill, N.Williams, Xhaka → Collins, McAteer, Senesi | 5-3-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.677 [+0.640, +0.713] | +0.960 [+0.878, +1.041] | True |
+| 50.0% | 75.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.826 [+0.799, +0.852] | +0.576 [+0.504, +0.648] | True |
+| 50.5% | 75.3% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.823 [+0.797, +0.850] | +0.569 [+0.497, +0.641] | True |
+| 51.0% | 75.6% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.820 [+0.794, +0.847] | +0.563 [+0.491, +0.635] | True |
+| 51.5% | 75.9% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.816 [+0.790, +0.843] | +0.553 [+0.481, +0.625] | True |
+| 52.0% | 76.2% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.813 [+0.787, +0.840] | +0.545 [+0.472, +0.617] | True |
+| 52.5% | 76.5% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.811 [+0.784, +0.837] | +0.539 [+0.466, +0.611] | True |
+| 55.0% | 78.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.796 [+0.770, +0.823] | +0.505 [+0.432, +0.577] | True |
+| 57.5% | 79.5% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.779 [+0.753, +0.806] | +0.483 [+0.410, +0.556] | True |
+| 60.0% | 81.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.762 [+0.736, +0.789] | +0.459 [+0.386, +0.532] | True |
+| 62.5% | 82.5% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.746 [+0.719, +0.772] | +0.428 [+0.355, +0.501] | True |
+| 65.0% | 84.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.730 [+0.704, +0.757] | +0.398 [+0.325, +0.471] | True |
+| 67.5% | 85.5% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.714 [+0.687, +0.740] | +0.382 [+0.309, +0.455] | True |
+| 70.0% | 87.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.701 [+0.675, +0.728] | +0.352 [+0.279, +0.426] | True |
+| 72.5% | 88.5% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.687 [+0.661, +0.714] | +0.326 [+0.252, +0.400] | True |
+| 75.0% | 90.0% | `R-6958482d6f` | Watkins, Truffert, Milenković → Gabriel Magalhães, Hirst, Senesi | 4-4-2 / Bruno Fernandes | 3-4-3 / Bruno Fernandes | +0.673 [+0.646, +0.699] | +0.309 [+0.235, +0.383] | True |
 
 ## Players affected by the sensitivity path
 
 | Player | Team | Evidence flag | Production p(play) |
 | --- | --- | --- | ---: |
 | Watkins | Aston Villa | not_listed_three_plus | 88.9% |
-| McAteer | Ipswich Town | low_recent_start_share | 86.4% |
-| Tanaka | Leeds | low_recent_start_share | 87.7% |
+| McAteer | Ipswich Town | low_recent_start_share | 86.5% |
 
 ## Operational rule
 

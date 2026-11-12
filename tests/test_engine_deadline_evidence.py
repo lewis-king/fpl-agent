@@ -338,3 +338,69 @@ def test_deadline_evidence_rejects_forecast_created_in_the_future(tmp_path: Path
 
     assert result["publishable"] is False
     assert "forecast creation time is in the future" in result["direct_forecast"]["issues"]
+
+
+def test_weekly_decision_requires_manager_snapshot_after_previous_deadline(
+    tmp_path: Path,
+) -> None:
+    observed = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
+    official_root = tmp_path / "official"
+    official_pointer = tmp_path / "official-pointer.json"
+    archive_official_payloads(
+        _official_payloads((observed + timedelta(days=5)).isoformat()),
+        observed_at=observed,
+        snapshot_root=official_root,
+        pointer_path=official_pointer,
+    )
+    direct = tmp_path / "direct.parquet"
+    component = tmp_path / "component.parquet"
+    _write_forecasts(
+        direct,
+        component,
+        observed=observed,
+        model_created=observed + timedelta(minutes=1),
+    )
+    manager_contract = tmp_path / "manager-state.json"
+    manager_contract.write_text(
+        json.dumps(
+            {
+                "manager_state": {"event": 3},
+                "source_artifacts": {
+                    "manager_snapshot_observed_at": "2026-08-28T11:00:00+00:00",
+                    "manager_snapshot_minimum_observed_at": "2026-08-28T17:30:00+00:00",
+                    "forecast_sha256": sha256_file(direct),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    decision = tmp_path / "weekly.json"
+    decision.write_text(
+        json.dumps(
+            {
+                "created_at": (observed + timedelta(minutes=2)).isoformat(),
+                "decision_event": 3,
+                "source_artifacts": {
+                    "forecast": str(direct),
+                    "forecast_sha256": sha256_file(direct),
+                    "manager_state_contract": str(manager_contract),
+                    "manager_state_contract_sha256": sha256_file(manager_contract),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = audit_deadline_evidence(
+        as_of=observed + timedelta(minutes=5),
+        official_snapshot_root=official_root,
+        official_pointer_path=official_pointer,
+        direct_forecast_path=direct,
+        component_forecast_path=component,
+        decision_path=decision,
+        output_path=None,
+    )
+
+    assert result["publishable"] is False
+    assert result["decision"]["manager_state_freshness"]["passed"] is False
+    assert any("previous Gameweek deadline" in issue for issue in result["issues"])

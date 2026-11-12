@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fplagent_web.app import create_app
@@ -112,6 +113,89 @@ def test_refresh_coordinator_is_single_flight_and_persists_publication(
         )
         == final
     )
+
+
+def test_published_gw1_refresh_builds_the_canonical_deadline_handoff(
+    tmp_path: Path,
+) -> None:
+    handoff_calls = 0
+
+    def runner(**_: Any) -> dict[str, Any]:
+        return {
+            "status": "published",
+            "published": True,
+            "input_fingerprint": "generation-1",
+            "message": "A coherent decision is active.",
+        }
+
+    def handoff_runner(**_: Any) -> dict[str, Any]:
+        nonlocal handoff_calls
+        handoff_calls += 1
+        return {
+            "status": "published",
+            "published": True,
+            "execution": {"verdict": "READY_TO_ENTER"},
+        }
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_handoff_runner=handoff_runner,
+        gw1_receipt_path=tmp_path / "pipeline.json",
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="manual",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    final = _wait_for_terminal(coordinator)
+
+    assert final.status == "published"
+    assert final.published is True
+    assert handoff_calls == 1
+
+
+def test_gw1_refresh_fails_closed_when_the_deadline_handoff_is_blocked(
+    tmp_path: Path,
+) -> None:
+    def runner(**_: Any) -> dict[str, Any]:
+        return {
+            "status": "published",
+            "published": True,
+            "message": "Pipeline published.",
+        }
+
+    def handoff_runner(**_: Any) -> dict[str, Any]:
+        return {
+            "status": "blocked",
+            "published": False,
+            "execution": {
+                "verdict": "BLOCKED",
+                "failed_checks": ["contingencies_are_legal"],
+            },
+        }
+
+    coordinator = WorkspaceRefreshCoordinator(
+        state_path=tmp_path / "refresh.json",
+        gw1_runner=runner,
+        gw1_handoff_runner=handoff_runner,
+        gw1_receipt_path=tmp_path / "pipeline.json",
+    )
+    coordinator.request(
+        mode="gw1",
+        reason="manual",
+        manager_entry_id=431892,
+        event=1,
+    )
+
+    final = _wait_for_terminal(coordinator)
+
+    assert final.status == "blocked"
+    assert final.published is False
+    assert final.failure_code == "deadline_handoff_blocked"
+    assert "canonical GW1 entry receipt failed closed" in final.message
 
 
 def test_failed_refresh_keeps_previous_artifact_and_reports_safe_failure(
@@ -290,9 +374,11 @@ def test_newer_external_publication_invalidates_a_cached_block(tmp_path: Path) -
     assert calls == 2
 
 
-def test_changed_gw1_implementation_invalidates_a_cached_block(
+@pytest.mark.parametrize("mode", ["gw1", "weekly"])
+def test_changed_implementation_invalidates_a_cached_block(
     tmp_path: Path,
     monkeypatch: Any,
+    mode: str,
 ) -> None:
     calls = 0
     pipeline = tmp_path / "pipeline.json"
@@ -306,10 +392,12 @@ def test_changed_gw1_implementation_invalidates_a_cached_block(
         state_path=tmp_path / "refresh.json",
         gw1_runner=runner,
         gw1_receipt_path=pipeline,
+        weekly_runner=runner,
+        weekly_receipt_path=pipeline,
         clock=lambda: datetime(2026, 8, 8, 11, tzinfo=UTC),
     )
     coordinator.request(
-        mode="gw1",
+        mode=mode,
         reason="material_change",
         manager_entry_id=431892,
         event=1,
@@ -324,12 +412,12 @@ def test_changed_gw1_implementation_invalidates_a_cached_block(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "fplagent_web.decision_refresh.gw1_pipeline_implementation_sha256",
+        f"fplagent_web.decision_refresh.{mode}_pipeline_implementation_sha256",
         lambda: "new-implementation",
     )
 
     coordinator.request(
-        mode="gw1",
+        mode=mode,
         reason="app_open",
         manager_entry_id=431892,
         event=1,
@@ -412,10 +500,11 @@ def test_orphaned_in_process_worker_is_failed_closed(tmp_path: Path) -> None:
 
     result = coordinator.status()
 
-    assert result.status == "failed"
-    assert result.failure_code == "refresh_worker_terminated"
+    assert result.status == "blocked"
+    assert result.failure_code == "refresh_process_interrupted"
     assert result.completed_at == "2026-08-08T12:00:00+00:00"
     assert "last valid workspace was retained" in result.message
+    assert "automatic retries are paused" in result.message
     assert coordinator._active_run_id is None
 
 
@@ -495,13 +584,16 @@ def test_workspace_get_is_fast_read_only_and_refresh_has_explicit_start_contract
     status = client.get("/api/v1/workspace/refresh")
 
     assert workspace.status_code == 200
+    # This contract test uses the local workspace calendar, which advances during
+    # the season. Verify request wiring against the returned phase, not a GW1 date.
+    phase = workspace.json()["phase"]
     assert refresh.requests == [
         {
-            "mode": "gw1",
+            "mode": "gw1" if phase["phase"] == "preseason" else "weekly",
             "reason": "app_open",
             "manager_entry_id": None,
-            "event": 1,
-            "deadline_at": "2026-08-21T17:30:00+00:00",
+            "event": phase["decision_event"] or phase["event"],
+            "deadline_at": phase["decision_deadline"] or phase["deadline"],
         }
     ]
     assert started.status_code == 202

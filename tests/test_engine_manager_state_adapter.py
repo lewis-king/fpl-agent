@@ -58,7 +58,11 @@ def _snapshot() -> dict:
         "entry_id": 7,
         "bank": 250,
         "free_transfers": 2,
-        "transfer_cost": 4,
+        "transfer_cost": 0,
+        "transfer_cost_per_additional": 4,
+        "transfer_limit": 2,
+        "transfers_made": 0,
+        "transfer_accounting_version": 2,
         "chips": _chips(),
         "picks": [
             {
@@ -82,7 +86,7 @@ def test_authenticated_snapshot_becomes_exact_weekly_state() -> None:
     assert state.event == 2
     assert state.bank == 250
     assert state.free_transfers == 2
-    assert state.committed_points_cost == 4
+    assert state.committed_points_cost == 0
     assert state.lineup.captain == 13
     assert state.lineup.vice_captain == 8
     assert [player.player_id for player in state.squad] == list(range(1, 16))
@@ -96,6 +100,60 @@ def test_preseason_null_finance_state_fails_closed() -> None:
     snapshot["free_transfers"] = None
 
     with pytest.raises(ManagerStateInputError, match="free_transfers"):
+        manager_state_from_snapshot(snapshot, event=2, player_catalog=_catalog(), rules=_rules())
+
+
+def test_paid_transfers_become_committed_points_cost() -> None:
+    snapshot = _snapshot()
+    snapshot.update(
+        {
+            "free_transfers": 0,
+            "transfer_limit": 2,
+            "transfers_made": 3,
+            "transfer_cost": 4,
+        }
+    )
+
+    state = manager_state_from_snapshot(
+        snapshot, event=2, player_catalog=_catalog(), rules=_rules()
+    )
+
+    assert state.free_transfers == 0
+    assert state.committed_points_cost == 4
+
+
+def test_legacy_tariff_is_not_treated_as_committed_points() -> None:
+    snapshot = _snapshot()
+    for field in (
+        "transfer_accounting_version",
+        "transfer_cost_per_additional",
+        "transfer_limit",
+        "transfers_made",
+    ):
+        snapshot.pop(field)
+    snapshot["transfer_cost"] = 4
+
+    state = manager_state_from_snapshot(
+        snapshot, event=2, player_catalog=_catalog(), rules=_rules()
+    )
+
+    assert state.free_transfers == 2
+    assert state.committed_points_cost == 0
+
+
+def test_ambiguous_exhausted_legacy_transfer_state_fails_closed() -> None:
+    snapshot = _snapshot()
+    for field in (
+        "transfer_accounting_version",
+        "transfer_cost_per_additional",
+        "transfer_limit",
+        "transfers_made",
+    ):
+        snapshot.pop(field)
+    snapshot["free_transfers"] = 0
+    snapshot["transfer_cost"] = 4
+
+    with pytest.raises(ManagerStateInputError, match="legacy manager snapshot"):
         manager_state_from_snapshot(snapshot, event=2, player_catalog=_catalog(), rules=_rules())
 
 

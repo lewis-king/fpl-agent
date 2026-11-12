@@ -8,6 +8,8 @@ from fplagent_engine.robust_search import (
     _component_finalist_indices,
     _legal_swap_neighbours,
     _load_seed_squads,
+    _protect_role_safe_finalists,
+    _strong_club_outlook,
     _weighted_regret,
 )
 
@@ -59,11 +61,39 @@ def test_worst_case_contributes_to_robust_regret() -> None:
     assert result["robust_regret"] > result["weighted_mean_regret"]
 
 
+def test_strong_club_outlook_uses_team_opportunity_not_individual_role() -> None:
+    meta = {
+        1: {"team_id": 1, "team_name": "Strong"},
+        2: {"team_id": 2, "team_name": "Weak"},
+    }
+    by_player = {
+        1: {
+            event: {
+                "team_id": 1,
+                "team_name": "Strong",
+                "team_expected_goals": 2.0,
+                "team_clean_sheet_probability": 0.5,
+            }
+            for event in range(1, 6)
+        },
+        2: {
+            event: {
+                "team_id": 2,
+                "team_name": "Weak",
+                "team_expected_goals": 1.0,
+                "team_clean_sheet_probability": 0.2,
+            }
+            for event in range(1, 6)
+        },
+    }
+
+    ranked = _strong_club_outlook(by_player, meta, limit=2)
+
+    assert [row["team_name"] for row in ranked] == ["Strong", "Weak"]
+
+
 def test_component_finalist_union_is_filled_to_requested_size() -> None:
-    candidates = [
-        {"gw1_formation": "4-3-3" if index < 90 else "3-4-3"}
-        for index in range(100)
-    ]
+    candidates = [{"gw1_formation": "4-3-3" if index < 90 else "3-4-3"} for index in range(100)]
     values = np.arange(100, dtype=np.float64)
     metrics = {
         "evidence_mean": values,
@@ -131,6 +161,38 @@ def test_global_finalist_quota_respects_small_limit() -> None:
     assert any("global-evolution" in candidates[index]["origin_ids"] for index in selected)
 
 
+def test_role_safe_finalist_reserve_protects_publishable_candidates() -> None:
+    candidates = [
+        {
+            "candidate_id": f"R-{index:03d}",
+            "gw1_formation": "4-4-2",
+            "origin_ids": ["C007"] if index < 4 else [f"origin-{index}"],
+        }
+        for index in range(24)
+    ]
+    values = np.arange(24, dtype=np.float64)
+    metrics = {
+        "evidence_mean": values,
+        "cvar10": values,
+        "raw_mean": values,
+        "anchored_mean": values,
+    }
+
+    protected = _protect_role_safe_finalists(
+        candidates,
+        metrics,
+        list(range(8, 24)),
+        limit=16,
+        minimum=8,
+        mandatory_origins={"C007"},
+    )
+    selected = _component_finalist_indices(candidates, metrics, 16, {"C007"})
+
+    assert len(protected) == 8
+    assert set(protected) <= set(selected)
+    assert all("role-safe-finalist" in candidates[index]["origin_ids"] for index in protected)
+
+
 def test_seed_candidate_lineage_is_forecast_scoped_not_calibration_scoped(
     tmp_path, monkeypatch
 ) -> None:
@@ -160,9 +222,7 @@ def test_seed_candidate_lineage_is_forecast_scoped_not_calibration_scoped(
     assert origins[tuple(range(1, 16))] == {"S001"}
 
 
-def test_adaptive_challenger_is_protected_only_for_matching_forecast(
-    tmp_path, monkeypatch
-) -> None:
+def test_adaptive_challenger_is_protected_only_for_matching_forecast(tmp_path, monkeypatch) -> None:
     residual = tmp_path / "residual.json"
     component = tmp_path / "component.json"
     adaptive = tmp_path / "adaptive.json"
@@ -196,9 +256,7 @@ def test_adaptive_challenger_is_protected_only_for_matching_forecast(
         encoding="utf-8",
     )
     monkeypatch.setattr("fplagent_engine.robust_search.CANDIDATES_JSON", residual)
-    monkeypatch.setattr(
-        "fplagent_engine.robust_search.COMPONENT_CANDIDATES_JSON", component
-    )
+    monkeypatch.setattr("fplagent_engine.robust_search.COMPONENT_CANDIDATES_JSON", component)
     monkeypatch.setattr("fplagent_engine.robust_search.ADAPTIVE_RESULTS", adaptive)
 
     origins, order = _load_seed_squads("current")

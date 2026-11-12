@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from fplagent_llm.chat_runtime import (
@@ -117,6 +119,48 @@ def test_captain_comparison_returns_grounded_receipt() -> None:
     assert result["requires_confirmation"] is True
     assert result["receipt_id"].startswith("captain-v1-")
     assert len(result["sources"]) == 3
+
+
+def test_captain_comparison_keeps_sale_only_owned_player_in_squad(
+    tmp_path: Path,
+) -> None:
+    forecasts = pq.read_table(FIXTURE_FORECASTS).to_pylist()
+    owned_player = int(
+        json.loads(FIXTURE_DECISION.read_text(encoding="utf-8"))["decision"]["squad"][
+            "bench"
+        ][0]["element"]
+    )
+    for row in forecasts:
+        if int(row["element"]) == owned_player and int(row["event_number"]) == 1:
+            row.update(
+                {
+                    "can_select": False,
+                    "p_dnp": 1.0,
+                    "p_1_59": 0.0,
+                    "p_60_89": 0.0,
+                    "p_90_or_more": 0.0,
+                    "p_play": 0.0,
+                    "expected_points": 0.0,
+                    "robust_points": 0.0,
+                }
+            )
+    forecast_path = tmp_path / "forecasts.parquet"
+    pq.write_table(pa.Table.from_pylist(forecasts), forecast_path)
+
+    result = CaptainComparisonService(
+        _repository(), forecast_path, FIXTURE_COMPONENTS
+    ).compare(
+        {
+            "manager_id": 1,
+            "event": 1,
+            "candidate_player_ids": [],
+            "risk_policy": "robust",
+            "as_of": AS_OF,
+        }
+    )
+
+    assert result["schema_version"] == "captain-comparison-v1"
+    assert owned_player not in result["recommended_lineup"]["starter_player_ids"]
 
 
 def test_filtered_captain_comparison_cannot_redefine_full_xi_recommendation() -> None:

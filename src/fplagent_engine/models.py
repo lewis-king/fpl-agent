@@ -21,6 +21,7 @@ from sklearn.metrics import log_loss, mean_absolute_error, mean_squared_error
 from fplagent_data.arrow import write_table
 from fplagent_data.http import sha256_file
 
+from .acceleration import xgboost_infer
 from .appearance_calibration import (
     CALIBRATION_FILE,
     calibrate_minute_probabilities,
@@ -181,8 +182,8 @@ def _predict_hurdle(
     minutes_model: xgb.XGBClassifier,
     matrix: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    probability = minutes_model.predict_proba(matrix)
-    conditional = points_model.predict(matrix)
+    probability = xgboost_infer(minutes_model, matrix, method="predict_proba")
+    conditional = xgboost_infer(points_model, matrix)
     expected = probability[:, 1:].sum(axis=1) * conditional
     return probability, conditional, expected
 
@@ -419,6 +420,32 @@ def train() -> dict[str, Any]:
             )
         ),
     }
+    position_specific = {}
+    for position in POSITIONS:
+        slices = [item for item in backtests if item["position"] == position]
+        position_specific[position] = {
+            "slices": len(slices),
+            "mae_wins_vs_form5": sum(item["mae"] < item["form5_mae"] for item in slices),
+            "gw1_top_k_wins_vs_form5": sum(
+                item["gw1_top_k_actual_points"] >= item["gw1_form5_top_k_actual_points"]
+                for item in slices
+            ),
+            "mean_gw1_top_k_lift": float(
+                np.mean(
+                    [
+                        item["gw1_top_k_actual_points"] - item["gw1_form5_top_k_actual_points"]
+                        for item in slices
+                    ]
+                )
+            ),
+        }
+        position_specific[position]["passed"] = (
+            position_specific[position]["slices"] == len(TEST_SEASONS)
+            and position_specific[position]["mae_wins_vs_form5"] >= 2
+            and position_specific[position]["gw1_top_k_wins_vs_form5"] >= 1
+            and position_specific[position]["mean_gw1_top_k_lift"] >= 0.0
+        )
+    backtest_gate["position_specific"] = position_specific
     backtest_gate["passed"] = (
         backtest_gate["slices"] == 12
         and backtest_gate["mae_wins_vs_form5"] >= 10
@@ -427,6 +454,7 @@ def train() -> dict[str, Any]:
         and backtest_gate["mean_top_k_lift"] > 0
         and backtest_gate["gw1_top_k_wins_vs_form5"] >= 7
         and backtest_gate["mean_gw1_top_k_lift"] > 0
+        and all(value["passed"] for value in position_specific.values())
     )
     if not backtest_gate["passed"]:
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -539,12 +567,65 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _apply_official_selection_gate(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Enforce selection and round-specific official unavailability independently of lineups.
+
+    The learned appearance model is intentionally probabilistic and can retain
+    a small play probability even when ``availability_chance`` is zero. That is
+    useful for ordinary injury news, but invalid when the official catalog says
+    the player cannot be selected. Existing managers may still own and sell such
+    a player, so the row stays in the catalog with a deterministic zero return.
+    """
+
+    gated = 0
+    output: list[dict[str, Any]] = []
+    for raw in rows:
+        row = dict(raw)
+        selection_blocked = row.get("can_select") is False
+        round_blocked = (
+            row.get("official_availability_event") is not None
+            and row.get("event_number") == row["official_availability_event"]
+            and row.get("official_availability_chance") == 0
+        )
+        applied = selection_blocked or round_blocked
+        if applied:
+            row.update(
+                {
+                    "p_dnp": 1.0,
+                    "p_1_59": 0.0,
+                    "p_60_89": 0.0,
+                    "p_90_or_more": 0.0,
+                    "p_play": 0.0,
+                    "conditional_points_if_playing": 0.0,
+                    "expected_points": 0.0,
+                    "epistemic_uncertainty": 0.0,
+                    "robust_points": 0.0,
+                    "live_participation_expected_minutes": 0.0,
+                    "live_participation_conditional_minutes": 0.0,
+                    "live_participation_expected_points": 0.0,
+                    "live_role_minutes_ratio": 0.0,
+                }
+            )
+            gated += 1
+        row["official_selection_gate_applied"] = applied
+        row["official_availability_gate_applied"] = round_blocked
+        row["official_gate_reason"] = (
+            "unselectable" if selection_blocked else "official_round_unavailable" if round_blocked else None
+        )
+        output.append(row)
+    return output, gated
+
+
 def _current_forecast_inputs() -> dict[str, str | None]:
     from .attacking_chance_challenger import current_attacking_chance_inputs
     from .market_feature_challenger import current_market_feature_inputs
+    from .participation_policy import current_participation_inputs
     from .understat_challenger import current_understat_inputs
 
     return {
+        "forecast_implementation_sha256": sha256_file(Path(__file__)),
         "features_sha256": sha256_file(CURRENT_FEATURES),
         "model_sha256": sha256_file(MODEL_FILE),
         "appearance_calibration_sha256": (
@@ -552,6 +633,7 @@ def _current_forecast_inputs() -> dict[str, str | None]:
         ),
         **current_attacking_chance_inputs(),
         **current_market_feature_inputs(),
+        **current_participation_inputs(),
         **current_understat_inputs(),
     }
 
@@ -601,10 +683,13 @@ def forecast(*, force: bool = False) -> dict[str, Any]:
         selected = np.flatnonzero(positions == position)
         models = bundle["positions"][position]
         conditional = np.vstack(
-            [model.predict(matrix[selected]) for model in models["point_models"]]
+            [xgboost_infer(model, matrix[selected]) for model in models["point_models"]]
         )
         probabilities = np.stack(
-            [model.predict_proba(matrix[selected]) for model in models["minute_models"]]
+            [
+                xgboost_infer(model, matrix[selected], method="predict_proba")
+                for model in models["minute_models"]
+            ]
         )
         raw_mean_probability = probabilities.mean(axis=0)
         raw_play_probability = raw_mean_probability[:, 1:].sum(axis=1)
@@ -679,6 +764,10 @@ def forecast(*, force: bool = False) -> dict[str, Any]:
     from .understat_challenger import apply_current_understat_policy
 
     rows, understat_policy = apply_current_understat_policy(table, rows)
+    from .participation_policy import apply_current_participation_policy
+
+    rows, participation_policy = apply_current_participation_policy(rows)
+    rows, official_selection_gate_rows = _apply_official_selection_gate(rows)
     output = pa.Table.from_pylist(rows)
     write_table(output, CURRENT_FORECAST)
     result = {
@@ -696,6 +785,8 @@ def forecast(*, force: bool = False) -> dict[str, Any]:
         "market_feature_policy": market_feature_policy,
         "attacking_chance_policy": attacking_chance_policy,
         "understat_policy": understat_policy,
+        "participation_policy": participation_policy,
+        "official_selection_gate_rows": official_selection_gate_rows,
         "reused": False,
     }
     _atomic_json(

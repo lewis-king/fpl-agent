@@ -82,6 +82,32 @@ def audit_live_feature_contract(
             "finished official events are still awaiting FPL's data-checked flag"
         )
 
+    event_columns = {
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'fpl_current_events'
+            """
+        ).fetchall()
+    }
+    live_current_events = (
+        [
+            int(row[0])
+            for row in connection.execute(
+                """
+                SELECT id FROM fpl_current_events
+                WHERE coalesce(is_current, false)
+                  AND NOT coalesce(data_checked, false)
+                ORDER BY id
+                """
+            ).fetchall()
+        ]
+        if "is_current" in event_columns
+        else []
+    )
+
     expected_grid = list(range(start_event, end_event + 1))
     actual_grid = sorted(
         {
@@ -189,12 +215,44 @@ def audit_live_feature_contract(
                            OR abs(a.xa - try_cast(p.expected_assists AS DOUBLE)) > 0.05
                         """
                     ).fetchone()[0]
+                    prefix_violations = 0
+                    if live_current_events:
+                        prefix_violations = connection.execute(
+                            f"""
+                            WITH actual AS (
+                                SELECT
+                                    player_code,
+                                    sum(minutes) AS minutes,
+                                    sum(xg) AS xg,
+                                    sum(xa) AS xa
+                                FROM read_parquet('{escaped_history}')
+                                GROUP BY player_code
+                            )
+                            SELECT count(*)
+                            FROM actual a
+                            JOIN fpl_current_players p ON a.player_code = p.code
+                            WHERE a.minutes - p.minutes > 0.001
+                               OR a.xg - try_cast(p.expected_goals AS DOUBLE) > 0.05
+                               OR a.xa - try_cast(p.expected_assists AS DOUBLE) > 0.05
+                            """
+                        ).fetchone()[0]
+                    reconciliation_passed = (
+                        prefix_violations == 0 if live_current_events else mismatches == 0
+                    )
                     checks["official_cumulative_reconciliation"] = {
+                        "mode": (
+                            "finalized_history_is_prefix_of_live_cumulative"
+                            if live_current_events
+                            else "exact_finalized_cumulative"
+                        ),
+                        "current_unfinalized_events": live_current_events,
                         "mismatched_players": int(mismatches),
+                        "prefix_violations": int(prefix_violations),
+                        "exact_match": mismatches == 0,
                         "xg_xa_tolerance": 0.05,
-                        "passed": mismatches == 0,
+                        "passed": reconciliation_passed,
                     }
-                    if mismatches:
+                    if not reconciliation_passed:
                         issues.append(
                             "event-live history does not reconcile to official cumulative totals"
                         )

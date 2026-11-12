@@ -6,12 +6,20 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import pyarrow.parquet as pq
+
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import CONSENSUS as PARTICIPATION_CONSENSUS
 
 from .artifact_lineage import (
     load_json_artifact,
     require_current_forecast,
     require_recorded_file,
+)
+from .capital_efficiency import (
+    candidate_capital_role_risks,
+    candidate_publication_role_risks,
+    player_action_role_risk,
 )
 from .horizon_audit import RESULTS_JSON as HORIZON_RESULTS
 from .models import CURRENT_FORECAST
@@ -177,6 +185,61 @@ def _first_horizon_specific(horizon_rows: list[dict[str, Any]]) -> dict[str, Any
     return min(generated, key=lambda row: row["robust_regret"], default=None)
 
 
+def annotate_future_transfer_policy(
+    policy: dict[str, Any],
+    forecast_rows: list[dict[str, Any]],
+    meta: dict[int, dict[str, Any]],
+    *,
+    current_event: int = 1,
+) -> dict[str, Any]:
+    """Mark horizon actions as scenarios that must be re-solved on live evidence."""
+
+    forecasts = {(int(row["event_number"]), int(row["element"])): row for row in forecast_rows}
+    annotated: dict[str, Any] = {}
+    for raw_event, raw_plan in policy.items():
+        event = int(raw_event)
+        plan = dict(raw_plan)
+        current_role_conflicts = []
+        planned_event_role_conflicts = []
+        for incoming in plan.get("in") or []:
+            element = int(incoming["element"])
+            current_forecast = forecasts.get((current_event, element))
+            if current_forecast is not None and element in meta:
+                risk = player_action_role_risk(
+                    element,
+                    current_forecast,
+                    meta[element],
+                    action="incoming",
+                )
+                if risk is not None:
+                    current_role_conflicts.append(risk)
+            event_forecast = forecasts.get((event, element))
+            if event_forecast is not None and element in meta:
+                risk = player_action_role_risk(
+                    element,
+                    event_forecast,
+                    meta[element],
+                    action="incoming",
+                )
+                if risk is not None:
+                    planned_event_role_conflicts.append(risk)
+        plan.update(
+            {
+                "execution_status": "conditional_recompute_required",
+                "requires_live_role_revalidation": bool(plan.get("in")),
+                "current_role_conflicts": current_role_conflicts,
+                "planned_event_role_conflicts": planned_event_role_conflicts,
+                "authority": (
+                    "scenario_only_not_an_action_recommendation"
+                    if event > current_event
+                    else "current_event"
+                ),
+            }
+        )
+        annotated[str(event)] = plan
+    return annotated
+
+
 def run_decision_synthesis(
     *,
     horizon_family_weight: float = DEFAULT_HORIZON_FAMILY_WEIGHT,
@@ -184,6 +247,7 @@ def run_decision_synthesis(
     results_path: Path = RESULTS_JSON,
     decision_path: Path = DECISION_JSON,
     report_path: Path = REPORT,
+    participation_consensus_path: Path = PARTICIPATION_CONSENSUS,
     created_at: str | None = None,
 ) -> dict[str, Any]:
     _validate_weight(horizon_family_weight, "horizon_family_weight")
@@ -194,6 +258,11 @@ def run_decision_synthesis(
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     robust = load_json_artifact(ROBUST_RESULTS, "global robust-search results")
     horizon = load_json_artifact(HORIZON_RESULTS, "horizon-audit results")
+    captain_guard = robust.get("diversity", {}).get("captain_publication_guard") or {}
+    if not captain_guard.get("passed"):
+        raise RuntimeError(
+            "The robust search did not deep-test enough distinct squad/captain archetypes"
+        )
     require_current_forecast(
         robust,
         CURRENT_FORECAST,
@@ -242,20 +311,78 @@ def run_decision_synthesis(
         horizon_family_weight=horizon_family_weight,
         family_worst_weight=family_worst_weight,
     )
-    intervals = champion_intervals(rows, family_worst_weight=family_worst_weight)
-    leader = rows[0]
-    leader_id = leader["candidate_id"]
     candidate_sources = {
         candidate["candidate_id"]: candidate for candidate in shortlist["candidates"]
     }
+    forecast_rows, loaded = _load_rows(tuple(range(1, 9)))
+    gw1_forecasts = {
+        int(row["element"]): row for row in forecast_rows if int(row["event_number"]) == 1
+    }
+    if not participation_consensus_path.is_file():
+        raise FileNotFoundError(
+            "Run participation-consensus collection before synthesis: "
+            f"{participation_consensus_path}"
+        )
+    participation_consensus = {
+        int(row["element"]): str(row.get("consensus") or "not_covered")
+        for row in pq.read_table(participation_consensus_path).to_pylist()
+        if int(row["event"]) == 1
+    }
+    # Participation evidence is intentionally a separate, checksum-bound artifact. Overlay it
+    # only for publication gating so a single-source bench signal cannot disappear merely because
+    # it was not strong enough to alter the Bayesian forecast distribution itself.
+    role_gate_forecasts = {
+        element: {
+            **forecast,
+            "live_participation_consensus": participation_consensus.get(element, "not_covered"),
+        }
+        for element, forecast in gw1_forecasts.items()
+    }
+    excluded_for_role_integrity = []
+    eligible_rows = []
+    for row in rows:
+        candidate = candidate_sources.get(str(row["candidate_id"]))
+        capital_risks = (
+            candidate_capital_role_risks(candidate, role_gate_forecasts, loaded["meta"])
+            if candidate is not None
+            else []
+        )
+        role_risks = (
+            candidate_publication_role_risks(
+                candidate,
+                role_gate_forecasts,
+                loaded["meta"],
+            )
+            if candidate is not None
+            else []
+        )
+        row["capital_role_risks"] = capital_risks
+        row["role_integrity_risks"] = role_risks
+        row["publication_eligible"] = candidate is not None and not role_risks
+        if row["publication_eligible"]:
+            eligible_rows.append(row)
+        else:
+            excluded_for_role_integrity.append(
+                {"candidate_id": row["candidate_id"], "risks": role_risks}
+            )
+    if not eligible_rows:
+        raise RuntimeError("Every common finalist contains an unresolved actionable role risk")
+    for rank, row in enumerate(eligible_rows, start=1):
+        row["publication_rank"] = rank
+    intervals = champion_intervals(eligible_rows, family_worst_weight=family_worst_weight)
+    leader = eligible_rows[0]
+    leader_id = leader["candidate_id"]
     if leader_id not in candidate_sources:
         raise RuntimeError("Synthesized leader is missing from the checksum-bound robust shortlist")
     selected_candidate = candidate_sources[leader_id]
-    forecast_rows, loaded = _load_rows(tuple(range(1, 9)))
     named_squad = _named_squad(selected_candidate, loaded["meta"])
-    selected_policy = _policy_variant(
-        selected_candidate, forecast_rows, "open", tuple(range(1, 9))
-    ).get("transfer_policy", {})
+    selected_policy = annotate_future_transfer_policy(
+        _policy_variant(selected_candidate, forecast_rows, "open", tuple(range(1, 9))).get(
+            "transfer_policy", {}
+        ),
+        forecast_rows,
+        loaded["meta"],
+    )
 
     robust_by_id = {row["candidate_id"]: row for row in robust["finalist_metrics"]}
     horizon_by_id = {row["candidate_id"]: row for row in horizon["finalist_metrics"]}
@@ -316,6 +443,17 @@ def run_decision_synthesis(
                 else None
             ),
         },
+        "capital_efficiency": {
+            "policy": (
+                "No low-role GW1 starter, captain, active substitute or incoming purchase; "
+                "premium capital retains the stricter whole-squad floor."
+            ),
+            "price_thresholds": {"GK": 5.5, "DEF": 5.5, "MID": 7.0, "FWD": 7.0},
+            "excluded_common_finalists": len(excluded_for_role_integrity),
+            "excluded_candidates": excluded_for_role_integrity,
+            "selected_candidate_risks": leader.get("capital_role_risks") or [],
+            "selected_role_integrity_risks": leader.get("role_integrity_risks") or [],
+        },
         "candidate_coverage": {
             "robust_finalists": len(robust["finalist_metrics"]),
             "horizon_finalists": len(horizon["finalist_metrics"]),
@@ -362,6 +500,8 @@ def run_decision_synthesis(
             "horizon_results_sha256": sha256_file(HORIZON_RESULTS),
             "robust_shortlist": str(ROBUST_SHORTLIST),
             "robust_shortlist_sha256": sha256_file(ROBUST_SHORTLIST),
+            "participation_consensus": str(participation_consensus_path),
+            "participation_consensus_sha256": sha256_file(participation_consensus_path),
         },
         "verdict": verdict,
         "deadline_rule": (
@@ -519,7 +659,8 @@ def _render_report(result: dict[str, Any]) -> str:
             "the best sequence under today's forecasts—not a claim to know the injuries, roles and "
             "form evidence that will arrive after GW1. Fixed-squad and forced-bank scenarios are "
             "included precisely so that this imperfect future execution cannot manufacture the "
-            "winner."
+            "winner. Every future transfer is labelled scenario-only and must clear the live role "
+            "gate in a fresh weekly optimisation before it can become actionable."
         ),
         "",
         "## Current GW1 team",

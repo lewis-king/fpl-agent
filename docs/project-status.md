@@ -1,44 +1,153 @@
 # FPLAgent project status
 
-**Status date:** 15 August 2026
+## 21 October: fresh forecast diagnosis and live availability correction
+
+The fresh Scout comparison exposed two live date-indexing defects: absolute preseason
+availability branches and preference for last-round over next-round chance. These are fixed
+for all players, with source-independent official-zero handling, correct zero component ratios
+and an independent publication check. Eighteen unavailable players previously retained nonzero
+GW8 forecasts; rebuilt direct/components have no such violations. Returning players are also
+handled correctly. Release: `points_first_release_20261021_v5`.
+
+The new error diagnosis is automatic during normal finalized-outcome scoring. Broader three-season
+legal replays and a paired GPU input-refit were completed; learned weights remain unchanged because
+the results do not establish a reliable policy improvement. Current forecast artifacts are fresh,
+but the published recommendation is still GW7: no stale manager state was promoted as new advice.
+See [the full report](../reports/forecast-diagnosis-and-corrections-2026-10-21.md) and
+[handoff](agent-continuation-handoff.md) for evidence, limits and reproduction commands.
+
+## Follow-up completed — Scout benchmark and gate/search challenge, 21 October
+
+Added optional authorized Scout comparison capture to ordinary weekly runs, private immutable
+receipts, strict identity/freshness checks and finalized-outcome scoring. Measurements cannot
+change advice or train a model. First 25-player GW8 capture is **unmatched** because our local
+forecast is four days old; no fresh GW8 advice was generated. The next full refresh captures
+both near the same time. No ongoing subscription is required for our engine or archive scoring.
+
+Completed five-arm chronological gate/search experiment (17m14s). Wider incumbent search:
+**+26/−5** points versus narrow control in 2024/25 and 2025/26 opening ten events. Mean-points
+policy: **+12/−3** narrow and **+12/−21** wide. Isolated configuration veto removal: **0/0**.
+All fail the fixed two-fold promotion screen. Keep current live gates/risk; this does not prove
+our forecasts or incumbent are optimal. Production search was already wider than the old
+historical control. Independent audit verified all 100 new arm-events. Release is now
+`points_first_release_20261021_v4`; [full audit](../reports/scout-product-audit-and-gw7-review-2026-10-21.md)
+and [handoff](agent-continuation-handoff.md) distinguish deployed measurement from rejected policies.
+
+Final verification: **883 non-LLM tests passed**, targeted lint/whitespace checks passed;
+all processing completed and the published GW7 recommendation remains unchanged.
+
+## Latest completed work — 21 October 2026
+
+Priorities **2–5** (premium reinvestment, points/risk, future transfers/chips, score distributions)
+have completed this implementation/validation/release-review pass. See the
+[full audit and results](../reports/scout-product-audit-and-gw7-review-2026-10-21.md) and
+[continuation handoff](agent-continuation-handoff.md) for authoritative engineering status.
+
+- Fixed real chip-calendar errors: no retention beyond half-season expiry and no more saved-chip
+  uses than remaining unseen deadlines. Both fixes apply automatically in normal weekly decisions.
+- Added automatic exact BB/TC opportunity measurements, with autosubs and vice fallback; these
+  measurements do not independently authorize a new chip-timing policy.
+- Completed a prefix-fitted three-world GW1–10 replay in 2024/25 and 2025/26. Premium search
+  scored 0/0 versus its control, guarded future transfers +36/−1, score-shape remapping +21/0;
+  none of the alternative risk weights improved both seasons. All fail the declared promotion
+  screen. Retain risk 0.25 and the current selector rather than promote unproven experiments.
+- **854 non-LLM tests passed**; 140 independent strategy/gameweek ledger checks passed. Historical
+  data gaps and bounded searches prevent any complete production-replication or SOTA claim.
+
+Release `points_first_release_20261021_v3` records the concluded decisions. The **published receipt
+is still GW7**; this research did not refresh GW8 or change the saved squad. New code is used by
+the next process/run, not retrospectively applied to saved advice. No LLM work was run.
+
+## Earlier September status (historical)
+
+**September audit:** [9 September deeper weekly search](../reports/weekly-deep-search-2026-09-09.md)
+expanded the search from 16 to 100 legal current-transfer routes and evaluated 540 frozen five-week
+policies. Both independent holdouts rejected its Gonzalo challenger on the predeclared points-based
+acceptance test. The published Richarlison → Evanilson action, XI, captaincy and no-chip instruction
+remain unchanged. This is a reusable research command, not an automatically promoted app selector.
+
+**September release:** [9 September merit-based promote/reject review](../reports/points-first-promotion-decisions-2026-09-09.md)
+adds the admissible-only regret-reference correction and explicit deployment decisions enforced in
+weekly receipts. Rejected experiment versions cannot promote themselves. Read its final handoff
+for that dated refresh rather than the older August runs below.
+
+**Historical workstream update:** 9 September 2026. At that point we were approaching GW4. See the
+[ordered improvement programme](decision-improvement-roadmap-2026-09-09.md) and
+[latest round-two validation/publication](../reports/points-first-validation-round2-2026-09-09.md)
+for live status. The August sections below are retained as historical engineering notes and must
+not be used as today's team recommendation; the current runtime receipt is authoritative.
+
+**Historical status date for the sections below:** 19 August 2026
 **Active objective:** maximise season points through reliable forecasts and legal, robust FPL
 decisions.
 
 ## Current GW1 deadline recommendation
 
-The complete transactional GW1 pipeline was regenerated from official evidence observed on
-15 August 2026. The deadline pack is `DEADLINE_READY` and selects `R-083607ec8c`: a £100.0m
-3-4-3 projected for 57.05 central GW1 points, with Bruno Fernandes captain and Tarkowski
-vice-captain.
+The fresh 19 August transactional pipeline and corrected final handoff are both publishable. The
+canonical receipt selects `R-01afc86b1b`: a £100.0m, £0.0m-bank 3-4-3 projected for 64.29 central
+GW1 points, with Bruno Fernandes captain and Mbeumo vice-captain.
 
-- XI: Donnarumma; Tarkowski, Maguire, Truffert; Bruno Fernandes, Mbeumo, Semenyo,
-  Szoboszlai; Igor Thiago, Watkins, Calvert-Lewin.
-- Bench order: N. Williams, Hill, Groß; Verbruggen as reserve goalkeeper.
-- The search considered 554,062 legal local/global candidates, took 64 through the deep
-  five-week family and 48 through the eight-week family.
-- `R-0aec115e14` is the independent GW1 structure-stress leader, beating the selected team by
-  1.386 points in the central scoring-rule holdout (95% CI +1.254 to +1.518). It ranks fifth in
-  the combined multiweek synthesis and adds 0.258 synthesis regret, so the discrepancy is recorded
-  rather than allowed to bypass the declared season-opening objective.
-- `R-1ca68907f5` is the 4-4-2 long-horizon leader, gaining 1.027 central weighted points over eight
-  weeks. It ranks third in the synthesis and adds 0.154 synthesis regret. A separate 25,000-world
-  bench/allocation selector ranked it first, but only 0.054 composite points ahead of the active
-  squad. The active squad won the original selector and has lower worst-family regret (0.974 versus
-  1.238), so the result is classified as a practical tie resolved toward the less brittle team.
-- All 22 data-quality checks and all ten production-readiness gates pass. The full finalist
-  participation frontier is covered, all ten GW1 Betfair fixtures are present, the bounded
-  defender-only market feature is active at 20%, and the bench audit supports this allocation as a
-  rotation squad—not as a general rule to overspend on substitutes. Watkins, Calvert-Lewin and
-  Bruno Fernandes remain live role-verification items before submission.
-- FPL-authored `ep_this`, `ep_next` and `xP` are runtime-denied model inputs. The forecast is the
-  project's own position-specific point/appearance hurdle model. Understat is collected and
-  replayed as an independent challenger, but its selected production weight is 0% because it did
-  not improve the legal time-forward policy test; FBref remains an uncounted HTTP-403 research gap.
+- XI: Donnarumma; Lacroix, Tarkowski, Maguire; Bruno Fernandes, Semenyo, Mbeumo, Szoboszlai;
+  Igor Thiago, Calvert-Lewin, Watkins.
+- Bench order: Milenković, Truffert, McAteer; Verbruggen as reserve goalkeeper.
+- A fresh search considered 537,804 legal candidates, reduced them through residual/component
+  holdouts, solved open/rolled transfer policies and promoted the eight-week leader over the
+  provisional five-week winner. The final squad then won all three independent 25,000-world
+  production seeds and all 45 bounded horizon/minimax weight-grid cells; maximum selected grid
+  regret was zero.
+- The exact bench audit evaluated 68 targeted squads in 25,000 new worlds plus 272 legal five/eight-
+  week transfer policies. It retained this squad as a rotation solution, not as a generic rule to
+  spend heavily on the bench.
+- The isolated participation audit watches Lacroix, McAteer, Mbeumo and Watkins. A post-run causal
+  audit found that the same GW1-only challenger already wins at every live production anchor, so
+  none is a valid player-minute break-even. Those routes are monitor-only: the alternative's best
+  severe-role GW1 floor is +0.589 points, but it carries +4.125 multiweek synthesis regret. Any new
+  role evidence requires a complete rerun rather than an already-true `≤ minutes` trigger.
+- The active forecast is checksum-bound to one complete 10/10-fixture Betfair generation. The
+  promoted bounded market layer is present in the published bytes: a 20% defender feature and a
+  separately calibrated 5% forward goal-environment feature. A checksum-valid ready market
+  generation may survive a transient provider failure for at most six hours; stale, wrong-event,
+  fixture-mismatched or checksum-mismatched data still fails closed.
+- The explicit chip action remains `NO_CHIP`. Bench Boost has the strongest immediate signal, with
+  a +13.34 cross-model mean floor versus the retained policy's 8-point threshold, but that timing
+  policy failed its historical authority gate. It is reported as strong but non-actionable rather
+  than promoted from one attractive Gameweek.
+- All canonical execution checks pass, including byte-level decision lineage, exact central
+  route identity, legal contingencies, chip candidate identity, published pipeline, current
+  prospective contract and exact £100m accounting.
+- FPL-authored `ep_this`, `ep_next` and `xP` remain runtime-denied model inputs. Production comes
+  from the project's own forecast and legal simulation/search system; external challengers only
+  receive weight after their declared time-forward decision gates pass.
 
-The exact receipt and final manual instruction are in the
-[GW1 deadline pack](../reports/gw1-deadline-pack.md). This recommendation is not a permanent lock:
-rerun the complete pipeline after the final press conferences and before the deadline if any
-official availability, price, fixture or forecast checksum changes.
+The exact manual instruction is in the
+[standalone execution receipt](../reports/gw1-deadline-execution.html), with evidence in the
+[GW1 deadline pack](../reports/gw1-deadline-pack.md). This is not a permanent lock: rerun
+`fplagent gw1-deadline-run` and `fplagent build-deadline-handoff` after material news and at the
+deadline cadence. Any checksum or gate failure retains the last valid receipt.
+
+## Simulation-authoritative GW1 configuration
+
+The pipeline now separates two decisions that had previously been coupled too loosely. The robust
+and horizon search selects the best legal 15; a new post-synthesis gate then selects how that 15 is
+actually used in GW1. It simulates every legal XI, all six legal orders of the three outfield
+substitutes, and captain/vice choices. Goalkeepers, defenders, midfielders and forwards therefore
+compete through legal formations, autosubs and captain fallback rather than being sorted by their
+displayed mean xP.
+
+The gate balances two deliberately different model families: calibrated forecast-residual worlds
+and explicit football-component worlds with correlated team goals, clean sheets, conceded goals,
+attacking returns, bonus and defensive contributions. A configuration is promotable only if the
+selection champion remains first on independent holdout seeds; disagreement fails closed and
+preserves the prior complete decision.
+
+A read-only production-data validation against the currently published 15 selected Milenković as
+first outfield substitute ahead of Truffert and Mbeumo as vice-captain ahead of Lacroix. The same
+configuration won selection and the 25,000-world-per-family holdout, improving the declared robust
+criterion by 0.094. The component family gained 0.194 mean GW1 points while the residual family lost
+0.040, which is precisely the fixture-structure disagreement that the minimax selector is intended
+to resolve. This validation did not mutate the active receipt: the configuration becomes active
+only through the next complete transactional deadline refresh, where all downstream lineage and
+falsification gates are regenerated together.
 
 ## LLM work frozen after the final bounded cycle
 

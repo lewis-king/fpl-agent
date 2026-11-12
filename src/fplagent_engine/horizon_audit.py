@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,7 @@ import pyarrow.parquet as pq
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import PROCESSED
 
+from .acceleration import policy_worker_count, release_cuda_memory
 from .artifact_lineage import (
     load_json_artifact,
     require_current_forecast,
@@ -34,8 +37,9 @@ from .robust_search import (
     _candidate_id,
     _distribution_metrics,
     _paired_comparison,
-    _policy_variant,
     _zscore,
+    parallel_policy_variants,
+    protected_candidate,
 )
 from .rules import load_rules, validate_lineup, validate_squad
 from .tournament import (
@@ -101,9 +105,7 @@ def _candidate_record(
 ) -> dict[str, Any]:
     rules = load_rules()
     selected = sorted(map(int, squad))
-    lineups = {
-        str(event): _lineup_for_squad(selected, event, by_player, rules) for event in EVENTS
-    }
+    lineups = {str(event): _lineup_for_squad(selected, event, by_player, rules) for event in EVENTS}
     gw1 = lineups["1"]
     bench = list(map(int, gw1["bench_order"]))
     budget = sum(float(meta[element]["market_price"]) for element in selected) / 10.0
@@ -141,9 +143,7 @@ def _load_incumbent_candidates(
         "global robust-search shortlist",
     )
     shortlist_payload = load_json_artifact(GLOBAL_SHORTLIST, "global robust-search shortlist")
-    require_current_forecast(
-        shortlist_payload, CURRENT_FORECAST, "global robust-search shortlist"
-    )
+    require_current_forecast(shortlist_payload, CURRENT_FORECAST, "global robust-search shortlist")
     shortlist = shortlist_payload["candidates"]
     finalist_ids = {row["candidate_id"] for row in result["finalist_metrics"]}
     candidates = [
@@ -198,43 +198,156 @@ def _generate_horizon_candidates(
 
     attempts = 0
     maximum_attempts = count * 14
-    while len(generated) < count and attempts < maximum_attempts:
-        decay = decays[attempts % len(decays)]
-        scale = scales[(attempts // len(decays)) % len(scales)]
-        bench_band = bench_bands[
-            (attempts // (len(decays) * len(scales))) % len(bench_bands)
-        ]
-        try:
-            solution = _solve_static(
-                by_player,
-                meta,
-                EVENTS,
-                rules,
-                score_by_player_event=perturbed_scores(scale),
-                excluded_squads=exclusions,
-                bench_spend=bench_band,
-                horizon_decay=decay,
-                bench_weight=0.0,
-            )
-        except RuntimeError:
-            attempts += 1
-            continue
-        key = tuple(sorted(map(int, solution["selected"])))
-        if key not in seen:
-            seen.add(key)
-            exclusions.append(set(key))
-            generated.append(
-                _candidate_record(
-                    list(key),
+    workers = min(policy_worker_count(), count)
+    if workers <= 1:
+        while len(generated) < count and attempts < maximum_attempts:
+            decay = decays[attempts % len(decays)]
+            scale = scales[(attempts // len(decays)) % len(scales)]
+            bench_band = bench_bands[(attempts // (len(decays) * len(scales))) % len(bench_bands)]
+            try:
+                solution = _solve_static(
                     by_player,
                     meta,
-                    [f"horizon-optimizer:d{decay:.2f}:n{scale:.2f}"],
+                    EVENTS,
+                    rules,
+                    score_by_player_event=perturbed_scores(scale),
+                    excluded_squads=exclusions,
+                    bench_spend=bench_band,
+                    horizon_decay=decay,
+                    bench_weight=0.0,
+                    highs_threads=1,
                 )
-            )
-        attempts += 1
+            except RuntimeError:
+                attempts += 1
+                continue
+            key = tuple(sorted(map(int, solution["selected"])))
+            if key not in seen:
+                seen.add(key)
+                exclusions.append(set(key))
+                generated.append(
+                    _candidate_record(
+                        list(key),
+                        by_player,
+                        meta,
+                        [f"horizon-optimizer:d{decay:.2f}:n{scale:.2f}"],
+                    )
+                )
+            attempts += 1
+    else:
+        print(
+            f"Acceleration: horizon challenger generation using {workers} CPU workers",
+            flush=True,
+        )
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=context,
+            initializer=_initialize_horizon_worker,
+            initargs=(by_player, meta, rules),
+        ) as executor:
+            while len(generated) < count and attempts < maximum_attempts:
+                batch_size = min(workers, maximum_attempts - attempts)
+                exclusion_snapshot = [set(value) for value in exclusions]
+                tasks = []
+                for _ in range(batch_size):
+                    attempt = attempts
+                    decay = decays[attempt % len(decays)]
+                    scale = scales[(attempt // len(decays)) % len(scales)]
+                    bench_band = bench_bands[
+                        (attempt // (len(decays) * len(scales))) % len(bench_bands)
+                    ]
+                    tasks.append(
+                        (
+                            attempt,
+                            perturbed_scores(scale),
+                            exclusion_snapshot,
+                            bench_band,
+                            decay,
+                            scale,
+                        )
+                    )
+                    attempts += 1
+                for attempt, selected, decay, scale in executor.map(
+                    _solve_horizon_worker,
+                    tasks,
+                    chunksize=1,
+                ):
+                    del attempt
+                    if selected is None:
+                        continue
+                    key = tuple(sorted(map(int, selected)))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    exclusions.append(set(key))
+                    generated.append(
+                        _candidate_record(
+                            list(key),
+                            by_player,
+                            meta,
+                            [f"horizon-optimizer:d{decay:.2f}:n{scale:.2f}"],
+                        )
+                    )
+                    if len(generated) >= count:
+                        break
+                print(
+                    f"Horizon audit: generated {len(generated)}/{count} challengers",
+                    flush=True,
+                )
     if len(generated) < count:
         raise RuntimeError(f"Only generated {len(generated)} horizon challengers")
     return generated
+
+
+_HORIZON_WORKER_BY_PLAYER: dict[int, dict[int, dict]] | None = None
+_HORIZON_WORKER_META: dict[int, dict] | None = None
+_HORIZON_WORKER_RULES: Any | None = None
+
+
+def _initialize_horizon_worker(
+    by_player: dict[int, dict[int, dict]],
+    meta: dict[int, dict],
+    rules: Any,
+) -> None:
+    global _HORIZON_WORKER_BY_PLAYER, _HORIZON_WORKER_META, _HORIZON_WORKER_RULES
+    _HORIZON_WORKER_BY_PLAYER = by_player
+    _HORIZON_WORKER_META = meta
+    _HORIZON_WORKER_RULES = rules
+
+
+def _solve_horizon_worker(
+    task: tuple[
+        int,
+        dict[tuple[int, int], float],
+        list[set[int]],
+        tuple[float | None, float | None] | None,
+        float,
+        float,
+    ],
+) -> tuple[int, list[int] | None, float, float]:
+    if (
+        _HORIZON_WORKER_BY_PLAYER is None
+        or _HORIZON_WORKER_META is None
+        or _HORIZON_WORKER_RULES is None
+    ):
+        raise RuntimeError("horizon worker was not initialized")
+    attempt, scores, exclusions, bench_band, decay, scale = task
+    try:
+        solution = _solve_static(
+            _HORIZON_WORKER_BY_PLAYER,
+            _HORIZON_WORKER_META,
+            EVENTS,
+            _HORIZON_WORKER_RULES,
+            score_by_player_event=scores,
+            excluded_squads=exclusions,
+            bench_spend=bench_band,
+            horizon_decay=decay,
+            bench_weight=0.0,
+            highs_threads=1,
+        )
+    except RuntimeError:
+        return attempt, None, decay, scale
+    return attempt, list(map(int, solution["selected"])), decay, scale
 
 
 def _deterministic_horizon_metrics(
@@ -259,9 +372,7 @@ def _deterministic_horizon_metrics(
                 float(by_player[int(element)][event]["expected_points"])
                 for element in lineup["starters"]
             )
-            event_total += float(
-                by_player[int(lineup["captain"])][event]["expected_points"]
-            )
+            event_total += float(by_player[int(lineup["captain"])][event]["expected_points"])
             total += float(weights[offset]) * event_total
         output[name] = total
     return output
@@ -278,9 +389,7 @@ def _select_horizon_neighbour_records(
     if not records:
         return []
     names = tuple(metrics[0])
-    values = np.asarray(
-        [[float(row[name]) for name in names] for row in metrics], dtype=np.float64
-    )
+    values = np.asarray([[float(row[name]) for name in names] for row in metrics], dtype=np.float64)
     scale = np.maximum(values.std(axis=0), 1e-9)
     aggregate = ((values - values.max(axis=0)) / scale).mean(axis=1)
     mandatory: set[int] = set()
@@ -294,22 +403,16 @@ def _select_horizon_neighbour_records(
     )
     for root in roots:
         eligible = [
-            index
-            for index, record in enumerate(records)
-            if root in set(record["origin_ids"])
+            index for index, record in enumerate(records) if root in set(record["origin_ids"])
         ]
         if eligible:
             mandatory.add(max(eligible, key=lambda index: aggregate[index]))
     if len(mandatory) > limit:
-        mandatory = set(
-            sorted(mandatory, key=lambda index: aggregate[index], reverse=True)[:limit]
-        )
+        mandatory = set(sorted(mandatory, key=lambda index: aggregate[index], reverse=True)[:limit])
     chosen = set(mandatory)
     per_scenario = max(2, limit // max(1, len(names) * 3))
     for column in range(len(names)):
-        chosen.update(
-            map(int, np.argsort(-values[:, column], kind="stable")[:per_scenario])
-        )
+        chosen.update(map(int, np.argsort(-values[:, column], kind="stable")[:per_scenario]))
     for index in np.argsort(-aggregate, kind="stable"):
         chosen.add(int(index))
         if len(chosen) >= limit:
@@ -337,9 +440,7 @@ def _generate_horizon_neighbours(
         raise ValueError(
             "Horizon-neighbour generation needs at least eight candidates and one source seed"
         )
-    incumbent_by_id = {
-        str(candidate["candidate_id"]): candidate for candidate in incumbents
-    }
+    incumbent_by_id = {str(candidate["candidate_id"]): candidate for candidate in incumbents}
     ranked_ids = [
         str(row["candidate_id"])
         for row in robust_result["finalist_metrics"]
@@ -356,17 +457,12 @@ def _generate_horizon_neighbours(
             key = tuple(map(int, swap["selected"]))
             if key in incumbent_keys:
                 continue
-            origins_by_squad.setdefault(key, set()).add(
-                f"horizon-neighbour:{candidate_id}"
-            )
+            origins_by_squad.setdefault(key, set()).add(f"horizon-neighbour:{candidate_id}")
     records = [
         _candidate_record(list(squad), by_player, meta, sorted(origins))
         for squad, origins in sorted(origins_by_squad.items())
     ]
-    metrics = [
-        _deterministic_horizon_metrics(candidate, by_player)
-        for candidate in records
-    ]
+    metrics = [_deterministic_horizon_metrics(candidate, by_player) for candidate in records]
     return _select_horizon_neighbour_records(records, metrics, limit=min(count, len(records)))
 
 
@@ -408,7 +504,7 @@ def _selection_indices(
         index
         for index, candidate in enumerate(candidates)
         if candidate["candidate_id"] == incumbent_id
-        or BENCHMARK_ORIGINS & set(candidate["origin_ids"])
+        or protected_candidate(candidate, BENCHMARK_ORIGINS)
     }
     horizon_indices = [
         index
@@ -579,8 +675,7 @@ def run_horizon_audit(
         candidate_id = str(candidate["candidate_id"])
         if candidate_id in candidates_by_id:
             candidates_by_id[candidate_id]["origin_ids"] = sorted(
-                set(candidates_by_id[candidate_id]["origin_ids"])
-                | set(candidate["origin_ids"])
+                set(candidates_by_id[candidate_id]["origin_ids"]) | set(candidate["origin_ids"])
             )
         else:
             candidates_by_id[candidate_id] = candidate
@@ -639,10 +734,7 @@ def run_horizon_audit(
             "origin_ids": candidate["origin_ids"],
             "gw1_formation": candidate["gw1_formation"],
             "gw1_bench_spend": candidate["gw1_bench_spend"],
-            **{
-                name: float(values[index])
-                for name, values in selection_metrics.items()
-            },
+            **{name: float(values[index]) for name, values in selection_metrics.items()},
         }
         for index, candidate in enumerate(candidates)
     ]
@@ -653,16 +745,12 @@ def run_horizon_audit(
         flush=True,
     )
 
-    variants = []
-    for index, candidate in enumerate(finalist_candidates, start=1):
-        for kind in ("fixed", "open", "roll-gw2"):
-            variants.append(_policy_variant(candidate, rows, kind, EVENTS))
-        if index % 4 == 0 or index == len(finalist_candidates):
-            print(
-                f"Horizon audit: solved eight-week policies for {index}/"
-                f"{len(finalist_candidates)} finalists",
-                flush=True,
-            )
+    variants = parallel_policy_variants(
+        finalist_candidates,
+        rows,
+        EVENTS,
+        progress_label="Horizon eight-week policy solve",
+    )
     (
         holdout_player_ids,
         holdout_raw,
@@ -706,18 +794,13 @@ def run_horizon_audit(
             name: float(values.mean()) for name, values in totals.items()
         }
     scenario_bests = {
-        name: max(values[name] for values in scenario_values.values())
-        for name in SCENARIO_WEIGHTS
+        name: max(values[name] for values in scenario_values.values()) for name in SCENARIO_WEIGHTS
     }
     finalist_by_id = {candidate["candidate_id"]: candidate for candidate in finalist_candidates}
     rows_out = []
     for candidate_id, values in scenario_values.items():
-        regrets = {
-            name: float(scenario_bests[name] - values[name]) for name in SCENARIO_WEIGHTS
-        }
-        weighted_regret = sum(
-            SCENARIO_WEIGHTS[name] * regrets[name] for name in SCENARIO_WEIGHTS
-        )
+        regrets = {name: float(scenario_bests[name] - values[name]) for name in SCENARIO_WEIGHTS}
+        weighted_regret = sum(SCENARIO_WEIGHTS[name] * regrets[name] for name in SCENARIO_WEIGHTS)
         worst_regret = max(regrets.values())
         central = scenario_paths[candidate_id][CENTRAL_SCENARIO]
         candidate = finalist_by_id[candidate_id]
@@ -827,6 +910,7 @@ def run_horizon_audit(
         f"Horizon audit: complete; {verdict}; leader {leader['candidate_id']}",
         flush=True,
     )
+    release_cuda_memory()
     return result
 
 

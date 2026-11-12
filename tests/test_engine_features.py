@@ -42,3 +42,11 @@ def test_current_feature_horizon_rolls_forward_and_includes_live_history() -> No
     assert "form10_xg" in query
     assert "form38_xa" in query
     assert "form38_minutes" in query
+
+
+def test_current_features_keep_owned_sale_only_players_at_zero_availability() -> None:
+    query = _current_query(5, start_event=3)
+
+    assert "WHEN NOT coalesce(p.can_select, true) THEN 0.0" in query
+    assert "OR coalesce(p.can_transact, false)" in query
+    assert "p.can_transact" in query

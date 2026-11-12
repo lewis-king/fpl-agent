@@ -17,10 +17,16 @@ from .tool_contracts import TOOL_BY_NAME, ToolContract, validate_tool_arguments
 
 DEFAULT_MANAGER_ID = 1
 DEFAULT_DECISION = ROOT / "data" / "decisions" / "2026-27-gw1-synthesized.json"
-DEFAULT_FORECASTS = ROOT / "data" / "model" / "forecasts" / "2026-27-preseason.parquet"
-DEFAULT_COMPONENTS = (
+LIVE_FORECASTS = ROOT / "data" / "model" / "forecasts" / "2026-27-preseason.parquet"
+LIVE_COMPONENTS = (
     ROOT / "data" / "model" / "forecasts" / "2026-27-preseason-components.parquet"
 )
+PUBLISHED_FORECASTS = ROOT / "data" / "decisions" / "published" / "gw1" / "direct-forecast.parquet"
+PUBLISHED_COMPONENTS = (
+    ROOT / "data" / "decisions" / "published" / "gw1" / "component-forecast.parquet"
+)
+DEFAULT_FORECASTS = PUBLISHED_FORECASTS if PUBLISHED_FORECASTS.is_file() else LIVE_FORECASTS
+DEFAULT_COMPONENTS = PUBLISHED_COMPONENTS if PUBLISHED_COMPONENTS.is_file() else LIVE_COMPONENTS
 
 
 def _sha256(path: Path) -> str:
@@ -513,7 +519,10 @@ class CaptainComparisonService:
                   USING (season, event_number, element)
                 WHERE f.event_number = ?
                   AND f.element IN (SELECT * FROM unnest(?))
-                  AND f.can_select AND NOT f.removed
+                  -- This query evaluates an already-owned 15-player squad.
+                  -- A sale-only holding must remain visible so the lineup can
+                  -- bench it at zero and the UI can explain the transfer need.
+                  AND NOT f.removed
                 """,
                 [str(self.forecast_path), str(self.component_path), event, list(player_ids)],
             ).fetchall()

@@ -8,7 +8,10 @@ import pyarrow as pa
 from fplagent_data.arrow import write_table
 from fplagent_data.http import sha256_file
 from fplagent_data.market_telemetry import FEATURE_SCHEMA
-from fplagent_engine.early_transfer import evaluate_early_transfer_shadow
+from fplagent_engine.early_transfer import (
+    evaluate_early_transfer_shadow,
+    evaluate_retained_asset_price_risks,
+)
 from fplagent_engine.season_state import (
     EventStatus,
     Lineup,
@@ -101,9 +104,7 @@ def _artifacts(tmp_path, *, feature_at: str = "2026-08-08T12:00:00+00:00"):
 
 
 def _selected_action(*, with_transfer: bool = True, bank: int = 0):
-    transfers = (
-        (Transfer(3, MarketPlayer(16, "DEF", 6, 60)),) if with_transfer else ()
-    )
+    transfers = (Transfer(3, MarketPlayer(16, "DEF", 6, 60)),) if with_transfer else ()
     return SimpleNamespace(
         action_id="test-action",
         route_type="one_free_transfer" if transfers else "roll",
@@ -195,3 +196,25 @@ def test_roll_route_does_not_require_market_telemetry(tmp_path) -> None:
     assert result["status"] == "not_applicable"
     assert result["operational_recommendation"] == "wait"
     assert result["decision_authority"] is False
+
+
+def test_retained_asset_price_pressure_is_reported_without_decision_authority(
+    tmp_path,
+) -> None:
+    feature_path, receipt_path = _artifacts(tmp_path)
+
+    result = evaluate_retained_asset_price_risks(
+        _state(),
+        _selected_action(with_transfer=False),
+        deadline_at="2026-08-10T17:30:00+00:00",
+        as_of="2026-08-08T12:10:00+00:00",
+        feature_path=feature_path,
+        feature_receipt_path=receipt_path,
+    )
+
+    assert result["status"] == "ready_partial"
+    assert result["decision_authority"] is False
+    assert result["watched_player_count"] == 1
+    assert result["watched_players"][0]["player_id"] == 3
+    assert result["watched_players"][0]["expected_to_fall_at_next_update"] is True
+    assert result["watched_players"][0]["one_fall_sale_value_loss"] == 1

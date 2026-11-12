@@ -15,9 +15,9 @@ from .deadline_pipeline import WEEKLY_DECISION_ARCHIVE_ROOT
 from .paths import MODEL_DATA, REPORTS
 from .tournament import _score_candidates
 
-VERSION = "prospective_weekly_scoring_v2"
+VERSION = "prospective_weekly_scoring_v4"
 RESULT_ROOT = MODEL_DATA / VERSION
-REPORT_ROOT = REPORTS / "prospective"
+REPORT_ROOT = REPORTS / "prospective" / "v4"
 
 
 class ProspectiveScoringError(ValueError):
@@ -38,6 +38,7 @@ def latest_archived_weekly_decision(
     event: int,
     *,
     archive_root: Path = WEEKLY_DECISION_ARCHIVE_ROOT,
+    deadline_time: str | None = None,
 ) -> Path:
     event_dir = archive_root / f"event-{event}"
     candidates = []
@@ -45,6 +46,7 @@ def latest_archived_weekly_decision(
         "prospective_decision_contract_v1": 1,
         "prospective_decision_contract_v2": 2,
         "weekly_decision_synthesis_v3": 3,
+        "weekly_decision_synthesis_v4": 4,
     }
     for path in sorted(event_dir.glob("*.json")):
         try:
@@ -52,6 +54,10 @@ def latest_archived_weekly_decision(
             if int(payload["decision_event"]) != event:
                 continue
             created = _aware(str(payload["created_at"]), "decision created_at")
+            if deadline_time and created > _aware(deadline_time, "official deadline_time"):
+                continue
+            if payload.get("version") not in version_rank:
+                continue
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
         candidates.append(
@@ -69,6 +75,7 @@ def _load_decision(path: Path, *, event: int, deadline_time: str) -> dict[str, A
         raise ProspectiveScoringError(f"weekly decision is unreadable: {path}") from exc
     accepted_versions = {
         "weekly_decision_synthesis_v3",
+        "weekly_decision_synthesis_v4",
         "prospective_decision_contract_v1",
         "prospective_decision_contract_v2",
     }
@@ -223,7 +230,319 @@ def _shadow_policy_choices(decision: dict[str, Any]) -> dict[str, dict[str, Any]
                 "diagnostics.market_goal_rate_shadow.anchored_component_comparison.market_leader"
             ),
         }
+    continuation = diagnostics.get("transfer_continuation")
+    if (
+        isinstance(continuation, dict)
+        and continuation.get("complete_root_comparison") is True
+        and continuation.get("status") == "ready_diagnostic"
+        and continuation.get("shadow_preference")
+    ):
+        choices["next_deadline_recourse"] = {
+            "action_id": str(continuation["shadow_preference"]),
+            "source": "diagnostics.transfer_continuation.shadow_preference",
+            "scope": "first_action_only",
+            "interpretation": (
+                "Scores the frozen first action, not a realized adaptive multiweek path. "
+                "The next deadline's information and choices have not been observed here."
+            ),
+        }
+    shared = diagnostics.get("stateful_policy_research") or {}
+    ordinary = shared.get("ordinary_continuation") or {}
+    if (
+        shared.get("complete_requested_roots") is True
+        and shared.get("same_production_worlds") is True
+        and ordinary.get("selected_first_action_id")
+    ):
+        choices["shared_world_continuation"] = {
+            "action_id": str(ordinary["selected_first_action_id"]),
+            "source": "diagnostics.stateful_policy_research.ordinary_continuation.selected_first_action_id",
+            "scope": "first_action_only",
+            "interpretation": "Frozen first action only; future transfers, chips and multiweek policy lift are not scored.",
+        }
+    allocation = diagnostics.get("allocation_research") or {}
+    if (allocation.get("complete_requested_families") is True
+            or allocation.get("original_pool_complete") is True):
+        for comparison in allocation.get("risk_weight_sensitivity", []):
+            if comparison["pool"] == "original":
+                choices[f"risk_weight_{comparison['worst_case_weight']:g}"] = {
+                    "action_id": str(comparison["selected_action_id"]),
+                    "source": "diagnostics.allocation_research.risk_weight_sensitivity",
+                    "scope": "first_action_only",
+                }
     return choices
+
+
+def score_role_shift_diagnostic(decision, live_by_player):
+    frozen = (decision.get("diagnostics") or {}).get("role_shift_research") or {}
+    if frozen.get("status") != "ready_diagnostic":
+        return {"status": "not_frozen", "decision_authority": False}
+    rows, missing, unsupported = [], [], []
+    for row in frozen.get("players", []):
+        player = int(row["player_id"])
+        if row.get("forecast_status") != "scorable_single_fixture":
+            unsupported.append(player)
+            continue
+        actual = live_by_player.get(player)
+        if actual is None or actual.get("minutes") is None:
+            missing.append(player)
+            continue
+        probabilities = [float(row[k]) for k in ("champion_p_play", "challenger_p_play")]
+        if any(not np.isfinite(p) or not 0 <= p <= 1 for p in probabilities):
+            raise ProspectiveScoringError("Invalid frozen role-shift probability")
+        y = int(actual["minutes"]) > 0
+        rows.append((row, y, probabilities))
+    cohorts = {}
+    for name, subset in {
+        "all_supported": rows,
+        "predicted_regular": [r for r in rows if r[2][0] >= 0.75],
+        "role_loss_watch": [r for r in rows if r[0]["signal"]["loss_of_regular_role"]],
+    }.items():
+        values = {}
+        for index, model in enumerate(("champion", "role_shift")):
+            y = np.asarray([r[1] for r in subset], dtype=float)
+            p = np.asarray([r[2][index] for r in subset])
+            clipped = np.clip(p, 1e-5, 1 - 1e-5)
+            values[model] = {
+                "brier": float(np.mean((p - y) ** 2)) if len(y) else None,
+                "log_loss": float(-np.mean(y * np.log(clipped) + (1 - y) * np.log(1 - clipped)))
+                if len(y)
+                else None,
+            }
+        cohorts[name] = {"rows": len(subset), **values}
+    return {
+        "status": "scored_shadow",
+        "decision_authority": False,
+        "model_sha256": frozen["model_sha256"],
+        "cohorts": cohorts,
+        "missing_outcome_player_ids": missing,
+        "unsupported_player_ids": unsupported,
+        "scope": "Appearance prediction only; no minutes, xP or policy-lift claim.",
+    }
+
+
+def _score_frozen_lineup(
+    *,
+    selected: list[int],
+    lineup: dict[str, Any],
+    event: int,
+    meta: dict[int, dict[str, Any]],
+    live_by_player: dict[int, dict[str, Any]],
+) -> float:
+    player_ids = sorted(selected)
+    missing = set(player_ids).difference(meta) | set(player_ids).difference(live_by_player)
+    if missing:
+        raise ProspectiveScoringError(
+            f"chip counterfactual players are missing from frozen evidence: {sorted(missing)}"
+        )
+    candidate = {
+        "candidate_id": "chip-counterfactual",
+        "selected": player_ids,
+        "lineups": {
+            str(event): {
+                "starters": list(map(int, lineup["starter_player_ids"])),
+                "bench_order": list(map(int, lineup["bench_player_ids"])),
+                "captain": int(lineup["captain_player_id"]),
+                "vice_captain": int(lineup["vice_captain_player_id"]),
+            }
+        },
+    }
+    points = np.asarray(
+        [[[int(live_by_player[element]["total_points"]) for element in player_ids]]],
+        dtype=np.int16,
+    )
+    played = np.asarray(
+        [[[int(live_by_player[element]["minutes"]) > 0 for element in player_ids]]],
+        dtype=bool,
+    )
+    return float(
+        _score_candidates([candidate], player_ids, (event,), points, played, meta)[0, 0, 0]
+    )
+
+
+def score_allocation_diagnostic(decision, by_id, *, event, meta, live_by_player, champion_net):
+    frozen = (decision.get("diagnostics") or {}).get("allocation_research") or {}
+    if (frozen.get("complete_requested_families") is not True
+            and frozen.get("original_pool_complete") is not True):
+        return {"status": "not_frozen_complete", "decision_authority": False}
+    proposed = {r["action_id"]: r for r in frozen.get("frozen_proposals", [])}
+    comparisons = []
+    for comparison in frozen.get("risk_weight_sensitivity", []):
+        if (comparison["pool"] != "original"
+                and frozen.get("complete_requested_families") is not True):
+            comparisons.append({**comparison, "status": "incomplete_expanded_search"})
+            continue
+        action_id = comparison["selected_action_id"]
+        if action_id in by_id:
+            net = float(by_id[action_id]["realized_decision_net_points"])
+        elif action_id in proposed:
+            row = proposed[action_id]
+            cost = row["incremental_points_cost"]
+            if not isinstance(cost, int) or cost < 0 or cost % 4:
+                raise ProspectiveScoringError("Invalid frozen proposal hit cost")
+            net = (
+                _score_frozen_lineup(
+                    selected=row["selected_player_ids"],
+                    lineup=row["scored_lineup"],
+                    event=event,
+                    meta=meta,
+                    live_by_player=live_by_player,
+                )
+                - cost
+            )
+        else:
+            comparisons.append({**comparison, "status": "missing_frozen_action"})
+            continue
+        comparisons.append(
+            {
+                "pool": comparison["pool"],
+                "worst_case_weight": comparison["worst_case_weight"],
+                "action_id": action_id,
+                "status": "scored_shadow",
+                "realized_net_points": net,
+                "realized_delta_to_champion": net - champion_net,
+            }
+        )
+    return {
+        "status": "scored_shadow",
+        "decision_authority": False,
+        "comparisons": comparisons,
+        "scope": "First-action net points only. Multiple frozen hypotheses do not justify post-hoc weight selection.",
+    }
+
+
+def _score_chip_strategy(
+    *,
+    decision: dict[str, Any],
+    event: int,
+    summaries: list[dict[str, Any]],
+    by_id: dict[str, dict[str, Any]],
+    meta: dict[int, dict[str, Any]],
+    live_by_player: dict[int, dict[str, Any]],
+) -> dict[str, Any] | None:
+    strategy = decision.get("chip_strategy")
+    if not isinstance(strategy, dict):
+        return None
+    selected_id = str(decision["selected_action_id"])
+    summary_by_id = {str(row["action_id"]): row for row in summaries}
+    selected_net = float(by_id[selected_id]["realized_manager_net_points"])
+    team_by_action = {
+        str(row["action_id"]): row
+        for row in (decision.get("chip_shadow") or {}).get("candidates") or []
+        if isinstance(row, dict) and row.get("action_id")
+    }
+    squad_shadow = decision.get("squad_chip_shadow") or {}
+    squad_by_action = {
+        str(row["action_id"]): row
+        for row in squad_shadow.get("candidates") or []
+        if isinstance(row, dict) and row.get("action_id")
+    }
+    scored_candidates = []
+    configuration = (decision.get("diagnostics") or {}).get("configuration_optimisation") or {}
+    configured = {row["action_id"]: row for row in configuration.get("candidates", [])}
+    for candidate in strategy.get("candidates") or []:
+        chip = str(candidate.get("chip"))
+        action_id = str(candidate.get("action_id"))
+        parent_id = candidate.get("parent_action_id") or team_by_action.get(action_id, {}).get(
+            "parent_action_id"
+        )
+        gross = None
+        chip_only_uplift = None
+        points_cost = None
+        frozen_lineup = None
+        execution = decision.get("execution_plan") or {}
+        if execution.get("configuration_action_id") == action_id:
+            if execution.get("chip") != chip or execution.get("action_id") != parent_id:
+                raise ProspectiveScoringError("chip execution plan does not match its parent")
+            frozen_lineup = _lineup_for_event(execution, event)
+        elif action_id in configured:
+            key = "selected_lineups" if configuration.get("status") == "validated" else "original_lineups"
+            item = next((row for row in configured[action_id][key] if row["event"] == event), None)
+            if item:
+                config = item["lineup"]
+                frozen_lineup = {
+                    "starter_player_ids": config["starters"],
+                    "bench_player_ids": config["bench_order"],
+                    "captain_player_id": config["captain"],
+                    "vice_captain_player_id": config["vice_captain"],
+                }
+        if chip in {"bench_boost", "triple_captain"}:
+            # A chip may be paired with a different transfer route, XI and captain.
+            # Never substitute the ordinary winner when the frozen parent is absent.
+            parent = summary_by_id.get(str(parent_id))
+            if parent is not None and (not configuration or frozen_lineup is not None):
+                lineup = frozen_lineup or parent["scored_lineup"]
+                parent_score = by_id[str(parent_id)]
+                selected_players = [*lineup["starter_player_ids"], *lineup["bench_player_ids"]]
+                parent_players = [*parent["scored_lineup"]["starter_player_ids"], *parent["scored_lineup"]["bench_player_ids"]]
+                if len(set(selected_players)) != 15 or set(selected_players) != set(parent_players):
+                    raise ProspectiveScoringError("chip configuration roster differs from its parent")
+                ordinary_gross = _score_frozen_lineup(selected=selected_players, lineup=lineup,
+                    event=event, meta=meta, live_by_player=live_by_player)
+                captain_bonus = _captain_bonus(lineup, live_by_player)
+                if chip == "triple_captain":
+                    gross = ordinary_gross + captain_bonus
+                else:
+                    players = [*lineup["starter_player_ids"], *lineup["bench_player_ids"]]
+                    gross = float(
+                        sum(
+                            int(live_by_player[int(element)]["total_points"]) for element in players
+                        )
+                        + captain_bonus
+                    )
+                chip_only_uplift = gross - ordinary_gross
+                points_cost = int(parent_score["total_points_cost"])
+        if chip in {"wildcard", "free_hit"}:
+            squad_candidate = squad_by_action.get(action_id)
+            if squad_candidate:
+                gross = _score_frozen_lineup(
+                    selected=list(map(int, squad_candidate["selected_player_ids"])),
+                    lineup={
+                        "starter_player_ids": squad_candidate["starter_player_ids"],
+                        "bench_player_ids": squad_candidate["bench_player_ids"],
+                        "captain_player_id": squad_candidate["captain_player_id"],
+                        "vice_captain_player_id": squad_candidate["vice_captain_player_id"],
+                    },
+                    event=event,
+                    meta=meta,
+                    live_by_player=live_by_player,
+                )
+                # Both squad chips waive all event transfer costs, including sunk hits.
+                points_cost = 0
+        actual_uplift = (
+            gross - points_cost - selected_net
+            if gross is not None and points_cost is not None
+            else None
+        )
+        scored_candidates.append(
+            {
+                "chip": chip,
+                "action_id": candidate.get("action_id"),
+                "parent_action_id": parent_id,
+                "comparison_action_id": selected_id,
+                "status": "scored" if actual_uplift is not None else "not_scorable_missing_lineage",
+                "projected_policy_uplift": candidate.get("projected_uplift"),
+                "projected_joint_net_value": candidate.get("joint_net_value"),
+                "actual_immediate_uplift": actual_uplift,
+                "actual_chip_only_uplift": chip_only_uplift,
+                "realized_gross_points": gross,
+                "total_points_cost": points_cost,
+                "operational_gate_passed": bool(candidate.get("operational_gate_passed")),
+                "configuration_basis": "exact_frozen_chip" if frozen_lineup else "legacy_parent_or_missing",
+            }
+        )
+    return {
+        "frozen_recommendation": strategy.get("operational_recommendation"),
+        "frozen_status": strategy.get("status"),
+        "candidates": scored_candidates,
+        "scoring_scope": (
+            "Actual immediate uplift compares each frozen chip-and-transfer route's event net "
+            "points with the selected ordinary route. Chip-only uplift compares BB/TC with its "
+            "own no-chip parent, including autosub displacement. Projected policy uplift may "
+            "span the full decision horizon and is not a like-for-like event forecast. Wildcard "
+            "persistence and chip retention cannot be judged from one event."
+        ),
+        "decision_authority": False,
+    }
 
 
 def _render_report(result: dict[str, Any]) -> str:
@@ -294,7 +613,119 @@ def _render_report(result: dict[str, Any]) -> str:
             "",
         ]
     )
+    chip_score = result.get("chip_strategy_score")
+    if chip_score:
+        lines.extend(
+            [
+                "## Frozen chip counterfactuals",
+                "",
+                "| Chip | Parent route | Chip-only gain | Event net gain vs selected route |",
+                "| --- | --- | ---: | ---: |",
+            ]
+        )
+        for candidate in chip_score["candidates"]:
+            chip_only = candidate["actual_chip_only_uplift"]
+            event_gain = candidate["actual_immediate_uplift"]
+            lines.append(
+                f"| {candidate['chip']} | {candidate['parent_action_id'] or 'squad rebuild'} | "
+                f"{f'{chip_only:+.1f}' if chip_only is not None else 'n/a'} | "
+                f"{f'{event_gain:+.1f}' if event_gain is not None else 'unscorable'} |"
+            )
+        lines.extend(["", chip_score["scoring_scope"], ""])
     return "\n".join(lines)
+
+
+def score_forecast_universe(
+    meta: dict[int, dict[str, Any]],
+    outcomes: dict[int, dict[str, Any]],
+    *,
+    selected_players: set[int],
+    declared_scope: str = "legacy_frozen_subset",
+) -> dict[str, Any]:
+    """Score all actually frozen players; missing outcomes are never zero-filled."""
+    covered = sorted(set(meta) & set(outcomes))
+    missing = sorted(set(meta) - set(outcomes))
+    top_forecasts = set(sorted(meta, key=lambda p: (-float(meta[p]["expected_points"]), p))[:30])
+    rows = []
+    for player in covered:
+        forecast, actual = meta[player], outcomes[player]
+        rows.append(
+            {
+                "element": player,
+                "position": str(forecast["position"]),
+                "player_name": str(forecast.get("player_name") or player),
+                "selected": player in selected_players,
+                "expected_points": float(forecast["expected_points"]),
+                "actual_points": int(actual["total_points"]),
+                "p_play": float(forecast["p_play"]),
+                "appeared": int(actual["minutes"]) > 0,
+                "expected_minutes": forecast.get("expected_minutes"),
+                "actual_minutes": int(actual["minutes"]),
+                "points_pmf": forecast.get("points_pmf"),
+                "distribution_source": forecast.get("distribution_source"),
+                "distribution_calibration_sha256": forecast.get("distribution_calibration_sha256"),
+                "p_1_59": forecast.get("p_1_59"),
+                "p_60_plus": (
+                    float(forecast["p_60_89"]) + float(forecast["p_90_or_more"])
+                    if "p_60_89" in forecast and "p_90_or_more" in forecast else None
+                ),
+            }
+        )
+
+    def metrics(sample: list[dict[str, Any]]) -> dict[str, Any]:
+        count = len(sample)
+        minutes = [
+            abs(float(r["expected_minutes"]) - r["actual_minutes"])
+            for r in sample
+            if r["expected_minutes"] is not None
+        ]
+        return {
+            "players": count,
+            "points_mae": sum(abs(r["actual_points"] - r["expected_points"]) for r in sample)
+            / count
+            if count
+            else None,
+            "points_bias": sum(r["actual_points"] - r["expected_points"] for r in sample) / count
+            if count
+            else None,
+            "appearance_brier": sum((r["p_play"] - float(r["appeared"])) ** 2 for r in sample)
+            / count
+            if count
+            else None,
+            "minutes_mae": sum(minutes) / len(minutes) if minutes else None,
+            "high_confidence_dnp_count": sum(
+                r["p_play"] >= 0.75 and not r["appeared"] for r in sample
+            ),
+            "expected_short_appearances": sum(float(r["p_1_59"]) for r in sample if r["p_1_59"] is not None),
+            "actual_short_appearances": sum(0 < r["actual_minutes"] < 60 for r in sample if r["p_1_59"] is not None),
+            "minutes_bins_covered": sum(r["p_1_59"] is not None for r in sample),
+            "unexpected_short_appearances": sum(
+                r["p_60_plus"] is not None and r["p_60_plus"] >= 0.75
+                and 0 < r["actual_minutes"] < 60 for r in sample
+            ),
+        }
+
+    cohorts = {
+        "all_frozen": rows,
+        "selected_squad": [r for r in rows if r["selected"]],
+        "not_selected": [r for r in rows if not r["selected"]],
+        "predicted_regulars": [r for r in rows if r["p_play"] >= 0.75],
+        "top_30_deadline_forecasts": [r for r in rows if r["element"] in top_forecasts],
+        **{
+            position: [r for r in rows if r["position"] == position]
+            for position in ("GK", "DEF", "MID", "FWD")
+        },
+    }
+    return {
+        "scope": declared_scope,
+        "status": "complete" if not missing else "partial_outcomes",
+        "frozen_players": len(meta),
+        "scored_players": len(rows),
+        "missing_outcome_player_ids": missing,
+        "cohorts": {name: metrics(sample) for name, sample in cohorts.items()},
+        "player_outcomes": rows,
+        "limitations": "Cohorts use frozen forecasts; older subset receipts are not full-pool evidence. One event is not a promotion test.",
+    }
 
 
 def score_weekly_event(
@@ -324,7 +755,7 @@ def score_weekly_event(
             "official event outcome is not final, checked and publishable"
         )
     chosen_decision = decision_path or latest_archived_weekly_decision(
-        event, archive_root=decision_archive_root
+        event, archive_root=decision_archive_root, deadline_time=str(outcome_manifest["deadline_time"])
     )
     decision = _load_decision(
         chosen_decision,
@@ -367,7 +798,7 @@ def score_weekly_event(
         meta,
     )[0, :, 0].astype(float)
     selected_id = str(decision["selected_action_id"])
-    if decision["version"] == "weekly_decision_synthesis_v3":
+    if decision["version"] in {"weekly_decision_synthesis_v3", "weekly_decision_synthesis_v4"}:
         reference_ids = [
             str(summary["action_id"]) for summary in summaries if summary["route_type"] == "roll"
         ]
@@ -546,6 +977,14 @@ def score_weekly_event(
         },
         "actions": action_rows,
         "selected_squad_player_outcomes": player_rows,
+        "forecast_universe": score_forecast_universe(
+            meta,
+            live_by_player,
+            selected_players=selected_players,
+            declared_scope=(decision.get("forecast_coverage") or {}).get(
+                "scope", "legacy_frozen_subset"
+            ),
+        ),
         "decision_attribution": {
             "action_selection_regret": best_net - selected["realized_decision_net_points"],
             "configuration": configuration,
@@ -556,6 +995,23 @@ def score_weekly_event(
             ),
         },
         "challenger_policy_scores": shadow_scores,
+        "role_shift_scores": score_role_shift_diagnostic(decision, live_by_player),
+        "allocation_scores": score_allocation_diagnostic(
+            decision,
+            by_id,
+            event=event,
+            meta=meta,
+            live_by_player=live_by_player,
+            champion_net=selected["realized_decision_net_points"],
+        ),
+        "chip_strategy_score": _score_chip_strategy(
+            decision=decision,
+            event=event,
+            summaries=summaries,
+            by_id=by_id,
+            meta=meta,
+            live_by_player=live_by_player,
+        ),
         "frozen_evidence": {
             "decision_path": str(chosen_decision),
             "decision_sha256": decision_sha,
@@ -574,6 +1030,18 @@ def score_weekly_event(
         "receipt_path": str(output_path),
         "report_path": str(report_path),
     }
+    if output_path.exists():
+        existing = json.loads(output_path.read_text(encoding="utf-8"))
+        frozen = existing.get("frozen_evidence", {})
+        # Reobserving byte-identical outcomes may repair source lineage. Preserve
+        # the original receipt's still-verifiable path/time, not a duplicate score.
+        if existing.get("version") == VERSION and frozen.get("decision_sha256") == decision_sha and frozen.get("outcome_sha256") == outcome_sha:
+            for kind in ("decision", "outcome"):
+                old_path = Path(frozen[f"{kind}_path"])
+                if sha256_file(old_path) != frozen[f"{kind}_sha256"]:
+                    raise ProspectiveScoringError("Existing prospective evidence checksum changed")
+                result["frozen_evidence"][f"{kind}_path"] = str(old_path)
+            result["frozen_evidence"]["outcome_observed_at"] = frozen["outcome_observed_at"]
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists() and output_path.read_text(encoding="utf-8") != rendered:

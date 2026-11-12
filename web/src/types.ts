@@ -111,7 +111,8 @@ export interface WeeklyTransfer {
 
 export interface WeeklyAction {
   action_id: string
-  route_type: 'roll' | 'one_free_transfer' | 'multi_free_transfer' | 'paid_transfer'
+  configuration_action_id?: string | null
+  route_type: 'roll' | 'configuration_roll' | 'one_free_transfer' | 'multi_free_transfer' | 'paid_transfer' | 'wildcard' | 'free_hit'
   label: string
   transfer_count: number
   transfers: WeeklyTransfer[]
@@ -147,6 +148,13 @@ export interface WeeklyDecision {
   expected_gain_vs_roll: number | null
   confidence_low: number | null
   confidence_high: number | null
+  confidence_mean?: number | null
+  confidence_scenario?: string | null
+  objective_tradeoff?: {
+    worst_case_weight: number
+    mean_points_sacrificed_to_safety_gates: number
+    mean_points_sacrificed_to_robust_ranking: number
+  } | null
   beat_roll_probability: number | null
   worst_scenario_gain: number | null
   robust_regret: number | null
@@ -161,12 +169,51 @@ export interface WeeklyDecision {
     next_price_change_at: string | null
   } | null
   chip_advice: {
-    recommendation: 'no_chip'
+    needs_review?: boolean
+    recommendation: 'no_chip' | 'bench_boost' | 'triple_captain' | 'wildcard' | 'free_hit'
     headline: string
     detail: string
     watched_chips: string[]
     blockers: string[]
+    half_expiry_event: number | null
+    events_until_expiry: number | null
+    next_opportunities: Array<{
+      event: number
+      chip: string
+      projected_uplift: number | null
+      schedule_note: string | null
+    }>
+    deadline_plan?: Array<{
+      chip: string
+      planned_event: number
+      latest_safe_event: number
+      play_now: boolean
+      expected_gain?: number | null
+    }>
+    expiry_forced?: boolean
+    candidate_statuses?: Array<{
+      chip: string
+      status: 'play' | 'retain' | 'research_only' | 'needs_review' | 'not_evaluated'
+      joint_net_value: number | null
+      blockers: string[]
+    }>
   } | null
+  retained_role_watches: Array<{
+    player_id: number
+    player_name: string
+    expected_minutes: number
+    play_probability: number
+    expected_points: number
+    participation_consensus: string
+    selected_action_sells_player: boolean
+    best_forced_sale_rank: number
+    best_forced_sale_transfers: Array<{
+      outgoing_name: string
+      incoming_name: string
+    }>
+    forced_sale_delta_to_selected: number
+    forced_sale_beats_selected: boolean
+  }>
   receipt_path: string | null
   receipt_sha256: string | null
 }
@@ -218,6 +265,23 @@ export interface Workspace {
     refresh_required: boolean
     message: string
   }
+  deadline_handoff: {
+    status: 'ready' | 'blocked' | 'unavailable'
+    verdict: string
+    chip_label: string
+    chip_detail: string
+    route_count: number
+    precomputed_fallbacks: number
+    boundaries: Array<{
+      player_id: number
+      player_name: string
+      trigger_expected_minutes: number | null
+      next_incumbent_minutes: number | null
+      fallback_candidate_id: string | null
+      stable_on_tested_range: boolean
+    }>
+    receipt_path: string | null
+  } | null
   participation: ParticipationSummary
   squad: {
     source: 'generated' | 'uploaded' | 'connected'
@@ -304,6 +368,9 @@ export interface Workspace {
       budget_spent: number
       bank: number
       selection_basis: string
+      capital_role_gate_passed?: boolean
+      capital_role_excluded_finalists?: number
+      capital_role_summary?: string
       starters: Player[]
       bench: Player[]
     } | null

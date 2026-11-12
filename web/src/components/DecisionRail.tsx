@@ -53,6 +53,10 @@ export function DecisionRail({
         : 'Model proposal'
   const hasRecommendedChange = !workspace.decision.captain.lineup_recommendation_aligned
     || !workspace.decision.captain.recommendation_aligned
+  const captainChanged = workspace.decision.captain.current_captain_player_id
+    !== workspace.decision.captain.captain_player_id
+  const viceCaptainChanged = workspace.decision.captain.current_vice_captain_player_id
+    !== workspace.decision.captain.vice_captain_player_id
 
   return (
     <section className="decision-rail" id="decisions" aria-labelledby="decision-title">
@@ -94,10 +98,16 @@ export function DecisionRail({
               ? 'Recommended armband'
               : workspace.decision.captain.recommendation_aligned
               ? 'Armband matches model'
-              : `${workspace.decision.captain.lineup_recommendation_aligned ? '1' : '2'}. Armband change suggested`}
+              : `${workspace.decision.captain.lineup_recommendation_aligned ? '1' : '2'}. ${captainChanged ? 'Captain change suggested' : 'Vice-captain change suggested'}`}
           </span>
           {modelPreview || workspace.decision.captain.recommendation_aligned ? (
             <strong>{modelCaptain?.name ?? workspace.decision.captain.captain_name}</strong>
+          ) : !captainChanged && viceCaptainChanged ? (
+            <strong className="captain-switch">
+              {workspace.decision.captain.current_vice_captain_name}
+              <ArrowRightIcon size={12} aria-hidden="true" />
+              {workspace.decision.captain.vice_captain_name}
+            </strong>
           ) : (
             <strong className="captain-switch">
               {workspace.decision.captain.current_captain_name}
@@ -108,6 +118,9 @@ export function DecisionRail({
           <small>
             {modelPreview
               ? `GW${modelPreview.event} captain in published candidate ${modelPreview.candidate_id}`
+              : !captainChanged && viceCaptainChanged
+                ? <>Keep {workspace.decision.captain.captain_name} captain; move vice-captain to{' '}
+                    {workspace.decision.captain.vice_captain_name}</>
               : <>Recommended-XI lead +{workspace.decision.captain.score_edge.toFixed(2)} over{' '}
                   {workspace.decision.captain.vice_captain_name}; current vice is{' '}
                   {workspace.decision.captain.current_vice_captain_name}</>}
@@ -174,6 +187,9 @@ export function DecisionRail({
           <span>Authoritative 15-player decision</span>
           <strong>{modelPreview.formation} · £{modelPreview.budget_spent.toFixed(1)}m</strong>
           <p>{modelPreview.selection_basis}</p>
+          {modelPreview.capital_role_summary ? (
+            <small>{modelPreview.capital_role_summary}</small>
+          ) : null}
           <small>This is the squad to enter in FPL. The app remains read-only, so your synced team is unchanged until you make the moves there.</small>
         </div>
       ) : (

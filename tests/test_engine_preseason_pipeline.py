@@ -39,6 +39,8 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
     role_evidence = tmp_path / "role-evidence.parquet"
     participation_receipt = tmp_path / "participation-receipt.json"
     participation_consensus = tmp_path / "participation-consensus.parquet"
+    forecast_manifest = tmp_path / "forecast-manifest.json"
+    forecast_manifest.write_text("{}\n", encoding="utf-8")
     role_receipt.write_text('{"current": true}\n', encoding="utf-8")
     pq.write_table(pa.Table.from_pylist([{"fpl_element": 1}]), role_evidence)
     calls: list[str] = []
@@ -156,9 +158,12 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             "stability_samples": 3,
             "direct_forecast_path": direct,
             "component_forecast_path": component,
+            "forecast_manifest_path": forecast_manifest,
             "published_decision_path": tmp_path / "current-decision.json",
             "published_results_path": tmp_path / "current-results.json",
             "published_report_path": tmp_path / "current-report.md",
+            "published_configuration_path": tmp_path / "simulation-configuration.json",
+            "published_configuration_report_path": tmp_path / "simulation-configuration.md",
             "staging_root": tmp_path / "staging",
             "pipeline_receipt_path": tmp_path / "pipeline.json",
             "deadline_status_path": tmp_path / "deadline-status.json",
@@ -171,8 +176,12 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             "published_role_threshold_report_path": tmp_path / "role-threshold.md",
             "published_robust_report_path": tmp_path / "robust-search.md",
             "published_horizon_report_path": tmp_path / "horizon-audit.md",
+            "published_bench_allocation_path": tmp_path / "bench-allocation.json",
+            "published_bench_allocation_report_path": tmp_path / "bench-allocation.md",
             "published_structure_stress_path": tmp_path / "structure-stress.json",
             "published_structure_stress_report_path": tmp_path / "structure-stress.md",
+            "published_top_player_audit_path": tmp_path / "top-player-audit.json",
+            "published_top_player_audit_report_path": tmp_path / "top-player-audit.md",
             "availability_watch_path": tmp_path / "availability-watch.json",
             "participation_receipt_path": participation_receipt,
             "participation_consensus_path": participation_consensus,
@@ -198,6 +207,26 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
                 },
             ),
             "synthesis_runner": synthesis_runner,
+            "configuration_runner": artifact_runner(
+                "simulation_configuration",
+                {
+                    "verdict": "simulation_champion_promoted_after_independent_holdout",
+                    "publishable": True,
+                    "production_changed": True,
+                    "selection_champion": {"candidate_id": "XI-test"},
+                },
+            ),
+            "bench_allocation_runner": artifact_runner(
+                "bench_allocation",
+                {
+                    "verdict": {
+                        "status": "SUPPORTED_AS_ROTATION_SQUAD_NOT_AS_A_DEEP_BENCH_RULE",
+                        "promotable": True,
+                        "checks": {"targeted_holdout": True},
+                    },
+                    "targeted_winner": {"candidate_id": "R-test"},
+                },
+            ),
             "structure_stress_runner": artifact_runner(
                 "structure_stress",
                 {
@@ -226,6 +255,15 @@ def _kwargs(tmp_path: Path) -> tuple[dict[str, Any], list[str], dict[str, int]]:
             "role_evidence_refresher": role_evidence_refresher,
             "participation_refresher": participation_refresher,
             "availability_auditor": availability_auditor,
+            "top_player_auditor": artifact_runner(
+                "top_player_omission_audit",
+                {
+                    "verdict": "PASS_WITH_ROLE_WATCH",
+                    "publishable": True,
+                    "checks": {"material_omissions_have_deep_counterfactuals": True},
+                    "summary": {"material_players": 20},
+                },
+            ),
             "evidence_auditor": evidence_auditor,
             "prospective_freezer": prospective_freezer,
             "rules_loader": _rules,
@@ -257,9 +295,12 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "robust_search",
         "horizon_audit",
         "synthesis",
+        "simulation_configuration",
+        "bench_allocation",
         "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
+        "top_player_omission_audit",
         "prospective_freeze",
     ]
     assert calls == [*first_calls, "refresh", "participation_consensus"]
@@ -273,11 +314,55 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
         "robust_search",
         "horizon_audit",
         "synthesis",
+        "simulation_configuration",
+        "bench_allocation",
         "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
         "availability_watch",
+        "top_player_omission_audit",
     ]
+
+
+def test_gw1_pipeline_reuses_when_only_forecast_provenance_timestamps_change(
+    tmp_path: Path,
+) -> None:
+    kwargs, calls, _ = _kwargs(tmp_path)
+
+    first = run_gw1_deadline_pipeline(**kwargs)
+    heavy_calls = list(calls)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event_number": 1,
+                    "element": 1,
+                    "snapshot_at": "2026-08-07T12:00:00+00:00",
+                    "forecast_created_at": "2026-08-07T12:00:01+00:00",
+                }
+            ]
+        ),
+        kwargs["direct_forecast_path"],
+    )
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "event_number": 1,
+                    "element": 1,
+                    "snapshot_at": "2026-08-07T12:00:00+00:00",
+                    "component_forecast_created_at": "2026-08-07T12:00:02+00:00",
+                }
+            ]
+        ),
+        kwargs["component_forecast_path"],
+    )
+
+    second = run_gw1_deadline_pipeline(**kwargs)
+
+    assert first["published"] is True
+    assert second["reused"] is True
+    assert calls == [*heavy_calls, "refresh", "participation_consensus"]
     runtime_reports = {path.name for path in (tmp_path / "staging").rglob("runtime-reports/*.md")}
     assert runtime_reports == {
         "residual-tournament.md",
@@ -292,9 +377,10 @@ def test_gw1_pipeline_runs_full_order_then_reuses_same_generation(tmp_path: Path
     assert Path(kwargs["published_horizon_report_path"]).read_text(encoding="utf-8") == (
         "# horizon_audit\n"
     )
-    assert Path(kwargs["published_structure_stress_report_path"]).read_text(
-        encoding="utf-8"
-    ) == "# structure_stress\n"
+    assert (
+        Path(kwargs["published_structure_stress_report_path"]).read_text(encoding="utf-8")
+        == "# structure_stress\n"
+    )
 
 
 def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
@@ -307,10 +393,14 @@ def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
     receipt["status"] = "running"
     receipt["published"] = False
     receipt["stages"] = receipt["stages"][:8]
-    receipt["current_stage"] = "structure_stress"
+    receipt["current_stage"] = "bench_allocation"
     receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
     stage_dir = Path(kwargs["staging_root"]) / first["input_fingerprint"][:16]
     for name in (
+        "simulation-configuration.json",
+        "simulation-configuration.md",
+        "bench-allocation.json",
+        "bench-allocation.md",
         "structure-stress.json",
         "structure-stress.md",
         "preseason-role-scenario.json",
@@ -318,6 +408,8 @@ def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
         "preseason-role-threshold.json",
         "preseason-role-threshold.md",
         "availability-watch.json",
+        "top-player-omission-audit.json",
+        "top-player-omission-audit.md",
     ):
         (stage_dir / name).unlink(missing_ok=True)
     calls.clear()
@@ -328,9 +420,12 @@ def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
     assert calls == [
         "refresh",
         "participation_consensus",
+        "simulation_configuration",
+        "bench_allocation",
         "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
+        "top_player_omission_audit",
         "prospective_freeze",
     ]
     assert [stage["name"] for stage in resumed["stages"]] == [
@@ -342,10 +437,13 @@ def test_interrupted_post_synthesis_run_resumes_without_repeating_search(
         "robust_search",
         "horizon_audit",
         "synthesis",
+        "simulation_configuration",
+        "bench_allocation",
         "structure_stress",
         "preseason_role_scenario",
         "preseason_role_threshold",
         "availability_watch",
+        "top_player_omission_audit",
     ]
 
 
@@ -363,6 +461,57 @@ def test_failed_staged_gate_does_not_replace_active_gw1_decision(tmp_path: Path)
     assert result["status"] == "blocked"
     assert result["published"] is False
     assert active.read_bytes() == b"previous-good-decision"
+
+
+def test_unstable_simulation_configuration_blocks_publication(tmp_path: Path) -> None:
+    kwargs, _, _ = _kwargs(tmp_path)
+    active = Path(kwargs["published_decision_path"])
+    active.write_bytes(b"previous-good-decision")
+
+    def unstable_configuration(**runner_kwargs: Any) -> dict[str, Any]:
+        result = {
+            "verdict": "configuration_selection_and_holdout_disagree_publication_blocked",
+            "publishable": False,
+            "production_changed": False,
+            "selection_champion": {"candidate_id": "XI-selection"},
+        }
+        Path(runner_kwargs["results_path"]).write_text(json.dumps(result) + "\n", encoding="utf-8")
+        Path(runner_kwargs["report_path"]).write_text(
+            "# unstable configuration\n", encoding="utf-8"
+        )
+        return result
+
+    kwargs["configuration_runner"] = unstable_configuration
+
+    with pytest.raises(PreseasonPipelineError, match="simulation-authoritative"):
+        run_gw1_deadline_pipeline(**kwargs)
+
+    assert active.read_bytes() == b"previous-good-decision"
+
+
+def test_failed_new_generation_retains_published_forecast_pair(tmp_path: Path) -> None:
+    kwargs, _, _ = _kwargs(tmp_path)
+    first = run_gw1_deadline_pipeline(**kwargs)
+    published_direct = Path(first["published_artifacts"]["direct_forecast"]["path"])
+    published_component = Path(first["published_artifacts"]["component_forecast"]["path"])
+    prior_direct = published_direct.read_bytes()
+    prior_component = published_component.read_bytes()
+    pq.write_table(
+        pa.Table.from_pylist(
+            [{"event_number": 1, "element": 2, "snapshot_at": "2026-08-07T11:30:00+00:00"}]
+        ),
+        kwargs["direct_forecast_path"],
+    )
+    kwargs["evidence_auditor"] = lambda **_: {
+        "publishable": False,
+        "issues": ["new generation rejected"],
+    }
+
+    result = run_gw1_deadline_pipeline(**kwargs)
+
+    assert result["status"] == "blocked"
+    assert published_direct.read_bytes() == prior_direct
+    assert published_component.read_bytes() == prior_component
 
 
 def test_stale_staged_availability_cannot_replace_active_gw1_decision(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import hashlib
 import io
 import json
@@ -8,7 +9,8 @@ import math
 import re
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,6 +34,11 @@ MARKET_RECEIPT = NORMALIZED / "historical_market_goal_rates_receipt.json"
 MARKET_REPORT = REPORTS / "market-goal-rate-challenger.md"
 CURRENT_MARKET_RATES = NORMALIZED / "current_market_goal_rates.parquet"
 CURRENT_MARKET_RECEIPT = NORMALIZED / "current_market_goal_rates_receipt.json"
+CURRENT_MARKET_OBSERVATION_RECEIPT = (
+    NORMALIZED / "current_market_goal_rates_observation.json"
+)
+MAX_READY_MARKET_RETENTION = timedelta(hours=6)
+PROVISIONAL_TEAM_GOAL_RATE_WEIGHT = 0.10
 FPL_FIXTURES = DATA / "processed" / "vaastav" / "fixtures.parquet"
 FPL_TEAMS = DATA / "processed" / "vaastav" / "teams.parquet"
 TEAM_STRENGTH = NORMALIZED / "opponent_adjusted_team_strength.parquet"
@@ -116,10 +123,7 @@ def infer_goal_rates(
     target = np.concatenate([one_x_two, over_under[:1]])
     weights = np.asarray([1.0, 1.0, 1.0, 1.25], dtype=np.float64)
     result = least_squares(
-        lambda log_rates: (
-            score_probabilities(*np.exp(log_rates)) - target
-        )
-        * weights,
+        lambda log_rates: (score_probabilities(*np.exp(log_rates)) - target) * weights,
         np.log([1.55, 1.25]),
         bounds=(np.log(0.08), np.log(5.0)),
         xtol=1e-11,
@@ -128,13 +132,17 @@ def infer_goal_rates(
     )
     home_rate, away_rate = np.exp(result.x)
     fitted = score_probabilities(float(home_rate), float(away_rate))
-    return float(home_rate), float(away_rate), {
-        "home_probability": float(one_x_two[0]),
-        "draw_probability": float(one_x_two[1]),
-        "away_probability": float(one_x_two[2]),
-        "over_2_5_probability": float(over_under[0]),
-        "fit_rmse": float(np.sqrt(np.mean((fitted - target) ** 2))),
-    }
+    return (
+        float(home_rate),
+        float(away_rate),
+        {
+            "home_probability": float(one_x_two[0]),
+            "draw_probability": float(one_x_two[1]),
+            "away_probability": float(one_x_two[2]),
+            "over_2_5_probability": float(over_under[0]),
+            "fit_rmse": float(np.sqrt(np.mean((fitted - target) ** 2))),
+        },
+    )
 
 
 def _odds(row: dict[str, str], keys: tuple[str, ...]) -> tuple[float, ...] | None:
@@ -182,9 +190,7 @@ def market_consensus_diagnostics(row: dict[str, str]) -> dict[str, float | int |
             float(probabilities[:, 2].std()) if len(probabilities) > 1 else None
         ),
         "totals_source_count": len(totals),
-        "over_2_5_probability_std": (
-            float(np.asarray(totals).std()) if len(totals) > 1 else None
-        ),
+        "over_2_5_probability_std": (float(np.asarray(totals).std()) if len(totals) > 1 else None),
         "average_1x2_overround": (
             float(sum(1.0 / value for value in average_prices))
             if average_prices is not None
@@ -222,9 +228,7 @@ def _metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float | int
         "predicted_mean": float(predicted.mean()),
         "goal_mae": float(np.mean(np.abs(actual - predicted))),
         "poisson_deviance": float(mean_poisson_deviance(actual, predicted)),
-        "clean_sheet_brier": float(
-            np.mean((clean_sheet_actual - clean_sheet_probability) ** 2)
-        ),
+        "clean_sheet_brier": float(np.mean((clean_sheet_actual - clean_sheet_probability) ** 2)),
     }
 
 
@@ -283,10 +287,7 @@ def build_historical_market_goal_rates(*, refresh: bool = False) -> dict[str, An
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     fixtures = pq.read_table(FPL_FIXTURES).to_pylist()
     teams = pq.read_table(FPL_TEAMS).to_pylist()
-    team_names = {
-        (str(row["season"]), int(row["id"])): str(row["name"])
-        for row in teams
-    }
+    team_names = {(str(row["season"]), int(row["id"])): str(row["name"]) for row in teams}
     strength_rows = pq.read_table(TEAM_STRENGTH).to_pylist()
     incumbent = {
         (str(row["season"]), int(row["fixture_id"]), int(row["team_id"])): float(
@@ -390,7 +391,10 @@ def build_historical_market_goal_rates(*, refresh: bool = False) -> dict[str, An
             ],
             dtype=np.float64,
         )
-        by_season[season] = {"market": _metrics(actual, market), "incumbent": _metrics(actual, model)}
+        by_season[season] = {
+            "market": _metrics(actual, market),
+            "incumbent": _metrics(actual, model),
+        }
     frozen_rows = [row for row in output_rows if row["season"] in FROZEN_TEST_SEASONS]
     frozen_actual = np.asarray(
         [value for row in frozen_rows for value in (row["home_goals"], row["away_goals"])],
@@ -444,7 +448,9 @@ def build_historical_market_goal_rates(*, refresh: bool = False) -> dict[str, An
         "source": {"notes_url": SOURCE_NOTES, "seasons": source_receipts},
         "artifacts": {"normalized": str(HISTORICAL_MARKET_RATES)},
     }
-    MARKET_RECEIPT.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    MARKET_RECEIPT.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     MARKET_REPORT.write_text(_render(receipt), encoding="utf-8")
     return receipt
 
@@ -484,12 +490,8 @@ def _select_market_events(
         raise ValueError("Market collection horizon must be positive")
     by_id = {int(row["id"]): row for row in event_rows}
     if event is None:
-        next_events = sorted(
-            int(row["id"]) for row in event_rows if bool(row.get("is_next"))
-        )
-        unfinished = sorted(
-            int(row["id"]) for row in event_rows if not bool(row.get("finished"))
-        )
+        next_events = sorted(int(row["id"]) for row in event_rows if bool(row.get("is_next")))
+        unfinished = sorted(int(row["id"]) for row in event_rows if not bool(row.get("finished")))
         if not next_events and not unfinished:
             raise ValueError("No actionable FPL event exists")
         event = next_events[0] if next_events else unfinished[0]
@@ -539,8 +541,7 @@ def assess_current_market_source(
             if row.get("event") is not None and int(row["event"]) == event_id
         ]
         expected_pairs = {
-            (team_names[int(row["team_h"])], team_names[int(row["team_a"])])
-            for row in fixtures
+            (team_names[int(row["team_h"])], team_names[int(row["team_a"])]) for row in fixtures
         }
         observed_pairs = expected_pairs.intersection(by_pair)
         complete_pairs = {
@@ -549,9 +550,7 @@ def assess_current_market_source(
             if _odds(by_pair[pair], ("AvgH", "AvgD", "AvgA")) is not None
             and _odds(by_pair[pair], ("Avg>2.5", "Avg<2.5")) is not None
         }
-        deadline_at = datetime.fromisoformat(
-            str(events_by_id[event_id]["deadline_time"])
-        )
+        deadline_at = datetime.fromisoformat(str(events_by_id[event_id]["deadline_time"]))
         timestamp_safe = uploaded_at is not None and uploaded_at < deadline_at
         coverage.append(
             {
@@ -590,9 +589,7 @@ def assess_current_market_source(
     }
 
 
-def _current_fpl_rows() -> tuple[
-    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
-]:
+def _current_fpl_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     return (
         pq.read_table(CURRENT_FPL_FIXTURES).to_pylist(),
         pq.read_table(CURRENT_FPL_TEAMS).to_pylist(),
@@ -769,41 +766,178 @@ def current_season_source_available(
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
-def disable_current_market_shadow(reason: str, *, event: int | None = None) -> dict[str, Any]:
-    """Fail closed after a live collection error so an older receipt cannot be reused."""
-    receipt = {
-        "version": 2,
-        "status": "unavailable",
-        "created_at": datetime.now(UTC).isoformat(),
-        "event": event,
-        "events": [event] if event is not None else [],
-        "ready_events": [],
-        "fixture_count": 0,
-        "fixture_counts_by_event": {},
-        "rates_path": None,
-        "rates_sha256": None,
-        "reason": reason,
-        "information_policy": {
-            "decision_authority": False,
-            "older_receipt_reuse_allowed": False,
-        },
+@contextmanager
+def _current_market_lock(*, exclusive: bool):
+    """Serialize the two-file active generation while allowing concurrent readers."""
+    ensure_engine_layout()
+    lock_path = CURRENT_MARKET_RECEIPT.with_name(".current_market_goal_rates.lock")
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _aware_timestamp(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value))
+    if parsed.tzinfo is None:
+        raise ValueError("market timestamp must include a timezone")
+    return parsed.astimezone(UTC)
+
+
+def _reusable_current_market_receipt(
+    *,
+    event: int,
+    fpl_fixtures: list[dict[str, Any]],
+    fpl_events: list[dict[str, Any]],
+    now: datetime | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Return a narrowly valid active receipt that may survive a transient fetch failure."""
+    checked_at = (now or datetime.now(UTC)).astimezone(UTC)
+    try:
+        receipt = json.loads(CURRENT_MARKET_RECEIPT.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f"active receipt is unavailable: {error}"
+    if receipt.get("status") != "ready":
+        return None, "active receipt is not ready"
+    if event not in {int(value) for value in receipt.get("ready_events", [])}:
+        return None, f"active receipt is not ready for event {event}"
+    try:
+        created_at = _aware_timestamp(receipt["created_at"])
+    except (KeyError, TypeError, ValueError) as error:
+        return None, f"active receipt collection time is invalid: {error}"
+    age = checked_at - created_at
+    if age < -timedelta(minutes=5) or age > MAX_READY_MARKET_RETENTION:
+        return None, (
+            "active receipt is outside the six-hour retention window "
+            f"(age_seconds={age.total_seconds():.0f})"
+        )
+    try:
+        receipt_rates_path = Path(str(receipt["rates_path"]))
+        if receipt_rates_path.resolve() != CURRENT_MARKET_RATES.resolve():
+            return None, "active receipt points at an unexpected rate artifact"
+        payload = CURRENT_MARKET_RATES.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != receipt.get("rates_sha256"):
+            return None, "active rate artifact checksum does not match its receipt"
+        rows = pq.read_table(CURRENT_MARKET_RATES).to_pylist()
+    except (OSError, ValueError, pa.ArrowException) as error:
+        return None, f"active rate artifact is invalid: {error}"
+    if len(rows) != int(receipt.get("fixture_count") or -1):
+        return None, "active rate artifact row count does not match its receipt"
+    expected_fixture_ids = {
+        int(row["id"])
+        for row in fpl_fixtures
+        if row.get("event") is not None and int(row["event"]) == event
     }
-    _write_json_atomic(CURRENT_MARKET_RECEIPT, receipt)
-    return receipt
+    observed_fixture_ids = {
+        int(row["fixture_id"]) for row in rows if int(row.get("event") or -1) == event
+    }
+    if not expected_fixture_ids or observed_fixture_ids != expected_fixture_ids:
+        return None, "active rate artifact does not exactly match current event fixtures"
+    if int(receipt.get("fixture_counts_by_event", {}).get(str(event), -1)) != len(
+        expected_fixture_ids
+    ):
+        return None, "active receipt event count does not match current event fixtures"
+    events_by_id = {int(row["id"]): row for row in fpl_events}
+    if event not in events_by_id:
+        return None, f"event {event} is absent from the current official snapshot"
+    source = receipt.get("source") or {}
+    source_time_value = source.get("source_observed_at") or source.get("source_uploaded_at")
+    try:
+        source_at = _aware_timestamp(source_time_value)
+        deadline_at = _aware_timestamp(events_by_id[event]["deadline_time"])
+    except (KeyError, TypeError, ValueError) as error:
+        return None, f"active receipt provenance timestamp is invalid: {error}"
+    if source_at >= deadline_at:
+        return None, "active market observation is not point-in-time safe for the FPL deadline"
+    return receipt, "fresh checksum-valid ready generation retained"
 
 
-def build_current_market_goal_rates(
+def _write_current_market_observation(
+    candidate: dict[str, Any],
+    *,
+    retained_active: bool,
+    retention_reason: str | None = None,
+) -> None:
+    _write_json_atomic(
+        CURRENT_MARKET_OBSERVATION_RECEIPT,
+        {
+            "version": 1,
+            "observed_at": datetime.now(UTC).isoformat(),
+            "retained_active_generation": retained_active,
+            "retention_reason": retention_reason,
+            "candidate": candidate,
+        },
+    )
+
+
+def disable_current_market_shadow(reason: str, *, event: int | None = None) -> dict[str, Any]:
+    """Fail closed, except for a checksum-valid active generation collected within six hours."""
+    with _current_market_lock(exclusive=True):
+        receipt = {
+            "version": 3,
+            "status": "unavailable",
+            "created_at": datetime.now(UTC).isoformat(),
+            "event": event,
+            "events": [event] if event is not None else [],
+            "ready_events": [],
+            "fixture_count": 0,
+            "fixture_counts_by_event": {},
+            "rates_path": None,
+            "rates_sha256": None,
+            "reason": reason,
+            "information_policy": {
+                "decision_authority": False,
+                "fresh_ready_receipt_retention_hours": 6,
+                "stale_or_incoherent_receipt_reuse_allowed": False,
+            },
+        }
+        try:
+            fpl_fixtures, _, fpl_events = _current_fpl_rows()
+            requested_event = event or _select_market_events(
+                fpl_events, event=None, horizon=1
+            )[0]
+            active, retention_reason = _reusable_current_market_receipt(
+                event=requested_event,
+                fpl_fixtures=fpl_fixtures,
+                fpl_events=fpl_events,
+            )
+        except (OSError, ValueError, KeyError, pa.ArrowException) as error:
+            active = None
+            retention_reason = f"active generation could not be validated: {error}"
+        if active is not None:
+            _write_current_market_observation(
+                receipt,
+                retained_active=True,
+                retention_reason=retention_reason,
+            )
+            return active
+        _write_json_atomic(CURRENT_MARKET_RECEIPT, receipt)
+        _write_current_market_observation(
+            receipt,
+            retained_active=False,
+            retention_reason=retention_reason,
+        )
+        return receipt
+
+
+def _build_current_market_goal_rates_locked(
     *, season: str = "2026-27", event: int | None = None, horizon: int = 5
 ) -> dict[str, Any]:
     """Archive current prices and materialize every complete actionable fixture."""
     ensure_engine_layout()
     fpl_fixtures, fpl_teams, fpl_events = _current_fpl_rows()
+    requested_event = _select_market_events(fpl_events, event=event, horizon=1)[0]
+    reusable_active, retention_reason = _reusable_current_market_receipt(
+        event=requested_event,
+        fpl_fixtures=fpl_fixtures,
+        fpl_events=fpl_events,
+    )
     football_error = None
     try:
         payload = _download(CURRENT_FIXTURES_URL)
@@ -820,9 +954,7 @@ def build_current_market_goal_rates(
         )
     except (OSError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as error:
         football_error = error
-        payload = (
-            b"Div,HomeTeam,AwayTeam,AvgH,AvgD,AvgA,Avg>2.5,Avg<2.5\n"
-        )
+        payload = b"Div,HomeTeam,AwayTeam,AvgH,AvgD,AvgA,Avg>2.5,Avg<2.5\n"
         availability = assess_current_market_source(
             payload,
             "",
@@ -879,12 +1011,8 @@ def build_current_market_goal_rates(
         if not raw_path.exists():
             raw_path.write_bytes(payload)
 
-    source_rows = list(
-        csv.DictReader(io.StringIO(payload.decode("utf-8-sig", errors="replace")))
-    )
-    by_pair = {
-        _market_pair(row): row for row in source_rows if row.get("Div") == "E0"
-    }
+    source_rows = list(csv.DictReader(io.StringIO(payload.decode("utf-8-sig", errors="replace"))))
+    by_pair = {_market_pair(row): row for row in source_rows if row.get("Div") == "E0"}
     team_names = {int(row["id"]): str(row["name"]) for row in fpl_teams}
     selected_events = {int(value) for value in availability["events"]}
     output_rows = []
@@ -933,17 +1061,34 @@ def build_current_market_goal_rates(
         )
 
     rates_sha256 = None
+    temporary_rates: Path | None = None
     if output_rows:
-        temporary_rates = CURRENT_MARKET_RATES.with_suffix(".parquet.tmp")
+        temporary_rates = CURRENT_MARKET_RATES.with_suffix(".parquet.candidate.tmp")
         pq.write_table(pa.Table.from_pylist(output_rows), temporary_rates, compression="zstd")
-        temporary_rates.replace(CURRENT_MARKET_RATES)
-        rates_sha256 = hashlib.sha256(CURRENT_MARKET_RATES.read_bytes()).hexdigest()
+        rates_sha256 = hashlib.sha256(temporary_rates.read_bytes()).hexdigest()
     ready_events = [int(value) for value in availability["ready_events"]]
-    status = "ready" if availability["ready_for_event"] else (
-        "partial" if output_rows else "not_ready"
+    status = (
+        "ready" if availability["ready_for_event"] else ("partial" if output_rows else "not_ready")
     )
+    if status == "ready":
+        expected_fixture_ids = {
+            int(row["id"])
+            for row in fpl_fixtures
+            if row.get("event") is not None and int(row["event"]) == requested_event
+        }
+        observed_fixture_ids = {
+            int(row["fixture_id"])
+            for row in output_rows
+            if int(row["event"]) == requested_event
+        }
+        if not expected_fixture_ids or observed_fixture_ids != expected_fixture_ids:
+            if temporary_rates is not None:
+                temporary_rates.unlink(missing_ok=True)
+            raise ValueError(
+                "ready market candidate does not exactly match the current event fixture set"
+            )
     receipt = {
-        "version": 2,
+        "version": 3,
         "status": status,
         "created_at": datetime.now(UTC).isoformat(),
         "season": season,
@@ -997,6 +1142,15 @@ def build_current_market_goal_rates(
     receipt["semantic_fingerprint"] = hashlib.sha256(
         json.dumps(semantic_identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    if status != "ready" and reusable_active is not None:
+        if temporary_rates is not None:
+            temporary_rates.unlink(missing_ok=True)
+        _write_current_market_observation(
+            receipt,
+            retained_active=True,
+            retention_reason=retention_reason,
+        )
+        return reusable_active
     try:
         previous = json.loads(CURRENT_MARKET_RECEIPT.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -1005,12 +1159,37 @@ def build_current_market_goal_rates(
         isinstance(previous, dict)
         and previous.get("semantic_fingerprint") == receipt["semantic_fingerprint"]
     ):
+        if temporary_rates is not None:
+            temporary_rates.unlink(missing_ok=True)
+        _write_current_market_observation(
+            receipt,
+            retained_active=False,
+            retention_reason="semantically identical active generation retained",
+        )
         return previous
+    if temporary_rates is not None:
+        temporary_rates.replace(CURRENT_MARKET_RATES)
     _write_json_atomic(CURRENT_MARKET_RECEIPT, receipt)
+    _write_current_market_observation(
+        receipt,
+        retained_active=False,
+    )
     return receipt
 
 
-def _load_current_market_receipt(
+def build_current_market_goal_rates(
+    *, season: str = "2026-27", event: int | None = None, horizon: int = 5
+) -> dict[str, Any]:
+    """Collect and atomically publish one current market generation."""
+    with _current_market_lock(exclusive=True):
+        return _build_current_market_goal_rates_locked(
+            season=season,
+            event=event,
+            horizon=horizon,
+        )
+
+
+def _load_current_market_receipt_unlocked(
     receipt_path: Path = CURRENT_MARKET_RECEIPT,
     rates_path: Path = CURRENT_MARKET_RATES,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -1024,6 +1203,20 @@ def _load_current_market_receipt(
     if len(rows) != int(receipt["fixture_count"]):
         raise ValueError("Current market row count no longer matches its receipt")
     return receipt, rows
+
+
+def _load_current_market_receipt(
+    receipt_path: Path = CURRENT_MARKET_RECEIPT,
+    rates_path: Path = CURRENT_MARKET_RATES,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    is_active_generation = (
+        receipt_path.resolve() == CURRENT_MARKET_RECEIPT.resolve()
+        and rates_path.resolve() == CURRENT_MARKET_RATES.resolve()
+    )
+    if not is_active_generation:
+        return _load_current_market_receipt_unlocked(receipt_path, rates_path)
+    with _current_market_lock(exclusive=False):
+        return _load_current_market_receipt_unlocked(receipt_path, rates_path)
 
 
 def assess_current_market_materiality(
@@ -1045,13 +1238,10 @@ def assess_current_market_materiality(
     if goal_rate_threshold <= 0 or clean_sheet_threshold <= 0:
         raise ValueError("market materiality thresholds must be positive")
 
-    current_ready = event in {
-        int(value) for value in current_receipt.get("ready_events", [])
-    }
+    current_ready = event in {int(value) for value in current_receipt.get("ready_events", [])}
     previous_ready = bool(
         previous_receipt
-        and event
-        in {int(value) for value in previous_receipt.get("ready_events", [])}
+        and event in {int(value) for value in previous_receipt.get("ready_events", [])}
     )
     reasons: list[str] = []
     if current_ready != previous_ready:
@@ -1190,9 +1380,7 @@ def apply_current_market_shadow_rates(
         }
     base.update(overrides)
     absolute_shifts = [
-        abs(overrides[key][side] - incumbent[key][side])
-        for key in overrides
-        for side in (0, 1)
+        abs(overrides[key][side] - incumbent[key][side]) for key in overrides for side in (0, 1)
     ]
     return base, {
         "status": "ready_shadow",
@@ -1248,15 +1436,29 @@ def apply_current_market_decision_rates(
         }
     policy = calibration.get("production_policy") or {}
     weight = float(policy.get("goal_rate_weight") or 0.0)
+    provisional = False
     if not bool(policy.get("decision_authority")) or not 0.0 < weight <= 1.0:
-        return dict(incumbent), {
-            **diagnostics,
-            "production_weight": 0.0,
-            "production_reason": "Betfair held-out legal-policy gate has not promoted authority",
-            "calibration_verdict": calibration.get("verdict"),
-            "calibration_path": str(calibration_path),
-            "calibration_sha256": hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
-        }
+        fixture_gate = (
+            calibration.get("fixture_calibration", {}).get("fixture_gate", {}).get("passed")
+        )
+        selected = float(calibration.get("selected_weight") or 0.0)
+        if not fixture_gate or selected <= 0.0:
+            return dict(incumbent), {
+                **diagnostics,
+                "production_weight": 0.0,
+                "production_reason": (
+                    "Betfair fixture calibration and legal-policy evidence grant no authority"
+                ),
+                "calibration_verdict": calibration.get("verdict"),
+                "calibration_path": str(calibration_path),
+                "calibration_sha256": hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
+            }
+        # Fixture-level forecasts beat the internal team model on goal MAE,
+        # Poisson deviance and clean-sheet Brier in untouched testing. The full
+        # sequential policy missed its test season by only two total points, so
+        # deploy half of the selected 20% blend while prospective evidence grows.
+        weight = min(selected, PROVISIONAL_TEAM_GOAL_RATE_WEIGHT)
+        provisional = True
     blended = {
         key: (
             (1.0 - weight) * incumbent[key][0] + weight * market[key][0],
@@ -1266,11 +1468,17 @@ def apply_current_market_decision_rates(
     }
     return blended, {
         **diagnostics,
-        "status": "ready_production",
+        "status": "ready_bounded_production" if provisional else "ready_production",
         "decision_authority": True,
         "production_weight": weight,
         "calibration_verdict": calibration.get("verdict"),
         "calibration_path": str(calibration_path),
         "calibration_sha256": hashlib.sha256(calibration_path.read_bytes()).hexdigest(),
-        "production_reason": "provider-specific held-out gate passed",
+        "production_reason": (
+            "fixture forecast gate passed; operator-authorized half-weight deployment "
+            "with incumbent retained as a downside scenario"
+            if provisional
+            else "provider-specific held-out gate passed"
+        ),
+        "provisional_bounded_deployment": provisional,
     }

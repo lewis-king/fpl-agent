@@ -16,6 +16,7 @@ from sklearn.metrics import mean_absolute_error
 
 from fplagent_data.http import sha256_file
 
+from .acceleration import xgboost_infer
 from .betfair_calibration import HISTORICAL_RATES as HISTORICAL_BETFAIR_RATES
 from .betfair_calibration import build_historical_betfair_exchange_rates
 from .features import MODEL_FEATURES, POSITIONS, TRAINING_FEATURES
@@ -56,6 +57,12 @@ VALIDATION_SEASON = "2024-25"
 FROZEN_TEST_SEASON = "2025-26"
 SCORE_FIELD = "market_feature_defender_expected_points"
 MAX_PRODUCTION_WEIGHT = 0.20
+ATTACKER_OUTPUT_DIR = MODEL_DATA / "attacker_market_calibration_v1"
+ATTACKER_RESULTS = ATTACKER_OUTPUT_DIR / "results.json"
+ATTACKER_REPORT = REPORTS / "attacker-market-calibration.md"
+# These are fixed candidates, not silently tuned live. The independent receipt
+# below must promote each position before it receives any decision authority.
+ATTACKER_CANDIDATE_WEIGHTS = {"MID": 0.10, "FWD": 0.05}
 MARKET_FEATURES = (
     "market_team_goal_rate",
     "market_opponent_goal_rate",
@@ -65,6 +72,30 @@ MARKET_FEATURES = (
     "market_clean_sheet_delta",
     "market_fixture_coverage",
 )
+
+
+def _attacker_feature_fingerprint(path: Path = TRAINING_FEATURES) -> str:
+    """Hash only historical fields consumed by attacker calibration.
+
+    The feature parquet also contains the current preseason snapshot, which is
+    expected to change on every refresh and must not invalidate a historical
+    calibration that never read those rows.
+    """
+    table = pq.read_table(
+        path,
+        columns=["season", "event_number", "element", "team_id", "team_expected_goals"],
+        filters=[("season", "in", list(TEST_SEASONS))],
+    )
+    rows = sorted(
+        table.to_pylist(),
+        key=lambda row: (
+            str(row["season"]),
+            int(row["event_number"]),
+            int(row["element"]),
+        ),
+    )
+    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def current_market_feature_phase(
@@ -91,17 +122,46 @@ def current_market_feature_inputs() -> dict[str, str | None]:
         "market_feature_policy_sha256": (
             sha256_file(RESULTS_JSON) if RESULTS_JSON.is_file() else None
         ),
-        "market_feature_model_sha256": (
-            sha256_file(MODEL_FILE) if MODEL_FILE.is_file() else None
-        ),
+        "market_feature_model_sha256": (sha256_file(MODEL_FILE) if MODEL_FILE.is_file() else None),
         "current_market_receipt_sha256": (
-            sha256_file(CURRENT_MARKET_RECEIPT)
-            if CURRENT_MARKET_RECEIPT.is_file()
-            else None
+            sha256_file(CURRENT_MARKET_RECEIPT) if CURRENT_MARKET_RECEIPT.is_file() else None
         ),
         "current_market_rates_sha256": (
             sha256_file(CURRENT_MARKET_RATES) if CURRENT_MARKET_RATES.is_file() else None
         ),
+        "attacker_market_calibration_sha256": (
+            sha256_file(ATTACKER_RESULTS) if ATTACKER_RESULTS.is_file() else None
+        ),
+    }
+
+
+def _load_attacker_goal_rate_weights(
+    path: Path = ATTACKER_RESULTS,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Load checksum-bound position weights, failing closed to zero authority."""
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        artifacts = receipt["artifacts"]
+        if artifacts["historical_feature_fingerprint"] != _attacker_feature_fingerprint():
+            raise ValueError("historical calibration features changed")
+        if artifacts["incumbent_forecast_sha256"] != sha256_file(BACKTEST_FORECAST):
+            raise ValueError("incumbent backtest hash changed")
+        if artifacts["market_rates_sha256"] != sha256_file(HISTORICAL_BETFAIR_RATES):
+            raise ValueError("historical market hash changed")
+        weights = {
+            position: float(receipt["production_weights"].get(position) or 0.0)
+            for position in ("MID", "FWD")
+        }
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        return {"MID": 0.0, "FWD": 0.0}, {
+            "status": "inactive",
+            "reason": f"{type(error).__name__}: {error}",
+        }
+    return weights, {
+        "status": "active",
+        "receipt": str(path),
+        "receipt_sha256": sha256_file(path),
+        "verdict": receipt["verdict"],
     }
 
 
@@ -155,9 +215,7 @@ def market_feature_matrix(
         internal_team = float(row.get("team_expected_goals") or 0.0)
         internal_opponent = float(row.get("team_expected_goals_against") or 0.0)
         internal_clean_sheet = float(row.get("team_clean_sheet_probability") or 0.0)
-        observed = market.get(
-            (str(row["season"]), int(row["event_number"]), int(row["team_id"]))
-        )
+        observed = market.get((str(row["season"]), int(row["event_number"]), int(row["team_id"])))
         if observed is None:
             observed = {
                 "market_team_goal_rate": internal_team,
@@ -167,9 +225,7 @@ def market_feature_matrix(
             }
         extra = {
             **observed,
-            "market_team_goal_rate_delta": (
-                observed["market_team_goal_rate"] - internal_team
-            ),
+            "market_team_goal_rate_delta": (observed["market_team_goal_rate"] - internal_team),
             "market_opponent_goal_rate_delta": (
                 observed["market_opponent_goal_rate"] - internal_opponent
             ),
@@ -238,6 +294,173 @@ def aggregate_current_market_features(
     }
 
 
+def _attacker_error_metrics(
+    records: list[tuple[float, float, float, float]], *, weight: float
+) -> dict[str, float | int]:
+    actual = np.asarray([row[0] for row in records], dtype=np.float64)
+    incumbent = np.asarray([row[1] for row in records], dtype=np.float64)
+    appearance = np.asarray([row[2] for row in records], dtype=np.float64)
+    ratio = np.asarray([row[3] for row in records], dtype=np.float64)
+    prediction = appearance + (incumbent - appearance) * (1.0 + weight * (ratio - 1.0))
+    return {
+        "rows": len(records),
+        "mae": float(np.mean(np.abs(actual - prediction))),
+        "rmse": float(np.sqrt(np.mean(np.square(actual - prediction)))),
+    }
+
+
+def run_attacker_market_calibration(
+    *,
+    feature_path: Path = TRAINING_FEATURES,
+    forecast_path: Path = BACKTEST_FORECAST,
+    results_path: Path = ATTACKER_RESULTS,
+    report_path: Path = ATTACKER_REPORT,
+) -> dict[str, Any]:
+    """Reproduce the bounded MID/FWD market-weight promotion decision."""
+    ensure_engine_layout()
+    market = aggregate_historical_market_features()
+    features = {
+        (str(row["season"]), int(row["event_number"]), int(row["element"])): row
+        for row in pq.read_table(feature_path).to_pylist()
+    }
+    grouped: dict[tuple[str, str], list[tuple[float, float, float, float]]] = defaultdict(list)
+    for row in pq.read_table(forecast_path).to_pylist():
+        position = str(row["position"])
+        if position not in ATTACKER_CANDIDATE_WEIGHTS:
+            continue
+        season = str(row["season"])
+        feature = features.get((season, int(row["event_number"]), int(row["element"])))
+        observed = market.get((season, int(row["event_number"]), int(row["team_id"])))
+        if feature is None or observed is None or observed["market_fixture_coverage"] <= 0.0:
+            continue
+        internal = max(float(feature.get("team_expected_goals") or 0.0), 0.25)
+        rate_ratio = min(
+            max(float(observed["market_team_goal_rate"]) / internal, 0.75),
+            1.35,
+        )
+        appearance = float(row.get("p_1_59") or 0.0) + 2.0 * (
+            float(row.get("p_60_89") or 0.0) + float(row.get("p_90_or_more") or 0.0)
+        )
+        grouped[(position, season)].append(
+            (
+                float(row["target_points"]),
+                float(row["expected_points"]),
+                appearance,
+                rate_ratio,
+            )
+        )
+
+    metrics: dict[str, dict[str, dict[str, float | int]]] = {}
+    checks: dict[str, dict[str, bool]] = {}
+    production_weights: dict[str, float] = {}
+    for position, candidate_weight in ATTACKER_CANDIDATE_WEIGHTS.items():
+        metrics[position] = {}
+        for season in TEST_SEASONS:
+            records = grouped[(position, season)]
+            if not records:
+                raise ValueError(f"No historical market coverage for {position} {season}")
+            metrics[position][season] = {
+                "incumbent": _attacker_error_metrics(records, weight=0.0),
+                "candidate": _attacker_error_metrics(records, weight=candidate_weight),
+            }
+        development = [
+            record for season in ("2023-24", "2024-25") for record in grouped[(position, season)]
+        ]
+        development_incumbent = _attacker_error_metrics(development, weight=0.0)
+        development_candidate = _attacker_error_metrics(development, weight=candidate_weight)
+        frozen = metrics[position][FROZEN_TEST_SEASON]
+        position_checks = {
+            "development_pooled_mae_not_worse": (
+                float(development_candidate["mae"]) <= float(development_incumbent["mae"])
+            ),
+            "development_pooled_rmse_improves": (
+                float(development_candidate["rmse"]) < float(development_incumbent["rmse"])
+            ),
+            "each_development_season_rmse_improves": all(
+                float(metrics[position][season]["candidate"]["rmse"])
+                < float(metrics[position][season]["incumbent"]["rmse"])
+                for season in ("2023-24", "2024-25")
+            ),
+            "frozen_rmse_improves": (
+                float(frozen["candidate"]["rmse"]) < float(frozen["incumbent"]["rmse"])
+            ),
+            # RMSE is the chosen tail-sensitive objective. This explicit bound
+            # prevents buying it with a meaningful deterioration in typical error.
+            "frozen_mae_harm_below_one_thousandth": (
+                float(frozen["candidate"]["mae"]) - float(frozen["incumbent"]["mae"]) <= 0.001
+            ),
+        }
+        checks[position] = position_checks
+        production_weights[position] = candidate_weight if all(position_checks.values()) else 0.0
+        metrics[position]["development_pooled"] = {
+            "incumbent": development_incumbent,
+            "candidate": development_candidate,
+        }
+
+    result = {
+        "version": 1,
+        "created_at": datetime.now(UTC).isoformat(),
+        "verdict": (
+            "PROMOTE_FWD_ONLY"
+            if production_weights == {"MID": 0.0, "FWD": 0.05}
+            else "POSITION_SPECIFIC"
+            if any(production_weights.values())
+            else "REJECT"
+        ),
+        "selection_policy": (
+            "Fixed bounded candidate; promote by position only when pooled development MAE "
+            "does not worsen, pooled and per-season RMSE improve, and frozen RMSE improves "
+            "without more than 0.001 MAE harm."
+        ),
+        "candidate_weights": ATTACKER_CANDIDATE_WEIGHTS,
+        "production_weights": production_weights,
+        "checks": checks,
+        "metrics": metrics,
+        "artifacts": {
+            "training_features": str(feature_path),
+            "training_features_sha256": sha256_file(feature_path),
+            "historical_feature_fingerprint": _attacker_feature_fingerprint(feature_path),
+            "incumbent_forecast": str(forecast_path),
+            "incumbent_forecast_sha256": sha256_file(forecast_path),
+            "market_rates": str(HISTORICAL_BETFAIR_RATES),
+            "market_rates_sha256": sha256_file(HISTORICAL_BETFAIR_RATES),
+        },
+    }
+    _write_json(results_path, result)
+    lines = [
+        "# Attacker betting-market calibration",
+        "",
+        f"Generated: {result['created_at']}",
+        f"Verdict: **{result['verdict']}**",
+        "",
+        result["selection_policy"],
+        "",
+        "| Position | Candidate | Production | Development MAE Δ | Development RMSE Δ | Frozen MAE Δ | Frozen RMSE Δ |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for position in ("MID", "FWD"):
+        development = metrics[position]["development_pooled"]
+        frozen = metrics[position][FROZEN_TEST_SEASON]
+        lines.append(
+            f"| {position} | {ATTACKER_CANDIDATE_WEIGHTS[position]:.1%} | "
+            f"{production_weights[position]:.1%} | "
+            f"{float(development['candidate']['mae']) - float(development['incumbent']['mae']):+.5f} | "
+            f"{float(development['candidate']['rmse']) - float(development['incumbent']['rmse']):+.5f} | "
+            f"{float(frozen['candidate']['mae']) - float(frozen['incumbent']['mae']):+.5f} | "
+            f"{float(frozen['candidate']['rmse']) - float(frozen['incumbent']['rmse']):+.5f} |"
+        )
+    lines.extend(
+        [
+            "",
+            "A zero production weight is an explicit rejection, not missing data. The market still enters the separately validated defender model. Forward authority remains deliberately small and changes only the non-appearance scoring component.",
+            "",
+        ]
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return result
+
+
 def blend_current_defender_predictions(
     feature_table: pa.Table,
     forecast_rows: list[dict[str, Any]],
@@ -256,7 +479,7 @@ def blend_current_defender_predictions(
         for index, row in enumerate(feature_rows)
     }
     matrix, extras = market_feature_matrix(feature_table, market=market)
-    conditional = np.asarray(point_model.predict(matrix), dtype=np.float64)
+    conditional = np.asarray(xgboost_infer(point_model, matrix), dtype=np.float64)
     output = []
     applied = []
     for raw in forecast_rows:
@@ -305,6 +528,85 @@ def blend_current_defender_predictions(
     }
 
 
+def blend_current_attacker_goal_environment(
+    feature_table: pa.Table,
+    forecast_rows: list[dict[str, Any]],
+    *,
+    market: dict[tuple[str, int, int], dict[str, float]],
+    ready_events: set[int],
+    weights: dict[str, float],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply a small monotonic market correction to non-appearance attacker xP."""
+
+    feature_rows = feature_table.to_pylist()
+    by_key = {
+        (str(row["season"]), int(row["event_number"]), int(row["element"])): row
+        for row in feature_rows
+    }
+    output = []
+    shifts = []
+    position_counts: dict[str, int] = defaultdict(int)
+    for raw in forecast_rows:
+        row = dict(raw)
+        key = (str(row["season"]), int(row["event_number"]), int(row["element"]))
+        feature = by_key.get(key)
+        position = str(row["position"])
+        weight = float(weights.get(position, 0.0))
+        observed = (
+            market.get((str(row["season"]), int(row["event_number"]), int(row["team_id"])))
+            if feature is not None and int(row["event_number"]) in ready_events
+            else None
+        )
+        if observed is None or weight <= 0.0 or observed["market_fixture_coverage"] <= 0.0:
+            row.update(
+                {
+                    "incumbent_expected_points_before_attacking_market": None,
+                    "market_attacker_applied": False,
+                    "market_attacker_weight": 0.0,
+                    "market_attacking_factor": 1.0,
+                    "market_team_goal_rate": None,
+                    "internal_team_goal_rate": None,
+                }
+            )
+            output.append(row)
+            continue
+        internal = max(float(feature.get("team_expected_goals") or 0.0), 0.25)
+        market_rate = float(observed["market_team_goal_rate"])
+        rate_ratio = min(max(market_rate / internal, 0.75), 1.35)
+        factor = 1.0 + weight * (rate_ratio - 1.0)
+        p_short = float(row.get("p_1_59") or 0.0)
+        p_start = float(row.get("p_60_89") or 0.0) + float(row.get("p_90_or_more") or 0.0)
+        appearance = p_short + 2.0 * p_start
+        incumbent = float(row["expected_points"])
+        adjusted = appearance + (incumbent - appearance) * factor
+        delta = adjusted - incumbent
+        row.update(
+            {
+                "incumbent_expected_points_before_attacking_market": incumbent,
+                "market_attacker_applied": True,
+                "market_attacker_weight": weight,
+                "market_attacking_factor": factor,
+                "market_team_goal_rate": market_rate,
+                "internal_team_goal_rate": internal,
+                "expected_points": adjusted,
+                "robust_points": float(row["robust_points"]) + delta,
+            }
+        )
+        shifts.append(delta)
+        position_counts[position] += 1
+        output.append(row)
+    return output, {
+        "applied_rows": len(shifts),
+        "position_counts": dict(position_counts),
+        "weights": weights,
+        "mean_expected_points_shift": float(np.mean(shifts)) if shifts else 0.0,
+        "maximum_absolute_expected_points_shift": (
+            float(np.max(np.abs(shifts))) if shifts else 0.0
+        ),
+        "calibration_basis": "checksum-bound position-specific historical receipt",
+    }
+
+
 def apply_current_market_feature_policy(
     feature_table: pa.Table,
     forecast_rows: list[dict[str, Any]],
@@ -349,13 +651,21 @@ def apply_current_market_feature_policy(
             weight=weight,
             ready_events=set(receipt["ready_events"]),
         )
+        attacker_weights, attacker_receipt = _load_attacker_goal_rate_weights()
+        output, attacker_diagnostics = blend_current_attacker_goal_environment(
+            feature_table,
+            output,
+            market=market,
+            ready_events=set(receipt["ready_events"]),
+            weights=attacker_weights,
+        )
     except (OSError, ValueError, KeyError, json.JSONDecodeError, pa.ArrowException) as error:
         return forecast_rows, {**inactive, "reason": f"{type(error).__name__}: {error}"}
     return output, {
         "status": "applied",
         "phase": phase,
         "decision_authority": True,
-        "position": "DEF",
+        "positions": ["DEF", "MID", "FWD"],
         "weight": weight,
         "policy": str(results_path),
         "policy_sha256": sha256_file(results_path),
@@ -363,6 +673,10 @@ def apply_current_market_feature_policy(
         "model_sha256": expected_model_hash,
         **receipt,
         **diagnostics,
+        "attacker_goal_environment": {
+            **attacker_diagnostics,
+            "calibration_receipt": attacker_receipt,
+        },
     }
 
 
@@ -395,16 +709,8 @@ def build_market_feature_oof() -> dict[str, Any]:
         training_seasons = prior[:-1]
         metrics[test_season] = {}
         for position_offset, position in enumerate(POSITIONS):
-            training = (
-                np.isin(seasons, training_seasons)
-                & (positions == position)
-                & (minutes > 0)
-            )
-            validation = (
-                (seasons == validation_season)
-                & (positions == position)
-                & (minutes > 0)
-            )
+            training = np.isin(seasons, training_seasons) & (positions == position) & (minutes > 0)
+            validation = (seasons == validation_season) & (positions == position) & (minutes > 0)
             testing = (seasons == test_season) & (positions == position)
             model = _regressor(
                 260_810 + season_offset * 10 + position_offset,
@@ -454,12 +760,8 @@ def build_market_feature_oof() -> dict[str, Any]:
                 "rows": len(indices),
                 "incumbent_mae": float(mean_absolute_error(actual, incumbent_prediction)),
                 "challenger_mae": float(mean_absolute_error(actual, prediction)),
-                "incumbent_spearman": _gameweek_spearman(
-                    test_events, actual, incumbent_prediction
-                ),
-                "challenger_spearman": _gameweek_spearman(
-                    test_events, actual, prediction
-                ),
+                "incumbent_spearman": _gameweek_spearman(test_events, actual, incumbent_prediction),
+                "challenger_spearman": _gameweek_spearman(test_events, actual, prediction),
                 "incumbent_top_k": _mean_top_k_points(
                     test_events, actual, incumbent_prediction, TOP_K[position]
                 ),
@@ -497,13 +799,9 @@ def build_market_feature_oof() -> dict[str, Any]:
     }
 
 
-def _inject_scores(
-    grouped: dict[tuple[str, int], list[dict[str, Any]]]
-) -> None:
+def _inject_scores(grouped: dict[tuple[str, int], list[dict[str, Any]]]) -> None:
     scores = {
-        (str(row["season"]), int(row["event_number"]), int(row["element"])): float(
-            row[SCORE_FIELD]
-        )
+        (str(row["season"]), int(row["event_number"]), int(row["element"])): float(row[SCORE_FIELD])
         for row in pq.read_table(OOF_FORECAST).to_pylist()
     }
     for (season, event), rows in grouped.items():
@@ -512,9 +810,7 @@ def _inject_scores(
             row[SCORE_FIELD] = scores.get(key, float(row["xp_expected_points"]))
 
 
-def _independent_policy(
-    grouped: dict[tuple[str, int], list[dict[str, Any]]]
-) -> dict[str, Any]:
+def _independent_policy(grouped: dict[tuple[str, int], list[dict[str, Any]]]) -> dict[str, Any]:
     rules = load_rules()
     weights = tuple(float(value) for value in np.linspace(0.0, 1.0, 11))
     validation_totals = dict.fromkeys(weights, 0)
@@ -569,8 +865,7 @@ def _independent_policy(
                     == challenger_solution["lineups"][event]["captain"]
                 ),
                 "squad_overlap": len(
-                    set(incumbent_solution["selected"])
-                    & set(challenger_solution["selected"])
+                    set(incumbent_solution["selected"]) & set(challenger_solution["selected"])
                 ),
             }
         )
@@ -578,8 +873,7 @@ def _independent_policy(
     return {
         "selected_weight": selected,
         "validation": [
-            {"weight": weight, "actual_points": validation_totals[weight]}
-            for weight in weights
+            {"weight": weight, "actual_points": validation_totals[weight]} for weight in weights
         ],
         "test_gate": gate,
         "test_incumbent_points": sum(row["incumbent_points"] for row in event_rows),
@@ -624,9 +918,7 @@ def _independent_frozen_weight(
                 "event": event,
                 "incumbent_points": incumbent_points,
                 "challenger_points": challenger_points,
-                "challenger_minus_incumbent": (
-                    challenger_points - incumbent_points
-                ),
+                "challenger_minus_incumbent": (challenger_points - incumbent_points),
             }
         )
     gate = paired_policy_gate(event_rows, FROZEN_TEST_SEASON)
@@ -651,9 +943,7 @@ def _season_replay_context() -> tuple[
         # Five banked transfers arrived in 2024/25. Replaying 2023/24 with the
         # then-legal ceiling of two keeps both policies inside that season's rules.
         rules = (
-            replace(current_rules, max_free_transfers=2)
-            if season == "2023-24"
-            else current_rules
+            replace(current_rules, max_free_transfers=2) if season == "2023-24" else current_rules
         )
         if season == "2023-24":
             terminal_curve = {bank: 0.0 for bank in range(3)}
@@ -672,9 +962,7 @@ def _season_replay_context() -> tuple[
     return rules_by_season, curves, transfer_value
 
 
-def _sequential_policy(
-    grouped: dict[tuple[str, int], list[dict[str, Any]]]
-) -> dict[str, Any]:
+def _sequential_policy(grouped: dict[tuple[str, int], list[dict[str, Any]]]) -> dict[str, Any]:
     rules_by_season, curves, transfer_value = _season_replay_context()
     development_seasons = ("2023-24", "2024-25")
     weights = tuple(float(value) for value in np.linspace(0.0, MAX_PRODUCTION_WEIGHT, 3))
@@ -704,8 +992,7 @@ def _sequential_policy(
                 challenger = incumbent_paths[season]
             else:
                 print(
-                    "Market feature challenger: replaying "
-                    f"{season} stability weight {weight:.1f}",
+                    f"Market feature challenger: replaying {season} stability weight {weight:.1f}",
                     flush=True,
                 )
                 challenger = run_policy_season(
@@ -718,9 +1005,7 @@ def _sequential_policy(
                     score_field=SCORE_FIELD,
                 )
             development_paths[(season, weight)] = challenger
-            deltas[season] = (
-                challenger["net_points"] - incumbent_paths[season]["net_points"]
-            )
+            deltas[season] = challenger["net_points"] - incumbent_paths[season]["net_points"]
         candidates.append(
             {
                 "weight": weight,
@@ -744,8 +1029,7 @@ def _sequential_policy(
     for season in development_seasons:
         paths[f"{season}:challenger"] = development_paths[(season, weight)]
     print(
-        "Market feature challenger: opening 2025/26 at frozen stability weight "
-        f"{weight:.1f}",
+        f"Market feature challenger: opening 2025/26 at frozen stability weight {weight:.1f}",
         flush=True,
     )
     paths[f"{FROZEN_TEST_SEASON}:challenger"] = run_policy_season(
@@ -946,18 +1230,10 @@ def run_market_feature_challenger() -> dict[str, Any]:
     bounded_preseason_checks = {
         **defender_checks,
         **defender_mae_checks,
-        "positive_2023_24_continuous_path": (
-            sequential["replication_total_deltas"]["2023-24"] > 0
-        ),
-        "positive_2024_25_continuous_path": (
-            sequential["validation_total_delta"] > 0
-        ),
-        "positive_frozen_2025_26_continuous_path": (
-            sequential["test_total_delta"] > 0
-        ),
-        "positive_frozen_2025_26_independent_squads": (
-            deployment_independent["total_delta"] > 0
-        ),
+        "positive_2023_24_continuous_path": (sequential["replication_total_deltas"]["2023-24"] > 0),
+        "positive_2024_25_continuous_path": (sequential["validation_total_delta"] > 0),
+        "positive_frozen_2025_26_continuous_path": (sequential["test_total_delta"] > 0),
+        "positive_frozen_2025_26_independent_squads": (deployment_independent["total_delta"] > 0),
         "deployment_weight_is_bounded": (
             0.0 < sequential["selected_weight"] <= MAX_PRODUCTION_WEIGHT
         ),
@@ -968,12 +1244,8 @@ def run_market_feature_challenger() -> dict[str, Any]:
         "preseason_decision_authority": preseason_passed,
         "weekly_decision_authority": weekly_passed,
         "position": "DEF",
-        "preseason_weight": (
-            float(sequential["selected_weight"]) if preseason_passed else 0.0
-        ),
-        "weekly_weight": (
-            float(sequential["selected_weight"]) if weekly_passed else 0.0
-        ),
+        "preseason_weight": (float(sequential["selected_weight"]) if preseason_passed else 0.0),
+        "weekly_weight": (float(sequential["selected_weight"]) if weekly_passed else 0.0),
         "explanation": (
             "A bounded Betfair defender blend may enter preseason squad and XI decisions. It improved defender forecast and legal-decision totals across every tested season, but weekly transfer authority remains disabled until the continuous-path downside interval passes or prospective evidence resolves it."
             if preseason_passed and not weekly_passed

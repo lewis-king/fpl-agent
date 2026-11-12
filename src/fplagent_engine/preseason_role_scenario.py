@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import Counter
 from itertools import permutations, product
 from pathlib import Path
@@ -8,11 +9,13 @@ from typing import Any
 
 import numpy as np
 import pyarrow.parquet as pq
+from joblib import Parallel, delayed, parallel_config
 
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import MANIFESTS, PROCESSED
 from fplagent_data.preseason_lineups import fpl_role_mapping_fingerprint
 
+from .acceleration import role_scenario_worker_count
 from .artifact_lineage import load_json_artifact
 from .current_squad_audit import (
     _bench_orders,
@@ -44,6 +47,7 @@ ROLE_EVIDENCE = (
     / "preseason_role_evidence.parquet"
 )
 FPL_DIR = PROCESSED / "fpl" / "2026-27" / "preseason"
+_LAST_WORKER_CPU_SECONDS = 0.0
 
 FLAG_NOT_LISTED = "not_listed_three_plus"
 FLAG_ROLE_WATCH = "low_recent_start_share"
@@ -79,6 +83,20 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "factors": {FLAG_NOT_LISTED: 0.0, FLAG_ROLE_WATCH: 1.0},
     },
 }
+
+
+def consume_role_scenario_worker_cpu_seconds() -> float:
+    """Return and clear CPU time spent in loky children during the last audit.
+
+    Persistent loky workers are not reaped at the stage boundary, so POSIX
+    ``RUSAGE_CHILDREN`` cannot observe their CPU time yet. The pipeline consumes
+    this explicit counter once when it builds stage telemetry.
+    """
+
+    global _LAST_WORKER_CPU_SECONDS
+    value = _LAST_WORKER_CPU_SECONDS
+    _LAST_WORKER_CPU_SECONDS = 0.0
+    return value
 
 
 def derive_role_flags(
@@ -686,6 +704,8 @@ def run_preseason_role_scenario_audit(
     results_path: Path = RESULTS_JSON,
     report_path: Path = REPORT,
 ) -> dict[str, Any]:
+    global _LAST_WORKER_CPU_SECONDS
+    _LAST_WORKER_CPU_SECONDS = 0.0
     if selection_simulations < 2_000 or holdout_simulations < 5_000:
         raise ValueError("Preseason scenario simulation counts are below the safety minimum")
     if selection_seed == holdout_seed:
@@ -751,8 +771,10 @@ def run_preseason_role_scenario_audit(
     }
     selected = list(map(int, current["selected"]))
     published_lineup = current["lineups"][str(EVENT)]
-    for name, specification in SCENARIOS.items():
-        print(f"Preseason scenario audit: evaluating {name}", flush=True)
+    def evaluate_scenario(
+        name: str, specification: dict[str, Any]
+    ) -> tuple[str, dict[str, Any], float]:
+        cpu_started = time.process_time()
         factors = scenario_player_factors(flags, specification)
         (
             residual_selection_stressed,
@@ -852,7 +874,7 @@ def run_preseason_role_scenario_audit(
                 "challenger_search": challenger_configuration["search"],
                 **comparison,
             }
-        scenarios[name] = {
+        row = {
             "description": specification["description"],
             "counterfactual_not_probability_estimate": True,
             "stressed_players": {
@@ -871,6 +893,43 @@ def run_preseason_role_scenario_audit(
                 "holdout": holdout_stress_diagnostics,
             },
         }
+        return name, row, time.process_time() - cpu_started
+
+    workers = min(len(SCENARIOS), role_scenario_worker_count())
+    items = list(SCENARIOS.items())
+    if workers == 1:
+        evaluated = []
+        for name, specification in items:
+            print(f"Preseason scenario audit: evaluating {name}", flush=True)
+            evaluated_name, row, _ = evaluate_scenario(name, specification)
+            evaluated.append((evaluated_name, row))
+    else:
+        print(
+            f"Acceleration: role scenario audit using {workers} memmapped CPU processes",
+            flush=True,
+        )
+        completed: dict[str, dict[str, Any]] = {}
+        # Loky starts clean Python interpreters, avoiding the GIL and unsafe CUDA
+        # state inheritance. Joblib transparently memory-maps the large immutable
+        # simulation tensors instead of serializing a private copy to every worker.
+        # Each process intentionally receives one native thread: parallelism belongs
+        # at the four independent scenario boundary, not inside BLAS.
+        with parallel_config(backend="loky", inner_max_num_threads=1):
+            results = Parallel(
+                n_jobs=workers,
+                return_as="generator_unordered",
+                max_nbytes="16M",
+                mmap_mode="r",
+            )(
+                delayed(evaluate_scenario)(name, specification)
+                for name, specification in items
+            )
+            for name, row, worker_cpu_seconds in results:
+                _LAST_WORKER_CPU_SECONDS += worker_cpu_seconds
+                completed[name] = row
+                print(f"Preseason scenario audit: completed {name}", flush=True)
+        evaluated = [(name, completed[name]) for name, _ in items]
+    scenarios.update(evaluated)
 
     flag_rows = []
     for element in sorted(candidate_pool):

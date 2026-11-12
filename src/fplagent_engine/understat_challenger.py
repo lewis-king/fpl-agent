@@ -18,6 +18,7 @@ from fplagent_data.database import DATABASE
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import MANIFESTS, PROCESSED
 
+from .acceleration import xgboost_infer
 from .attacking_chance_challenger import (
     ATTACKING_POSITIONS,
     TEST_SEASONS,
@@ -409,7 +410,10 @@ def apply_current_understat_policy(
         for position in ATTACKING_POSITIONS:
             indices = np.flatnonzero(positions == position)
             values = np.mean(
-                [model.predict(matrix[indices]) for model in bundle["positions"][position]],
+                [
+                    xgboost_infer(model, matrix[indices])
+                    for model in bundle["positions"][position]
+                ],
                 axis=0,
             )
             predictions.update({int(index): float(values[i]) for i, index in enumerate(indices)})

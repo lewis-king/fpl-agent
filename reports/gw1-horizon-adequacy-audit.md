@@ -1,8 +1,8 @@
 # GW1 horizon-adequacy audit
 
-**Built:** 2026-08-16T06:43:59.836820+00:00<br>
+**Built:** 2026-08-19T15:52:57.929977+00:00<br>
 **Verdict:** long_horizon_challenger_promoted<br>
-**Leader:** R-1ca68907f5 · 4-4-2 · Bruno Fernandes captain · £20.5m bench
+**Leader:** R-01afc86b1b · 3-4-3 · Bruno Fernandes captain · £20.0m bench
 
 **Scope note:** this is the horizon-family verdict, not the final cross-model decision. See `reports/gw1-synthesized-decision.md` for the synthesis with scoring-environment and component-model stress.
 
@@ -10,7 +10,7 @@
 
 This audit does not assume that five equal gameweeks are the correct outset. It re-simulates GW1–8 and evaluates short, medium, decayed long, late-fixture, fixed-squad and forced-GW2-bank views.
 
-The eight-week leader is **R-1ca68907f5**. Against the five-week incumbent **R-92c8534bfc**, its paired central delta is +1.045 points (95% CI +0.910 to +1.180).
+The eight-week leader is **R-01afc86b1b**. Against the five-week incumbent **R-b954c5c198**, its paired central delta is +1.654 points (95% CI +1.524 to +1.784).
 
 ## Evaluation funnel
 
@@ -20,22 +20,22 @@ The eight-week leader is **R-1ca68907f5**. Against the five-week incumbent **R-9
 | New horizon-specific squads | 128 |
 | Protected legal neighbours | 32 |
 | Selection worlds | 5,000 |
-| Deep finalists | 48 |
+| Deep finalists | 53 |
 | Eight-week holdout worlds | 25,000 |
 
 ## Scenario comparison
 
 | Scenario | Leader | Incumbent | Leader regret | Weight |
 |---|---:|---:|---:|---:|
-| gw1 3 open d088 | 165.36 | 164.96 | 0.00 | 10% |
-| gw1 5 open d088 | 243.37 | 242.80 | 0.00 | 15% |
-| gw1 8 open d070 | 195.21 | 194.45 | 0.00 | 10% |
-| gw1 8 open d080 | 258.45 | 257.59 | 0.00 | 10% |
-| gw1 8 open d088 | 331.41 | 330.37 | 0.00 | 15% |
-| gw1 8 open d094 | 404.18 | 402.92 | 0.00 | 10% |
-| gw6 8 open equal | 188.49 | 187.48 | 0.00 | 10% |
-| gw1 8 fixed d088 | 327.36 | 327.26 | 0.80 | 5% |
-| gw1 8 roll gw2 d088 | 331.01 | 330.27 | 0.00 | 15% |
+| gw1 3 open d088 | 173.46 | 172.77 | 1.27 | 10% |
+| gw1 5 open d088 | 255.75 | 255.33 | 1.29 | 15% |
+| gw1 8 open d070 | 205.01 | 204.00 | 0.37 | 10% |
+| gw1 8 open d080 | 271.46 | 270.19 | 0.09 | 10% |
+| gw1 8 open d088 | 348.15 | 346.49 | 0.00 | 15% |
+| gw1 8 open d094 | 424.65 | 422.54 | 0.00 | 10% |
+| gw6 8 open equal | 198.06 | 195.46 | 0.00 | 10% |
+| gw1 8 fixed d088 | 344.59 | 343.86 | 0.00 | 5% |
+| gw1 8 roll gw2 d088 | 348.15 | 346.96 | 0.00 | 15% |
 
 ## What strong managers historically did
 
@@ -60,9 +60,9 @@ The 2025/26 top-100 trail shows that 61 managers rolled in GW2, while only 22 di
 ## GW1 team
 
 - **GK:** Donnarumma
-- **DEF:** Tarkowski (V), Maguire, Collins, Senesi
+- **DEF:** Lacroix (V), Tarkowski, Maguire
 - **MID:** Bruno Fernandes (C), Mbeumo, Semenyo, Szoboszlai
-- **FWD:** Igor Thiago, Watkins
+- **FWD:** Igor Thiago, Calvert-Lewin, Watkins
 
 ## Interpretation
 

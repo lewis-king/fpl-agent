@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -68,20 +69,60 @@ def current_actionable_event(database_path: Path = DEFAULT_DATABASE) -> int:
             """
         ).fetchall()
     except (duckdb.Error, OSError) as exc:
-        raise ManagerStateContractError(
-            "the current official event table is unavailable"
-        ) from exc
+        raise ManagerStateContractError("the current official event table is unavailable") from exc
     finally:
         if "connection" in locals():
             connection.close()
     if len(rows) != 1:
-        raise ManagerStateContractError(
-            f"expected one official next event, found {len(rows)}"
-        )
+        raise ManagerStateContractError(f"expected one official next event, found {len(rows)}")
     event = int(rows[0][0])
     if not 1 <= event <= 38:
         raise ManagerStateContractError(f"official next event is outside [1, 38]: {event}")
     return event
+
+
+def previous_event_deadline(
+    event: int,
+    database_path: Path = DEFAULT_DATABASE,
+) -> datetime | None:
+    """Return the deadline after which an authenticated next-GW state is trustworthy."""
+
+    if event <= 1:
+        return None
+    try:
+        connection = duckdb.connect(str(database_path), read_only=True)
+        rows = connection.execute(
+            "SELECT deadline_time FROM fpl_current_events WHERE id = ?",
+            [event - 1],
+        ).fetchall()
+    except (duckdb.Error, OSError) as exc:
+        raise ManagerStateContractError(
+            "the previous official event deadline is unavailable"
+        ) from exc
+    finally:
+        if "connection" in locals():
+            connection.close()
+    if len(rows) != 1 or not rows[0][0]:
+        raise ManagerStateContractError(
+            f"expected one official deadline for event {event - 1}, found {len(rows)}"
+        )
+    try:
+        deadline = datetime.fromisoformat(str(rows[0][0]))
+    except ValueError as exc:
+        raise ManagerStateContractError("the previous official deadline is invalid") from exc
+    if deadline.tzinfo is None:
+        raise ManagerStateContractError("the previous official deadline has no timezone")
+    return deadline.astimezone(UTC)
+
+
+def _aware_snapshot_time(value: str | datetime, *, field: str) -> datetime:
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ManagerStateContractError(f"{field} is not a valid timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ManagerStateContractError(f"{field} must include a timezone")
+    return parsed.astimezone(UTC)
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -130,6 +171,7 @@ def _state_payload(state: ManagerState) -> dict[str, Any]:
         "previous_chip": state.previous_chip.value if state.previous_chip else None,
         "previous_chip_event": state.previous_chip_event,
         "committed_points_cost": state.committed_points_cost,
+        **({"club_overflow_allowed": True} if state.club_overflow_allowed else {}),
     }
 
 
@@ -159,9 +201,7 @@ def _state_from_payload(value: Mapping[str, Any]) -> ManagerState:
                     half=int(slot["half"]),
                     status=ChipStatus(str(slot["status"])),
                     played_event=(
-                        int(slot["played_event"])
-                        if slot.get("played_event") is not None
-                        else None
+                        int(slot["played_event"]) if slot.get("played_event") is not None else None
                     ),
                 )
                 for slot in value["chips"]
@@ -183,6 +223,7 @@ def _state_from_payload(value: Mapping[str, Any]) -> ManagerState:
                 else None
             ),
             committed_points_cost=int(value.get("committed_points_cost", 0)),
+            club_overflow_allowed=value.get("club_overflow_allowed", False),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ManagerStateContractError("manager-state payload has an invalid schema") from exc
@@ -220,6 +261,8 @@ def derive_latest_manager_state(
     snapshot_manifest_root: Path = MANIFESTS,
     state_root: Path = MANAGER_STATE_ROOT,
     state_manifest_root: Path = MANIFESTS,
+    minimum_snapshot_observed_at: str | datetime | None = None,
+    database_path: Path = DEFAULT_DATABASE,
 ) -> dict[str, Any]:
     """Build one exact weekly state, or report why official data is not ready."""
     if not 1 <= event <= 38:
@@ -230,6 +273,35 @@ def derive_latest_manager_state(
         manifest_root=snapshot_manifest_root,
     )
     snapshot_id = str(snapshot_manifest["snapshot_id"])
+    minimum_observed = (
+        _aware_snapshot_time(
+            minimum_snapshot_observed_at,
+            field="minimum_snapshot_observed_at",
+        )
+        if minimum_snapshot_observed_at is not None
+        else previous_event_deadline(event, database_path)
+    )
+    snapshot_observed = _aware_snapshot_time(
+        str(snapshot_manifest["observed_at"]),
+        field="manager snapshot observed_at",
+    )
+    if minimum_observed is not None and snapshot_observed < minimum_observed:
+        return {
+            "status": "not_ready",
+            "reason_code": "manager_snapshot_predates_previous_deadline",
+            "entry_id": entry_id,
+            "event": event,
+            "snapshot_id": snapshot_id,
+            "snapshot_observed_at": snapshot_observed.isoformat(),
+            "minimum_snapshot_observed_at": minimum_observed.isoformat(),
+            "unavailable_fields": [],
+            "message": (
+                f"Reconnect FPL before producing the GW{event} decision. The latest "
+                f"authenticated squad was captured before the GW{event - 1} deadline, so its "
+                "squad, free transfers, transfer cost and chip inventory may belong to the "
+                "previous Gameweek."
+            ),
+        }
     if not bool(snapshot_manifest.get("complete")):
         unavailable = [str(value) for value in snapshot_manifest.get("unavailable_fields", [])]
         return {
@@ -282,9 +354,7 @@ def derive_latest_manager_state(
         forecast_sha256=forecast_hash,
         rules_sha256=rules_hash,
     )
-    generation_dir = (
-        state_root / str(entry_id) / snapshot_id / f"event-{event}" / generation_id
-    )
+    generation_dir = state_root / str(entry_id) / snapshot_id / f"event-{event}" / generation_id
     contract_path = generation_dir / "manager-state.json"
     contract = {
         "contract_version": CONTRACT_VERSION,
@@ -295,6 +365,10 @@ def derive_latest_manager_state(
             "manager_snapshot_sha256": manager_hash,
             "manager_snapshot_manifest": str(manager_manifest_path),
             "manager_snapshot_manifest_sha256": sha256_file(manager_manifest_path),
+            "manager_snapshot_observed_at": snapshot_observed.isoformat(),
+            "manager_snapshot_minimum_observed_at": (
+                minimum_observed.isoformat() if minimum_observed is not None else None
+            ),
             "forecast": str(forecast_path),
             "forecast_sha256": forecast_hash,
             "runtime_rules_sha256": rules_hash,

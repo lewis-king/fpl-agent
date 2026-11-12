@@ -41,6 +41,8 @@ export function SquadPitch({
   const grouped = groupByPosition(displayedStarters)
   const hasRecommendationChanges = !workspace.decision.captain.lineup_recommendation_aligned
     || !workspace.decision.captain.recommendation_aligned
+  const hasRecommendedTransfers = workspace.decision.recommended_squad.source === 'weekly_decision'
+    && workspace.decision.comparison.change_count > 0
   const currentIds = new Set([...workspace.squad.starters, ...workspace.squad.bench].map((player) => player.player_id))
   const modelOnlyIds = new Set(
     [...modelStarters, ...modelBench]
@@ -57,9 +59,11 @@ export function SquadPitch({
     ? { kicker: 'Current FPL team', title: `Your GW${workspace.phase.event} starting XI` }
     : { kicker: 'Current proposal', title: `GW${workspace.phase.event} starting XI` }
   const phaseCopy = squadMode === 'model' && modelSquad
-    ? { kicker: 'Validated recommendation', title: `Recommended 15-player GW${modelSquad.event} squad` }
+    ? { kicker: 'Optimised alternative', title: `Recommended new 15-player GW${modelSquad.event} squad` }
     : squadMode === 'recommended'
-    ? { kicker: 'Best XI from your squad', title: `Modelled GW${decisionEvent} lineup` }
+    ? hasRecommendedTransfers
+      ? { kicker: 'Validated weekly decision', title: `Recommended GW${decisionEvent} squad and lineup` }
+      : { kicker: 'Your current 15', title: `Best modelled GW${decisionEvent} lineup` }
     : workspace.phase.phase === 'live_gameweek'
     ? { kicker: 'Next-deadline baseline', title: `Current squad · planning GW${decisionEvent}` }
     : workspace.phase.phase === 'review'
@@ -77,35 +81,63 @@ export function SquadPitch({
         </div>
         <div className="toolbar-actions">
           <div className="squad-mode-control" role="group" aria-label="Squad state">
-            <button
-              type="button"
-              className={squadMode === 'current' ? 'is-active' : ''}
-              aria-pressed={squadMode === 'current'}
-              onClick={() => onSquadModeChange('current')}
-            >
-              {workspace.squad.source === 'connected' ? 'Your FPL squad' : 'Current squad'}
-            </button>
+            <div className="squad-mode-family">
+              <span className="squad-mode-family-label">
+                {workspace.squad.source === 'connected' ? 'Your current 15' : 'Current draft'}
+              </span>
+              <div className="squad-mode-options">
+                <button
+                  type="button"
+                  className={squadMode === 'current' ? 'is-active' : ''}
+                  aria-pressed={squadMode === 'current'}
+                  onClick={() => onSquadModeChange('current')}
+                >
+                  {workspace.squad.source === 'connected' ? 'FPL squad' : 'Draft squad'}
+                </button>
+              </div>
+            </div>
+            <span className="squad-mode-divider" aria-hidden="true" />
+            <div className="squad-mode-family is-alternative">
+              <span className="squad-mode-family-label">
+                {hasRecommendedTransfers ? `GW${decisionEvent} decision` : 'Your current 15'}
+              </span>
+              <div className="squad-mode-options">
+                <button
+                  type="button"
+                  className={squadMode === 'recommended' ? 'is-active' : ''}
+                  aria-pressed={squadMode === 'recommended'}
+                  onClick={() => onSquadModeChange('recommended')}
+                >
+                  {hasRecommendedTransfers ? 'Recommended squad' : 'Best lineup'}
+                  {hasRecommendationChanges || hasRecommendedTransfers ? (
+                    <span className="squad-mode-notice" aria-label="Recommendation changes available" />
+                  ) : null}
+                </button>
+              </div>
+            </div>
             {modelSquad && workspace.phase.phase === 'preseason' ? (
-              <button
-                type="button"
-                className={squadMode === 'model' ? 'is-active' : ''}
-                aria-pressed={squadMode === 'model'}
-                onClick={() => onSquadModeChange('model')}
-              >
-                Recommendation
-                {modelOnlyIds.size ? <span aria-label={`${modelOnlyIds.size} changes available`} /> : null}
-              </button>
-            ) : null}
-            {(workspace.phase.phase !== 'preseason' || hasRecommendationChanges) ? (
-              <button
-                type="button"
-                className={squadMode === 'recommended' ? 'is-active' : ''}
-                aria-pressed={squadMode === 'recommended'}
-                onClick={() => onSquadModeChange('recommended')}
-              >
-                Best XI
-                {hasRecommendationChanges ? <span aria-label="Lineup changes available" /> : null}
-              </button>
+              <>
+                <span className="squad-mode-divider" aria-hidden="true" />
+                <div className="squad-mode-family is-alternative">
+                  <span className="squad-mode-family-label">Optimised alternative</span>
+                  <div className="squad-mode-options">
+                    <button
+                      type="button"
+                      className={squadMode === 'model' ? 'is-active' : ''}
+                      aria-pressed={squadMode === 'model'}
+                      onClick={() => onSquadModeChange('model')}
+                    >
+                      Recommended new squad
+                      {modelOnlyIds.size ? (
+                        <span
+                          className="squad-mode-notice"
+                          aria-label={`${modelOnlyIds.size} changes available`}
+                        />
+                      ) : null}
+                    </button>
+                  </div>
+                </div>
+              </>
             ) : null}
           </div>
           <span className="formation-label">{displayFormation}</span>
@@ -187,7 +219,7 @@ export function SquadPitch({
       <div className="bench-module">
         <div className="bench-heading">
           <span>Bench</span>
-          <small>{squadMode === 'recommended' ? 'Outside the best XI' : 'Autosub order · left to right'}</small>
+          <small>{squadMode === 'recommended' ? 'Recommended autosub order · left to right' : 'Autosub order · left to right'}</small>
         </div>
         <div className="bench-grid">
           {displayedBench.map((player, index) => (

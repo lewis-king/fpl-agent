@@ -101,11 +101,17 @@ def test_ffscout_parser_extracts_timestamped_team_xi() -> None:
             "source_team_code": "ALP",
             "lineup_status": "predicted",
             "players": ["Player 1", "Player 2"],
+            "source_updated_label": None,
+            "fixture_identity_required": True,
+            "fixture_label": None,
         },
         {
             "source_team_code": "BET",
             "lineup_status": "predicted",
             "players": ["Player 12"],
+            "source_updated_label": None,
+            "fixture_identity_required": True,
+            "fixture_label": None,
         },
     ]
 
@@ -127,10 +133,7 @@ def test_rotowire_parser_excludes_injury_list_from_xi() -> None:
 
     payload = (
         '<div class="lineup is-soccer"><div class="lineup__abbr">ALP</div>'
-        '<div class="lineup__abbr">BET</div>'
-        + side("is-home", 1)
-        + side("is-visit", 12)
-        + "</div>"
+        '<div class="lineup__abbr">BET</div>' + side("is-home", 1) + side("is-visit", 12) + "</div>"
     )
 
     result = parse_rotowire_lineups(payload)
@@ -150,7 +153,7 @@ def test_stale_source_is_archived_but_cannot_cast_consensus_vote() -> None:
         teams=_teams(),
         fixtures=_fixtures(),
         events=_events(),
-        observed_at="2026-08-20T12:00:00+00:00",
+        observed_at="2026-08-20T18:00:00+00:00",
         event=1,
     )
     forecasts = [
@@ -176,8 +179,8 @@ def test_stale_source_is_archived_but_cannot_cast_consensus_vote() -> None:
         "source_timestamp_stale"
     )
     assert result[0]["consensus"] == "single_source_start"
-    assert result[0]["production_weight"] == 0.0
-    assert result[0]["production_adjustment_authorized"] is False
+    assert result[0]["production_weight"] == 1.0
+    assert result[0]["production_adjustment_authorized"] is True
 
 
 def test_two_current_independent_sources_form_consensus() -> None:
@@ -206,6 +209,48 @@ def test_two_current_independent_sources_form_consensus() -> None:
         "fantasy_football_scout",
         "rotowire",
     ]
+
+
+def test_source_freshness_tightens_as_deadline_approaches() -> None:
+    early, _ = normalize_source_lineups(
+        [_source("fantasy_football_scout", updated="2026-08-13T12:00:00+00:00")],
+        players=_players(),
+        teams=_teams(),
+        fixtures=_fixtures(),
+        events=_events(),
+        observed_at="2026-08-17T12:00:00+00:00",
+        event=1,
+    )
+    deadline, context = normalize_source_lineups(
+        [_source("fantasy_football_scout", updated="2026-08-18T12:00:00+00:00")],
+        players=_players(),
+        teams=_teams(),
+        fixtures=_fixtures(),
+        events=_events(),
+        observed_at="2026-08-20T18:00:00+00:00",
+        event=1,
+    )
+
+    assert all(row["decision_eligible"] for row in early)
+    assert all(not row["decision_eligible"] for row in deadline)
+    assert context["sources"]["fantasy_football_scout"]["maximum_source_age_seconds"] == 18 * 3600
+
+
+def test_unchanged_observation_only_content_expires() -> None:
+    source = _source("rotowire")
+    source["content_first_observed_at"] = "2026-08-17T12:00:00+00:00"
+    observations, context = normalize_source_lineups(
+        [source],
+        players=_players(),
+        teams=_teams(),
+        fixtures=_fixtures(),
+        events=_events(),
+        observed_at="2026-08-20T12:00:00+00:00",
+        event=1,
+    )
+
+    assert all(not row["decision_eligible"] for row in observations)
+    assert context["sources"]["rotowire"]["source_freshness"] == "unchanged_content_stale"
 
 
 def test_collector_freezes_raw_and_normalized_lineage(tmp_path) -> None:
@@ -240,13 +285,13 @@ def test_collector_freezes_raw_and_normalized_lineage(tmp_path) -> None:
     ff_body = (
         '<script>{"dateModified":"2026-08-20T10:00:00+00:00"}</script>'
         + '<li class="team-news-item" data-team-code="alp">'
-        + "".join(
-            f'<span class="player-name">Player {value}</span>' for value in range(1, 12)
-        )
+        + '<div class="next-match"><strong>Next Match:</strong> Beta (H)</div>'
+        + "<em>Last Updated Thu 20th Aug</em>"
+        + "".join(f'<span class="player-name">Player {value}</span>' for value in range(1, 12))
         + '</li><li class="team-news-item" data-team-code="bet">'
-        + "".join(
-            f'<span class="player-name">Player {value}</span>' for value in range(12, 23)
-        )
+        + '<div class="next-match"><strong>Next Match:</strong> Alpha (A)</div>'
+        + "<em>Last Updated Thu 20th Aug</em>"
+        + "".join(f'<span class="player-name">Player {value}</span>' for value in range(12, 23))
         + "</li>"
     ).encode()
 
@@ -264,10 +309,7 @@ def test_collector_freezes_raw_and_normalized_lineage(tmp_path) -> None:
 
     rw_body = (
         '<div class="lineup is-soccer"><div class="lineup__abbr">ALP</div>'
-        '<div class="lineup__abbr">BET</div>'
-        + side("is-home", 1)
-        + side("is-visit", 12)
-        + "</div>"
+        '<div class="lineup__abbr">BET</div>' + side("is-home", 1) + side("is-visit", 12) + "</div>"
     ).encode()
 
     result = collect_participation_consensus(
@@ -286,11 +328,40 @@ def test_collector_freezes_raw_and_normalized_lineage(tmp_path) -> None:
         fetcher=lambda url: ff_body if url == FFSCOUT_URL else rw_body,
     )
 
-    assert result["status"] == "shadow_consensus_ready"
+    assert result["status"] == "production_consensus_ready"
     assert result["summary"]["predicted_start_consensus"] == 22
     assert result["promotion_gate"]["passed"] is False
+    assert result["promotion_gate"]["operator_override_active"] is True
     assert result["sources"]["rotowire"]["sha256"]
     assert result["outputs"]["snapshot_manifest_sha256"]
+
+    # Page advertising and another team's edit must not renew an unchanged XI.
+    revised_rw = rw_body.replace(b"Player 22", b"Player 23") + b"<!-- changed advert nonce -->"
+    later = collect_participation_consensus(
+        event=1,
+        observed_at=datetime(2026, 8, 20, 14, tzinfo=UTC),
+        players_path=players,
+        teams_path=teams,
+        events_path=events,
+        fixtures_path=fixtures,
+        forecast_path=forecast,
+        observations_path=tmp_path / "observations.parquet",
+        consensus_path=tmp_path / "consensus.parquet",
+        receipt_path=tmp_path / "receipt.json",
+        archive_dir=tmp_path / "archive",
+        snapshot_dir=tmp_path / "snapshots",
+        fetcher=lambda url: ff_body + b"<!-- new advert -->" if url == FFSCOUT_URL else revised_rw,
+    )
+    before_rw = result["sources"]["rotowire"]["team_content_observations"]
+    after_rw = later["sources"]["rotowire"]["team_content_observations"]
+    unchanged = set(before_rw) & set(after_rw)
+    assert len(unchanged) == 1
+    assert all(after_rw[key] == before_rw[key] for key in unchanged)
+    assert len(set(after_rw) - set(before_rw)) == 1
+    assert (
+        later["sources"]["fantasy_football_scout"]["team_content_observations"]
+        == result["sources"]["fantasy_football_scout"]["team_content_observations"]
+    )
 
 
 def test_cli_exposes_participation_collector() -> None:

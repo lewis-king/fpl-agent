@@ -1,0 +1,79 @@
+{
+  "purpose": "Decision refresh and read-only Bruno/early-transfer audit; not an override of the published plan",
+  "run_id": "refresh-v1-422e06466207513d",
+  "published_at": "2026-10-28T08:08:41.275331+00:00",
+  "deadline": "2026-10-31T11:00:00+00:00",
+  "event": 9,
+  "horizon": [9, 10, 11, 12, 13],
+  "published_decision": "data/decisions/2026-27-weekly-current.json",
+  "published_sha256": "7b7a9ef2be4b4a6e09d00ba57e36435f6064685faa2f5c228fc7772abf7868d8",
+  "selected_action_id": "A-6fdc94d1d9-1",
+  "selected_transfer": "Gibbs-White -> Rogers",
+  "hit": 0,
+  "bank_after_millions": 0.1,
+  "captain": "Igor Thiago",
+  "vice_captain": "Rogers",
+  "gw9_projection": 54.460056854080065,
+  "weighted_horizon_gain_vs_roll": 3.1954855368883206,
+  "bruno_sale_comparison": {
+    "action_id": "A-0018c0c802-1",
+    "transfer": "Bruno Fernandes -> Rogers",
+    "hit": 0,
+    "bank_after_millions": 3.9,
+    "gw9_projection": 55.13542503051716,
+    "weighted_horizon_gain_vs_roll": 1.6821338311040002,
+    "interpretation": "Bruno sale is approximately 0.68 better for GW9 but 1.51 behind the selected route on weighted five-week model means. Model error is not captured by Monte Carlo precision."
+  },
+  "bruno_inputs": {
+    "price_millions": 11.7,
+    "gw8_minutes": 0,
+    "gw9_expected_points": 3.5390803813934326,
+    "gw9_appearance_probability": 0.6711322665214539,
+    "gw9_start_probability": 0.517626166343689,
+    "expected_minutes_rounded": 48.1,
+    "rotowire": "predicted_start",
+    "fantasy_football_scout": "predicted_not_start",
+    "consensus": "source_disagreement",
+    "official_availability": "No injury restriction; this is not certainty of selection",
+    "news_limitation": "No calibrated probability of a persistent manager-player dispute or future reconciliation"
+  },
+  "future_transfer_diagnostic": {
+    "shadow_preference": "A-0018c0c802-1",
+    "decision_authority": false,
+    "limitation": "Next-deadline reinvestment diagnostic prefers the Bruno sale, but this variant failed its historical promotion criterion. It does not replace the production recommendation."
+  },
+  "chip_status": {
+    "needs_review": true,
+    "operational_chip": null,
+    "wildcard_modelled_net_option_value_rounded": 6.47,
+    "interpretation": "Positive research-only Wildcard alternative remains unresolved; the selected transfer route assumes no chip, not proof that retaining Wildcard is better."
+  },
+  "supplemental_price_check": {
+    "observed_at": "2026-10-28T08:11:08.071580+00:00",
+    "checked_at": "2026-10-28T08:11:25.607683+00:00",
+    "coverage_rows": 669,
+    "reason_for_initial_missingness": "The first post-deadline interval crossed a gameweek transfer-counter reset; a second within-event observation restored coverage.",
+    "status": "ready_shadow",
+    "preference": "wait",
+    "decision_authority": false,
+    "threshold_stress_blocks_route": false,
+    "rogers_indicator": 79.1,
+    "gibbs_white_indicator": -11.1,
+    "bruno_indicator": -30.3,
+    "interpretation": "Indicators are not probabilities or guaranteed price moves. One adverse 0.1m move is affordable; two would exceed the selected route's current 0.1m buffer. This is a supplemental diagnostic; the immutable published decision still records its earlier missing timing data."
+  },
+  "validation": {
+    "candidate_routes": 47,
+    "selection_samples_per_family": 50000,
+    "independent_validation_samples_per_family": 100000,
+    "configuration_status": "validated",
+    "independent_checks_passed": ["budget", "transfer_hit", "squad_composition", "club_limits", "legal_lineup", "captain_and_vice", "no_officially_unavailable_starters"],
+    "no_fpl_account_writes": true,
+    "no_llm_training": true,
+    "model_parameters_changed": false
+  },
+  "public_news_sources": [
+    "https://www.manutd.com/en/matches/mens-team/manchester-united-v-afc-bournemouth-premier-league-20261025",
+    "https://www.rotowire.com/soccer/player/bruno-fernandes-21086"
+  ]
+}

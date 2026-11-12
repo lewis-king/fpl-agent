@@ -283,11 +283,16 @@ def build_sota_readiness_audit(
     production_policy = dict(market.get("production_policy") or {})
     pack_market = dict(pack.get("market") or {})
     defender_feature = dict(pack_market.get("defender_feature") or {})
+    attacker_feature = dict(defender_feature.get("attacker_goal_environment") or {})
+    attacker_weights = dict(attacker_feature.get("weights") or {})
     market_pass = (
         market.get("verdict") == "PROMOTE_PRESEASON_ONLY"
         and production_policy.get("preseason_decision_authority") is True
         and float(production_policy.get("preseason_weight") or 0) <= 0.20
         and defender_feature.get("status") == "applied"
+        and int(attacker_feature.get("applied_rows") or 0) > 0
+        and float(attacker_weights.get("FWD") or 0) == 0.05
+        and float(attacker_weights.get("MID") or 0) == 0.0
         and int(pack_market.get("fixture_count") or 0) == 10
     )
     checks.append(
@@ -298,7 +303,9 @@ def build_sota_readiness_audit(
             (
                 f"Betfair 1X2/O2.5 covers {int(pack_market.get('fixture_count') or 0)}/10 GW1 "
                 f"fixtures; {100 * float(production_policy.get('preseason_weight') or 0):.0f}% "
-                "DEF-only blend; weekly authority remains zero."
+                f"DEF blend and {100 * float(attacker_weights.get('FWD') or 0):.0f}% "
+                f"FWD goal-environment blend over {int(attacker_feature.get('applied_rows') or 0)} "
+                "forwards; MID and weekly authority remain zero."
             ),
             requirement="Use timestamp-safe prices only where a time-forward legal-policy gate passed.",
             scope="production",
@@ -400,9 +407,14 @@ def build_sota_readiness_audit(
             "pass" if participation_gate.get("passed") else "not_ready",
             (
                 f"{participation_gate.get('qualifying_events', 0)} qualifying events; "
-                "current consensus remains zero-authority role evidence."
+                "current consensus has bounded provisional rule-based authority, but has not "
+                "earned a prospective calibration claim."
             ),
-            requirement="At least six completed events and two-source coverage before any production weight.",
+            requirement=(
+                "At least six completed events and two-source coverage before treating the "
+                "weight as empirically calibrated or expanding it beyond the provisional "
+                "deadline safety policy."
+            ),
             scope="research_frontier",
         )
     )
@@ -538,7 +550,7 @@ def _render_report(result: dict[str, Any]) -> str:
     lines = [
         "# FPLAgent state-of-the-art readiness audit",
         "",
-        f"**Built:** {result['created_at']}  ",
+        f"**Built:** {result['created_at']}",
         f"**Verdict:** `{result['verdict']}`  ",
         f"**Current candidate:** `{result['selected_candidate_id']}`",
         "",

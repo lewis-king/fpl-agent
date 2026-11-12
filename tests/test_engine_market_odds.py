@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pyarrow as pa
@@ -47,10 +48,7 @@ def test_infer_goal_rates_recovers_poisson_market() -> None:
 def test_policy_gate_uses_only_frozen_test_season() -> None:
     rows = [
         {"season": "2024-25", "challenger_minus_incumbent": -20},
-        *[
-            {"season": "2025-26", "challenger_minus_incumbent": delta}
-            for delta in (1, 1, 1, 1)
-        ],
+        *[{"season": "2025-26", "challenger_minus_incumbent": delta} for delta in (1, 1, 1, 1)],
     ]
     gate = paired_policy_gate(rows, "2025-26")
     assert gate["passed"] is True
@@ -73,10 +71,7 @@ def test_market_policy_blend_uses_direct_xp_fallback_values() -> None:
         "market_component_expected_points": 7.0,
     }
     assert _policy_rows([row], "incumbent_xp", 0.75)[0]["expected_points"] == 4.0
-    assert (
-        _policy_rows([row], "internal_component_control", 0.75)[0]["expected_points"]
-        == 4.75
-    )
+    assert _policy_rows([row], "internal_component_control", 0.75)[0]["expected_points"] == 4.75
     assert _policy_rows([row], "market_challenger", 0.75)[0]["expected_points"] == 6.25
 
 
@@ -103,6 +98,151 @@ def _current_source_payload(rows: list[dict[str, str]]) -> bytes:
     writer.writeheader()
     writer.writerows(rows)
     return buffer.getvalue().encode()
+
+
+def _install_ready_current_market_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    *,
+    created_at: datetime | None = None,
+    rates_sha256: str | None = None,
+) -> tuple[object, object, list[dict[str, object]], list[dict[str, object]]]:
+    rates_path = tmp_path / "current-rates.parquet"
+    receipt_path = tmp_path / "current-receipt.json"
+    observation_path = tmp_path / "observation.json"
+    rows = [
+        {
+            "event": 1,
+            "fixture_id": 101,
+            "team_h": 1,
+            "team_a": 2,
+            "market_home_goal_rate": 1.8,
+            "market_away_goal_rate": 0.9,
+        }
+    ]
+    pq.write_table(pa.Table.from_pylist(rows), rates_path)
+    artifact_sha = hashlib.sha256(rates_path.read_bytes()).hexdigest()
+    receipt = {
+        "version": 3,
+        "status": "ready",
+        "created_at": (created_at or datetime.now(UTC)).isoformat(),
+        "season": "2026-27",
+        "event": 1,
+        "events": [1],
+        "ready_events": [1],
+        "fixture_count": 1,
+        "fixture_counts_by_event": {"1": 1},
+        "source": {
+            "source_observed_at": datetime.now(UTC).isoformat(),
+            "source_uploaded_at": datetime.now(UTC).isoformat(),
+        },
+        "provider": "betfair_exchange_public_delayed",
+        "rates_path": str(rates_path),
+        "rates_sha256": rates_sha256 or artifact_sha,
+        "semantic_fingerprint": "ready-generation",
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    fixtures = [{"id": 101, "event": 1, "team_h": 1, "team_a": 2}]
+    events = [
+        {
+            "id": 1,
+            "is_next": True,
+            "finished": False,
+            "deadline_time": (datetime.now(UTC) + timedelta(days=2)).isoformat(),
+        }
+    ]
+    monkeypatch.setattr(market_odds, "CURRENT_MARKET_RATES", rates_path)
+    monkeypatch.setattr(market_odds, "CURRENT_MARKET_RECEIPT", receipt_path)
+    monkeypatch.setattr(market_odds, "CURRENT_MARKET_OBSERVATION_RECEIPT", observation_path)
+    monkeypatch.setattr(market_odds, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(
+        market_odds,
+        "_current_fpl_rows",
+        lambda: (
+            fixtures,
+            [{"id": 1, "name": "Arsenal"}, {"id": 2, "name": "Chelsea"}],
+            events,
+        ),
+    )
+    return receipt_path, observation_path, fixtures, events
+
+
+def test_transient_collection_failure_retains_fresh_ready_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    receipt_path, observation_path, _, _ = _install_ready_current_market_generation(
+        monkeypatch, tmp_path
+    )
+    original = receipt_path.read_bytes()
+    monkeypatch.setattr(
+        market_odds,
+        "_download",
+        lambda url: _current_source_payload([]) if url == market_odds.CURRENT_FIXTURES_URL else b"",
+    )
+    monkeypatch.setattr(
+        market_odds,
+        "collect_betfair_exchange_snapshot",
+        lambda: (_ for _ in ()).throw(RuntimeError("temporary 403")),
+    )
+
+    result = market_odds.build_current_market_goal_rates(event=1, horizon=1)
+
+    assert result["status"] == "ready"
+    assert receipt_path.read_bytes() == original
+    observation = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation["retained_active_generation"] is True
+    assert observation["candidate"]["status"] == "not_ready"
+
+
+def test_exception_path_retains_fresh_ready_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    receipt_path, observation_path, _, _ = _install_ready_current_market_generation(
+        monkeypatch, tmp_path
+    )
+    original = receipt_path.read_bytes()
+
+    result = market_odds.disable_current_market_shadow("temporary provider failure", event=1)
+
+    assert result["status"] == "ready"
+    assert receipt_path.read_bytes() == original
+    observation = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation["retained_active_generation"] is True
+    assert observation["candidate"]["status"] == "unavailable"
+
+
+def test_stale_ready_generation_is_not_retained(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    receipt_path, observation_path, _, _ = _install_ready_current_market_generation(
+        monkeypatch,
+        tmp_path,
+        created_at=datetime.now(UTC) - timedelta(hours=7),
+    )
+
+    result = market_odds.disable_current_market_shadow("temporary provider failure", event=1)
+
+    assert result["status"] == "unavailable"
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "unavailable"
+    observation = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation["retained_active_generation"] is False
+    assert "outside the six-hour" in observation["retention_reason"]
+
+
+def test_checksum_mismatched_ready_generation_is_not_retained(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    receipt_path, observation_path, _, _ = _install_ready_current_market_generation(
+        monkeypatch,
+        tmp_path,
+        rates_sha256="not-the-artifact-sha",
+    )
+
+    result = market_odds.disable_current_market_shadow("temporary provider failure", event=1)
+
+    assert result["status"] == "unavailable"
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "unavailable"
+    observation = json.loads(observation_path.read_text(encoding="utf-8"))
+    assert observation["retained_active_generation"] is False
+    assert "checksum" in observation["retention_reason"]
 
 
 def test_current_market_coverage_selects_next_event_and_reports_partial_horizon() -> None:
@@ -204,9 +344,7 @@ def test_current_market_coverage_applies_explicit_provider_team_aliases() -> Non
     assert result["missing_fixtures"] == []
 
 
-def _materiality_row(
-    *, home_rate: float = 1.5, away_rate: float = 1.0
-) -> dict[str, object]:
+def _materiality_row(*, home_rate: float = 1.5, away_rate: float = 1.0) -> dict[str, object]:
     return {
         "event": 1,
         "fixture_id": 101,

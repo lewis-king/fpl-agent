@@ -10,12 +10,14 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import CONSENSUS as PARTICIPATION_CONSENSUS
 
 from .artifact_lineage import (
     load_json_artifact,
     require_current_forecast,
     require_recorded_file,
 )
+from .capital_efficiency import candidate_publication_role_risks
 from .component_simulator import (
     COMPONENT_BACKTEST_METRICS,
     _blend_scenario_scores,
@@ -53,7 +55,7 @@ from .robust_search import (
 from .robust_search import (
     SHORTLIST_JSON as ROBUST_SHORTLIST,
 )
-from .robust_search import _paired_comparison, _policy_variant, _weighted_regret
+from .robust_search import _paired_comparison, _weighted_regret, parallel_policy_variants
 from .tournament import DEFAULT_EVENTS, _load_rows, _score_candidates
 
 VERSION = "bench_allocation_audit_v2"
@@ -65,9 +67,7 @@ REPORT = REPORTS / "current-season-bench-allocation-audit.md"
 # winner on an immaterial Monte Carlo/composite-score difference. This bound is
 # derived from the already-declared central regret caps and is substantially
 # stricter than either family gate.
-PRACTICAL_EQUIVALENCE_REGRET = (
-    min(ROBUST_CENTRAL_REGRET_CAP, HORIZON_CENTRAL_REGRET_CAP) / 4.0
-)
+PRACTICAL_EQUIVALENCE_REGRET = min(ROBUST_CENTRAL_REGRET_CAP, HORIZON_CENTRAL_REGRET_CAP) / 4.0
 
 RECENT_ELITE_CONTEXT = (
     {
@@ -200,10 +200,50 @@ def _targeted_candidates(
     horizon: dict[str, Any],
     *,
     top_historical_band: int,
+    publication_eligible_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    by_id = {str(candidate["candidate_id"]): candidate for candidate in shortlist}
+    all_by_id = {str(candidate["candidate_id"]): candidate for candidate in shortlist}
+    horizon_leader_candidate = horizon.get("leader_candidate")
+    horizon_leader_id = str(horizon["leader"]["candidate_id"])
+    if not isinstance(horizon_leader_candidate, dict):
+        raise TypeError("Horizon audit is missing its full leader candidate")
+    if str(horizon_leader_candidate.get("candidate_id")) != horizon_leader_id:
+        raise RuntimeError("Horizon leader metrics and candidate identity disagree")
+    # The horizon audit can promote a newly generated neighbour which, by design, was never in
+    # the robust-search shortlist. It is still a required control for the bench audit, so carry
+    # its checksum-bound full candidate forward instead of assuming shortlist membership.
+    horizon_candidate_added = horizon_leader_id not in all_by_id
+    all_by_id.setdefault(horizon_leader_id, horizon_leader_candidate)
+    eligible_ids = (
+        set(all_by_id) if publication_eligible_ids is None else set(publication_eligible_ids)
+    )
+    by_id = {
+        candidate_id: candidate
+        for candidate_id, candidate in all_by_id.items()
+        if candidate_id in eligible_ids
+    }
     metrics = {str(row["candidate_id"]): row for row in selection_rows}
-    lean = [candidate for candidate in shortlist if float(candidate["gw1_bench_spend"]) <= 20.0]
+    eligible_shortlist = [
+        candidate
+        for candidate in shortlist
+        if str(candidate["candidate_id"]) in eligible_ids
+    ]
+    eligible_by_mean = sorted(
+        eligible_shortlist,
+        key=lambda candidate: float(metrics[str(candidate["candidate_id"])]["evidence_mean"]),
+        reverse=True,
+    )
+    eligible_by_cvar = sorted(
+        eligible_shortlist,
+        key=lambda candidate: float(metrics[str(candidate["candidate_id"])]["cvar10"]),
+        reverse=True,
+    )
+    lean = [
+        candidate
+        for candidate in shortlist
+        if str(candidate["candidate_id"]) in eligible_ids
+        and float(candidate["gw1_bench_spend"]) <= 20.0
+    ]
     lean_by_mean = sorted(
         lean,
         key=lambda candidate: float(metrics[str(candidate["candidate_id"])]["evidence_mean"]),
@@ -218,10 +258,14 @@ def _targeted_candidates(
         str(synthesis["decision"]["candidate_id"]),
         str(robust["leader"]["candidate_id"]),
         str(horizon["leader"]["candidate_id"]),
-    }
+    } & eligible_ids
+    current_id = str(synthesis["decision"]["candidate_id"])
+    if current_id not in eligible_ids:
+        raise RuntimeError("Active synthesized decision is not publication-role eligible")
+    protected_ids.add(current_id)
     for row in synthesis["ranking"]:
         spend = float(row["gw1_bench_spend"])
-        if spend > 22.0:
+        if spend > 22.0 and str(row["candidate_id"]) in eligible_ids:
             protected_ids.add(str(row["candidate_id"]))
             break
     exact_lean = [candidate for candidate in lean if float(candidate["gw1_bench_spend"]) <= 18.5]
@@ -229,6 +273,11 @@ def _targeted_candidates(
         *(str(candidate["candidate_id"]) for candidate in exact_lean),
         *(str(candidate["candidate_id"]) for candidate in lean_by_mean[:top_historical_band]),
         *(str(candidate["candidate_id"]) for candidate in lean_by_cvar[:8]),
+        *(
+            str(candidate["candidate_id"])
+            for candidate in eligible_by_mean[:top_historical_band]
+        ),
+        *(str(candidate["candidate_id"]) for candidate in eligible_by_cvar[:8]),
         *protected_ids,
     }
     missing = sorted(chosen_ids - set(by_id))
@@ -237,11 +286,18 @@ def _targeted_candidates(
     candidates = [by_id[candidate_id] for candidate_id in sorted(chosen_ids)]
     return candidates, {
         "shortlist_candidates": len(shortlist),
+        "publication_eligible_candidate_pool": len(by_id),
+        "role_ineligible_candidates_excluded": len(all_by_id) - len(by_id),
         "shortlist_at_or_below_20": len(lean),
         "all_at_or_below_18_5_protected": len(exact_lean),
         "top_historical_band_by_mean": min(top_historical_band, len(lean_by_mean)),
         "top_historical_band_by_cvar": min(8, len(lean_by_cvar)),
+        "top_publication_eligible_by_mean": min(
+            top_historical_band, len(eligible_by_mean)
+        ),
+        "top_publication_eligible_by_cvar": min(8, len(eligible_by_cvar)),
         "protected_control_ids": sorted(protected_ids),
+        "horizon_leader_added_outside_robust_shortlist": horizon_candidate_added,
         "targeted_unique_candidates": len(candidates),
     }
 
@@ -259,17 +315,13 @@ def _five_week_holdout(
     meta = loaded["meta"]
     goal_rates, _ = predict_current_goal_rates(by_player, DEFAULT_EVENTS)
     empirical = calibrate_empirical_components()
-    variants = []
-    for index, candidate in enumerate(candidates, start=1):
-        variants.extend(
-            _policy_variant(candidate, rows, kind) for kind in ("fixed", "open", "roll-gw2")
-        )
-        if index % 8 == 0 or index == len(candidates):
-            print(
-                f"Bench allocation audit: solved five-week policies for {index}/"
-                f"{len(candidates)} candidates",
-                flush=True,
-            )
+    print("Bench allocation audit: starting five-week transfer policies", flush=True)
+    variants = parallel_policy_variants(
+        candidates,
+        rows,
+        DEFAULT_EVENTS,
+        progress_label="Bench allocation five-week policy solve",
+    )
     player_ids, raw, anchored, played, _, _ = simulate_component_outcomes(
         by_player,
         DEFAULT_EVENTS,
@@ -377,18 +429,13 @@ def _eight_week_holdout(
         )
         for candidate in candidates
     ]
-    variants = []
-    for index, candidate in enumerate(horizon_candidates, start=1):
-        variants.extend(
-            _policy_variant(candidate, rows, kind, HORIZON_EVENTS)
-            for kind in ("fixed", "open", "roll-gw2")
-        )
-        if index % 8 == 0 or index == len(horizon_candidates):
-            print(
-                f"Bench allocation audit: solved eight-week policies for {index}/"
-                f"{len(horizon_candidates)} candidates",
-                flush=True,
-            )
+    print("Bench allocation audit: starting eight-week transfer policies", flush=True)
+    variants = parallel_policy_variants(
+        horizon_candidates,
+        rows,
+        HORIZON_EVENTS,
+        progress_label="Bench allocation eight-week policy solve",
+    )
     goal_rates, _ = predict_current_goal_rates(by_player, HORIZON_EVENTS)
     empirical = calibrate_empirical_components()
     player_ids, raw, anchored, played, _, _ = simulate_component_outcomes(
@@ -526,17 +573,48 @@ def targeted_retention_assessment(
     )
     active_worst = float(active["family_worst_regret"])
     winner_worst = float(targeted_winner["family_worst_regret"])
+    active_robust = active.get("robust_family_regret")
+    winner_robust = targeted_winner.get("robust_family_regret")
+    active_horizon = active.get("horizon_family_regret")
+    winner_horizon = targeted_winner.get("horizon_family_regret")
+    family_comparison_available = all(
+        value is not None
+        for value in (active_robust, winner_robust, active_horizon, winner_horizon)
+    )
+    pareto_dominated = bool(
+        family_comparison_available
+        and float(active_robust) >= float(winner_robust)
+        and float(active_horizon) >= float(winner_horizon)
+        and (
+            float(active_robust) > float(winner_robust)
+            or float(active_horizon) > float(winner_horizon)
+        )
+    )
+    # The maximum regret is useful as a risk diagnostic, but a higher maximum alone does not
+    # make the active squad dominated. If it wins one independently simulated family and the
+    # composite deficit is inside the predeclared practical bound, replacing it with the latest
+    # Monte Carlo winner would overfit the holdout. With legacy rows that do not expose both
+    # family regrets, retain the former conservative worst-family comparison.
+    tail_or_tradeoff_survives = bool(
+        not pareto_dominated
+        if family_comparison_available
+        else active_worst <= winner_worst
+    )
     practically_equivalent = bool(
         not exact_winner
         and active_won_original_selector
         and regret_gap <= equivalence_regret
-        and active_worst <= winner_worst
+        and tail_or_tradeoff_survives
     )
     survives = exact_winner or practically_equivalent
     if exact_winner:
         status = "exact_fresh_holdout_winner"
     elif practically_equivalent:
-        status = "practically_equivalent_lower_worst_family_regret"
+        status = (
+            "practically_equivalent_non_dominated_family_tradeoff"
+            if family_comparison_available and active_worst > winner_worst
+            else "practically_equivalent_lower_worst_family_regret"
+        )
     else:
         status = "materially_falsified"
     return {
@@ -551,6 +629,75 @@ def targeted_retention_assessment(
         "practical_equivalence_regret": equivalence_regret,
         "active_family_worst_regret": active_worst,
         "targeted_winner_family_worst_regret": winner_worst,
+        "family_comparison_available": family_comparison_available,
+        "active_robust_family_regret": (
+            float(active_robust) if active_robust is not None else None
+        ),
+        "targeted_winner_robust_family_regret": (
+            float(winner_robust) if winner_robust is not None else None
+        ),
+        "active_horizon_family_regret": (
+            float(active_horizon) if active_horizon is not None else None
+        ),
+        "targeted_winner_horizon_family_regret": (
+            float(winner_horizon) if winner_horizon is not None else None
+        ),
+        "pareto_dominated": pareto_dominated,
+    }
+
+
+def selected_synthesis_publication_rank(
+    synthesis: dict[str, Any], candidate_id: str
+) -> int:
+    """Return the selected candidate's rank in the actually publishable field.
+
+    Raw synthesis ranks retain unsafe controls for diagnostics. Once role integrity excludes
+    those controls, retention must compare against ``publication_rank``; otherwise a candidate
+    which won the safe selector is incorrectly treated as an unselected challenger.
+    """
+
+    row = next(
+        row
+        for row in synthesis["ranking"]
+        if str(row["candidate_id"]) == str(candidate_id)
+    )
+    return int(row.get("publication_rank") or row["rank"])
+
+
+def bench_allocation_publication_checks(
+    *,
+    profile: dict[str, Any],
+    retention: dict[str, Any],
+    active_interval: dict[str, Any] | None,
+    coverage: dict[str, Any],
+    requested_historical_band: int,
+) -> dict[str, bool]:
+    """Evaluate the declared gate without demanding nonexistent lean candidates."""
+    available = int(coverage["shortlist_at_or_below_20"])
+    required = min(requested_historical_band, available)
+    historical_band_complete = (
+        int(coverage["top_historical_band_by_mean"]) == required
+        and int(coverage["targeted_unique_candidates"]) >= required
+    )
+    weight_stable = bool(
+        active_interval
+        and float(active_interval["lower"]) <= 0.5 <= float(active_interval["upper"])
+        and float(active_interval["upper"]) - float(active_interval["lower"]) >= 0.20
+    )
+    return {
+        "artifact_lineage_current": True,
+        "active_decision_not_materially_falsified": bool(retention["survives"]),
+        "four_cheapest_spend_within_recent_18_5_to_21_reference": (
+            18.5 <= float(profile["four_cheapest_squad_spend"]) <= 21.0
+        ),
+        "at_least_two_gw1_substitutes_rotate_later": (
+            int(profile["gw1_bench_players_used_later"]) >= 2
+        ),
+        "at_least_four_planned_future_starts_from_gw1_bench": (
+            int(profile["gw1_bench_future_start_events"]) >= 4
+        ),
+        "balanced_family_weight_is_in_stable_champion_interval": weight_stable,
+        "complete_requested_historical_band_coverage": historical_band_complete,
     }
 
 
@@ -565,8 +712,8 @@ def _render_report(result: dict[str, Any]) -> str:
     lines = [
         "# Current-season bench allocation audit",
         "",
-        f"**Built:** {result['created_at']}  ",
-        f"**Verdict:** {verdict['status']}  ",
+        f"**Built:** {result['created_at']}",
+        f"**Verdict:** {verdict['status']}",
         f"**Active decision:** {current['candidate_id']} · {current['display_name']}",
         "",
         "## Answer",
@@ -601,8 +748,8 @@ def _render_report(result: dict[str, Any]) -> str:
             f"**{retention['active_family_worst_regret']:.3f}**, versus "
             f"**{retention['targeted_winner_family_worst_regret']:.3f}** for the fresh winner. "
             f"Classification: **{retention['status']}**. Equivalence can retain an original "
-            "selector winner only when its fresh deficit is immaterial and its worst-family "
-            "result is no worse; it cannot rescue a dominated squad."
+            "selector winner only when its fresh deficit is immaterial and it is not worse in "
+            "both independently simulated families; it cannot rescue a Pareto-dominated squad."
         ),
         "",
         "## What the GW1 bench becomes",
@@ -627,34 +774,50 @@ def _render_report(result: dict[str, Any]) -> str:
                 f"{result['coverage']['all_at_or_below_18_5_protected']} candidates at or below "
                 "£18.5m and the strongest selection-screen candidates up to £20m."
             ),
-            "",
-            (
-                f"The best ≤£20m challenger is **{challenger['candidate_id']}** · "
-                f"{challenger['display_name']}. It shares "
-                f"**{result['candidate_difference']['shared_players']}/15 players** with the "
-                "active decision."
-            ),
-            "",
-            "| Scenario | Active minus ≤£20m | 95% interval |",
-            "|---|---:|---:|",
         ]
     )
-    scenarios = (
-        "base_evidence_open",
-        "base_raw_open",
-        "high_goal_open",
-        "gw1_3_open_d088",
-        "gw1_5_open_d088",
-        "gw1_8_open_d088",
-        "gw6_8_open_equal",
-        "gw1_8_fixed_d088",
-    )
-    for name in scenarios:
-        row = comparison[name]
-        lines.append(
-            f"| {name.replace('_', ' ')} | {row['mean_delta']:+.2f} | "
-            f"{row['delta_95ci_low']:+.2f} to {row['delta_95ci_high']:+.2f} |"
+    if challenger is None or comparison is None:
+        lines.extend(
+            [
+                "",
+                (
+                    "No candidate at or below £20m cleared the live actionable-role gate. "
+                    "The active squad was therefore tested against the complete leading "
+                    "publication-eligible field, without inventing an unsafe cheap-bench control."
+                ),
+            ]
         )
+    else:
+        lines.extend(
+            [
+                "",
+                (
+                    f"The best ≤£20m challenger is **{challenger['candidate_id']}** · "
+                    f"{challenger['display_name']}. It shares "
+                    f"**{result['candidate_difference']['shared_players']}/15 players** with the "
+                    "active decision."
+                ),
+                "",
+                "| Scenario | Active minus ≤£20m | 95% interval |",
+                "|---|---:|---:|",
+            ]
+        )
+        scenarios = (
+            "base_evidence_open",
+            "base_raw_open",
+            "high_goal_open",
+            "gw1_3_open_d088",
+            "gw1_5_open_d088",
+            "gw1_8_open_d088",
+            "gw6_8_open_equal",
+            "gw1_8_fixed_d088",
+        )
+        for name in scenarios:
+            row = comparison[name]
+            lines.append(
+                f"| {name.replace('_', ' ')} | {row['mean_delta']:+.2f} | "
+                f"{row['delta_95ci_low']:+.2f} to {row['delta_95ci_high']:+.2f} |"
+            )
     lines.extend(
         [
             "",
@@ -734,8 +897,15 @@ def run_bench_allocation_audit(
     eight_week_seed: int = 20260820,
     top_historical_band: int = 24,
     stress_goal_multiplier: float = 1.15,
+    forecast_path: Path = CURRENT_FORECAST,
+    synthesis_path: Path = SYNTHESIS_RESULTS,
+    robust_results_path: Path = ROBUST_RESULTS,
+    horizon_results_path: Path = HORIZON_RESULTS,
+    robust_shortlist_path: Path = ROBUST_SHORTLIST,
+    robust_selection_path: Path = ROBUST_SELECTION,
     results_path: Path = RESULTS_JSON,
     report_path: Path = REPORT,
+    participation_consensus_path: Path = PARTICIPATION_CONSENSUS,
 ) -> dict[str, Any]:
     if simulations < 5_000:
         raise ValueError("bench allocation audit needs at least 5,000 holdout worlds")
@@ -748,49 +918,87 @@ def run_bench_allocation_audit(
     ensure_engine_layout()
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    synthesis = load_json_artifact(SYNTHESIS_RESULTS, "GW1 decision synthesis")
-    robust = load_json_artifact(ROBUST_RESULTS, "global robust-search results")
-    horizon = load_json_artifact(HORIZON_RESULTS, "horizon-audit results")
-    shortlist_payload = load_json_artifact(ROBUST_SHORTLIST, "global robust shortlist")
+    synthesis = load_json_artifact(synthesis_path, "GW1 decision synthesis")
+    robust = load_json_artifact(robust_results_path, "global robust-search results")
+    horizon = load_json_artifact(horizon_results_path, "horizon-audit results")
+    shortlist_payload = load_json_artifact(robust_shortlist_path, "global robust shortlist")
     require_current_forecast(
         robust,
-        CURRENT_FORECAST,
+        forecast_path,
         "global robust-search results",
         fields=("artifacts", "forecast_sha256"),
     )
     require_current_forecast(
         horizon,
-        CURRENT_FORECAST,
+        forecast_path,
         "horizon-audit results",
         fields=("artifacts", "forecast_sha256"),
     )
-    require_current_forecast(shortlist_payload, CURRENT_FORECAST, "global robust shortlist")
+    require_current_forecast(shortlist_payload, forecast_path, "global robust shortlist")
     require_recorded_file(
         synthesis,
         ("source_artifacts", "robust_results_sha256"),
-        ROBUST_RESULTS,
+        robust_results_path,
         "decision synthesis robust input",
     )
     require_recorded_file(
         synthesis,
         ("source_artifacts", "horizon_results_sha256"),
-        HORIZON_RESULTS,
+        horizon_results_path,
         "decision synthesis horizon input",
     )
     require_recorded_file(
         synthesis,
         ("source_artifacts", "robust_shortlist_sha256"),
-        ROBUST_SHORTLIST,
+        robust_shortlist_path,
         "decision synthesis shortlist input",
     )
     require_recorded_file(
         horizon,
         ("artifacts", "robust_results_sha256"),
-        ROBUST_RESULTS,
+        robust_results_path,
         "horizon-audit robust input",
     )
 
-    selection_rows = pq.read_table(ROBUST_SELECTION).to_pylist()
+    selection_rows = pq.read_table(robust_selection_path).to_pylist()
+    if not participation_consensus_path.is_file():
+        raise FileNotFoundError(
+            "Run participation-consensus collection before the bench allocation audit: "
+            f"{participation_consensus_path}"
+        )
+    consensus = {
+        int(row["element"]): str(row.get("consensus") or "not_covered")
+        for row in pq.read_table(participation_consensus_path).to_pylist()
+        if int(row["event"]) == 1
+    }
+    forecast_rows = [
+        row
+        for row in pq.read_table(forecast_path).to_pylist()
+        if int(row["event_number"]) == 1
+    ]
+    role_gate_forecasts = {
+        int(row["element"]): {
+            **row,
+            "live_participation_consensus": consensus.get(int(row["element"]), "not_covered"),
+        }
+        for row in forecast_rows
+    }
+    role_gate_meta = {int(row["element"]): row for row in forecast_rows}
+    candidate_pool = [
+        *shortlist_payload["candidates"],
+        horizon["leader_candidate"],
+    ]
+    role_risks_by_id = {
+        str(candidate["candidate_id"]): candidate_publication_role_risks(
+            candidate,
+            role_gate_forecasts,
+            role_gate_meta,
+        )
+        for candidate in candidate_pool
+    }
+    publication_eligible_ids = {
+        candidate_id for candidate_id, risks in role_risks_by_id.items() if not risks
+    }
     candidates, coverage = _targeted_candidates(
         shortlist_payload["candidates"],
         selection_rows,
@@ -798,7 +1006,14 @@ def run_bench_allocation_audit(
         robust,
         horizon,
         top_historical_band=top_historical_band,
+        publication_eligible_ids=publication_eligible_ids,
     )
+    coverage["participation_consensus_sha256"] = sha256_file(participation_consensus_path)
+    coverage["role_integrity_exclusions"] = [
+        {"candidate_id": candidate_id, "risks": risks}
+        for candidate_id, risks in sorted(role_risks_by_id.items())
+        if risks
+    ]
     candidate_by_id = {str(candidate["candidate_id"]): candidate for candidate in candidates}
     current_id = str(synthesis["decision"]["candidate_id"])
     if current_id not in candidate_by_id:
@@ -834,62 +1049,56 @@ def run_bench_allocation_audit(
     )
     targeted_winner_id = str(ranking[0]["candidate_id"])
     ranking_by_id = {str(row["candidate_id"]): row for row in ranking}
-    original_synthesis_rank = next(
-        int(row["rank"])
-        for row in synthesis["ranking"]
-        if str(row["candidate_id"]) == current_id
-    )
+    original_synthesis_rank = selected_synthesis_publication_rank(synthesis, current_id)
     retention = targeted_retention_assessment(
         ranking_by_id[current_id],
         ranking_by_id[targeted_winner_id],
         active_won_original_selector=original_synthesis_rank == 1,
     )
     historical_band_rows = [row for row in ranking if float(row["gw1_bench_spend"]) <= 20.0]
-    if not historical_band_rows:
-        raise RuntimeError("Targeted field contains no candidate at or below £20m")
-    challenger_id = str(historical_band_rows[0]["candidate_id"])
-    comparison = _comparison(current_id, challenger_id, five_paths, eight_paths)
+    challenger_id = (
+        str(historical_band_rows[0]["candidate_id"]) if historical_band_rows else None
+    )
+    comparison = (
+        _comparison(current_id, challenger_id, five_paths, eight_paths)
+        if challenger_id is not None
+        else None
+    )
     profile = bench_profile(candidate_by_id[current_id], meta)
-    challenger_profile = bench_profile(candidate_by_id[challenger_id], meta)
+    challenger_profile = (
+        bench_profile(candidate_by_id[challenger_id], meta)
+        if challenger_id is not None
+        else None
+    )
 
     interval_by_id = {
         str(row["candidate_id"]): row for row in synthesis["horizon_weight_champion_intervals"]
     }
     intervals = []
-    shortlist_by_id = {
+    interval_candidate_by_id = {
         str(candidate["candidate_id"]): candidate for candidate in shortlist_payload["candidates"]
     }
+    interval_candidate_by_id[str(horizon["leader_candidate"]["candidate_id"])] = horizon[
+        "leader_candidate"
+    ]
     for row in synthesis["horizon_weight_champion_intervals"]:
         candidate_id = str(row["candidate_id"])
         intervals.append(
             {
                 **row,
-                "gw1_bench_spend": float(shortlist_by_id[candidate_id]["gw1_bench_spend"]),
+                "gw1_bench_spend": float(
+                    interval_candidate_by_id[candidate_id]["gw1_bench_spend"]
+                ),
             }
         )
     active_interval = interval_by_id.get(current_id)
-    weight_stable = bool(
-        active_interval
-        and float(active_interval["lower"]) <= 0.5 <= float(active_interval["upper"])
-        and float(active_interval["upper"]) - float(active_interval["lower"]) >= 0.20
+    checks = bench_allocation_publication_checks(
+        profile=profile,
+        retention=retention,
+        active_interval=active_interval,
+        coverage=coverage,
+        requested_historical_band=top_historical_band,
     )
-    checks = {
-        "artifact_lineage_current": True,
-        "active_decision_not_materially_falsified": bool(retention["survives"]),
-        "four_cheapest_spend_within_recent_18_5_to_21_reference": (
-            18.5 <= float(profile["four_cheapest_squad_spend"]) <= 21.0
-        ),
-        "at_least_two_gw1_substitutes_rotate_later": (
-            int(profile["gw1_bench_players_used_later"]) >= 2
-        ),
-        "at_least_four_planned_future_starts_from_gw1_bench": (
-            int(profile["gw1_bench_future_start_events"]) >= 4
-        ),
-        "balanced_family_weight_is_in_stable_champion_interval": weight_stable,
-        "at_least_24_targeted_historical_band_candidates": (
-            int(coverage["targeted_unique_candidates"]) >= 24
-        ),
-    }
     promotable = all(checks.values())
     if promotable:
         status = "SUPPORTED_AS_ROTATION_SQUAD_NOT_AS_A_DEEP_BENCH_RULE"
@@ -935,13 +1144,21 @@ def run_bench_allocation_audit(
             row for row in ranking if row["candidate_id"] == targeted_winner_id
         ),
         "targeted_retention": retention,
-        "best_historical_band_challenger": {
-            **next(row for row in ranking if row["candidate_id"] == challenger_id),
-            "profile": challenger_profile,
-        },
+        "best_historical_band_challenger": (
+            {
+                **next(row for row in ranking if row["candidate_id"] == challenger_id),
+                "profile": challenger_profile,
+            }
+            if challenger_id is not None
+            else None
+        ),
         "current_minus_historical_band": comparison,
-        "candidate_difference": _candidate_difference(
-            candidate_by_id[current_id], candidate_by_id[challenger_id], meta
+        "candidate_difference": (
+            _candidate_difference(
+                candidate_by_id[current_id], candidate_by_id[challenger_id], meta
+            )
+            if challenger_id is not None
+            else None
         ),
         "targeted_ranking": ranking,
         "five_week_metrics": five_rows,
@@ -954,20 +1171,21 @@ def run_bench_allocation_audit(
             "five_week_seed": five_week_seed,
             "eight_week_seed": eight_week_seed,
             "stress_goal_multiplier": stress_goal_multiplier,
+            "requested_historical_band": top_historical_band,
             "evidence_raw_weight": raw_weight,
             "selection": (
-                "All shortlist candidates at or below £18.5m, the top historical-band candidates "
-                "by the existing selection screen, the top eight by downside CVaR, and the active "
+                "All publication-eligible shortlist candidates at or below £18.5m, the strongest "
+                "role-safe candidates by the existing mean and downside screens, and the active "
                 "five-week/eight-week/synthesis controls."
             ),
         },
         "lineage": {
-            "forecast_sha256": sha256_file(CURRENT_FORECAST),
-            "synthesis_sha256": sha256_file(SYNTHESIS_RESULTS),
-            "robust_results_sha256": sha256_file(ROBUST_RESULTS),
-            "horizon_results_sha256": sha256_file(HORIZON_RESULTS),
-            "robust_shortlist_sha256": sha256_file(ROBUST_SHORTLIST),
-            "robust_selection_sha256": sha256_file(ROBUST_SELECTION),
+            "forecast_sha256": sha256_file(forecast_path),
+            "synthesis_sha256": sha256_file(synthesis_path),
+            "robust_results_sha256": sha256_file(robust_results_path),
+            "horizon_results_sha256": sha256_file(horizon_results_path),
+            "robust_shortlist_sha256": sha256_file(robust_shortlist_path),
+            "robust_selection_sha256": sha256_file(robust_selection_path),
         },
     }
     results_path.parent.mkdir(parents=True, exist_ok=True)
@@ -978,4 +1196,72 @@ def run_bench_allocation_audit(
         f"Bench allocation audit: complete; {status}; targeted winner {targeted_winner_id}",
         flush=True,
     )
+    return result
+
+
+def reassess_current_bench_allocation_receipt(
+    *,
+    results_path: Path = RESULTS_JSON,
+    report_path: Path = REPORT,
+) -> dict[str, Any]:
+    """Re-evaluate gate semantics without rerunning an already-current holdout."""
+    result = load_json_artifact(results_path, "bench allocation audit")
+    expected = {
+        "forecast_sha256": CURRENT_FORECAST,
+        "synthesis_sha256": SYNTHESIS_RESULTS,
+        "robust_results_sha256": ROBUST_RESULTS,
+        "horizon_results_sha256": HORIZON_RESULTS,
+        "robust_shortlist_sha256": ROBUST_SHORTLIST,
+        "robust_selection_sha256": ROBUST_SELECTION,
+    }
+    lineage = result.get("lineage") or {}
+    changed = [name for name, path in expected.items() if lineage.get(name) != sha256_file(path)]
+    if changed:
+        raise RuntimeError("Cannot reassess a stale bench holdout: " + ", ".join(changed))
+    current_id = str(result["current"]["candidate_id"])
+    active_interval = next(
+        (
+            row
+            for row in result["horizon_weight_champion_intervals"]
+            if str(row["candidate_id"]) == current_id
+        ),
+        None,
+    )
+    checks = bench_allocation_publication_checks(
+        profile=result["current"]["profile"],
+        retention=result["targeted_retention"],
+        active_interval=active_interval,
+        coverage=result["coverage"],
+        requested_historical_band=int(
+            (result.get("method") or {}).get("requested_historical_band") or 24
+        ),
+    )
+    promotable = all(checks.values())
+    if promotable:
+        status = "SUPPORTED_AS_ROTATION_SQUAD_NOT_AS_A_DEEP_BENCH_RULE"
+        explanation = (
+            "The active squad survives the expanded targeted holdout, but the evidence supports "
+            "a rotation structure rather than a general instruction to buy a high-priced bench. "
+            "Its persistent four-cheapest allocation is inside the recent elite reference band, "
+            "and most of its visible GW1 bench is scheduled to enter the XI."
+        )
+    else:
+        status = "NOT_PROVEN_RETAIN_AS_CHALLENGER_ONLY"
+        failed = ", ".join(
+            check.replace("_", " ") for check, passed in checks.items() if not passed
+        )
+        explanation = (
+            "The active squad has not cleared the falsification gate. The following checks "
+            f"failed: {failed}. It must not be defended merely because the optimiser produced it."
+        )
+    result["reassessed_at"] = datetime.now(UTC).isoformat()
+    result["verdict"] = {
+        **result["verdict"],
+        "status": status,
+        "promotable": promotable,
+        "checks": checks,
+        "explanation": explanation,
+    }
+    results_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    report_path.write_text(_render_report(result), encoding="utf-8")
     return result

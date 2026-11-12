@@ -26,7 +26,7 @@ interface ManagerProfileDialogProps {
   open: boolean
   workspace: Workspace
   onClose: () => void
-  onComplete: () => Promise<void>
+  onComplete: (synced?: boolean) => Promise<void>
 }
 
 export function ManagerProfileDialog({
@@ -50,7 +50,11 @@ export function ManagerProfileDialog({
   const dialogRef = useDialogAccessibility<HTMLElement>(open, close, saving)
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      autoStartRef.current = false
+      if (pollTimerRef.current) window.clearTimeout(pollTimerRef.current)
+      return
+    }
     const controller = new AbortController()
     void getMcpConnection(controller.signal)
       .then((connection) => {
@@ -100,7 +104,7 @@ export function ManagerProfileDialog({
     try {
       const sync = await syncMcpSquad()
       setEntryId(sync.entry_id.toString())
-      await onComplete()
+      await onComplete(true)
       setConnecting(false)
       setLoginFrameUrl('')
       setSaved(true)
@@ -151,7 +155,7 @@ export function ManagerProfileDialog({
         setConnectionCopy('Authenticated. Reading the current squad into the workspace…')
         const sync = await syncMcpSquad()
         setEntryId(sync.entry_id.toString())
-        await onComplete()
+        await onComplete(true)
         setConnecting(false)
         setLoginFrameUrl('')
         setSaved(true)

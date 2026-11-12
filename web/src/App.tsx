@@ -26,6 +26,8 @@ import { ChatPanel } from './components/ChatPanel'
 import { DecisionRail } from './components/DecisionRail'
 import { DeadlineCockpit } from './components/DeadlineCockpit'
 import { EvidenceDialog } from './components/EvidenceDialog'
+import { SeasonReviewDialog } from './components/SeasonReviewDialog'
+import { ScoutingDialog } from './components/ScoutingDialog'
 import { GenerateSquadDialog } from './components/GenerateSquadDialog'
 import { ImportTeamDialog } from './components/ImportTeamDialog'
 import { ManagerProfileDialog } from './components/ManagerProfileDialog'
@@ -33,21 +35,12 @@ import { PreseasonEntry } from './components/PreseasonEntry'
 import { SquadPitch } from './components/SquadPitch'
 import { WorkspaceSkeleton } from './components/WorkspaceSkeleton'
 import { formatObservedAt } from './lib'
+import { refreshIdentity, refreshScheduleCopy, refreshSyncState, refreshTitle } from './refreshStatus'
+import type { SyncState } from './refreshStatus'
 import type { DeadlineSchedule, Player, Workspace, WorkspaceRefresh } from './types'
 
 type LoadState = 'loading' | 'ready' | 'error'
-type SyncState = 'idle' | 'syncing' | 'success' | 'attention' | 'error'
 type SquadMode = 'current' | 'model' | 'recommended'
-
-function pollDelay(signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = window.setTimeout(resolve, 1_500)
-    signal?.addEventListener('abort', () => {
-      window.clearTimeout(timer)
-      resolve()
-    }, { once: true })
-  })
-}
 
 function squadDecisionSignature(workspace: Workspace): string {
   return JSON.stringify(
@@ -67,6 +60,13 @@ function authoritativeSquadMode(workspace: Workspace): SquadMode {
   }
   if (workspace.decision.comparison.authoritative_squad === 'weekly') return 'recommended'
   return 'current'
+}
+
+function recommendationSquadMode(workspace: Workspace): SquadMode {
+  if (workspace.phase.phase === 'preseason' && workspace.decision.model_squad) {
+    return 'model'
+  }
+  return 'recommended'
 }
 
 function authoritativeCaptainId(workspace: Workspace): number {
@@ -90,6 +90,8 @@ function App() {
   const [squadMode, setSquadMode] = useState<SquadMode>('current')
   const [importOpen, setImportOpen] = useState(false)
   const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const [scoutingOpen, setScoutingOpen] = useState(false)
   const [builderOpen, setBuilderOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const [syncState, setSyncState] = useState<SyncState>('idle')
@@ -98,6 +100,16 @@ function App() {
   const [deadlineSchedule, setDeadlineSchedule] = useState<DeadlineSchedule | null>(null)
   const connectionCheckedRef = useRef(false)
   const workspaceSquadSignatureRef = useRef<string | null>(null)
+  const refreshIdentityRef = useRef<string | null>(null)
+  const refreshCommandRef = useRef(false)
+  const requiresManagerSync = (workspace?.phase.decision_event ?? workspace?.phase.event ?? 1) > 1
+
+  const observeRefresh = useCallback((run: WorkspaceRefresh) => {
+    refreshIdentityRef.current = refreshIdentity(run)
+    setRefreshRun(run)
+    setSyncMessage(run.message)
+    setSyncState(refreshSyncState(run))
+  }, [])
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoadState('loading')
@@ -136,50 +148,38 @@ function App() {
     signal?: AbortSignal,
   ) => {
     setSyncState('syncing')
-    setRefreshRun(null)
     setSyncMessage('Checking current FPL evidence and rebuilding only the stages that changed…')
-    let run = await startWorkspaceRefresh(reason, signal)
-    setRefreshRun(run)
-    setSyncMessage(run.message)
-    while (run.status === 'running' && !signal?.aborted) {
-      await pollDelay(signal)
+    refreshCommandRef.current = true
+    try {
+      const run = await startWorkspaceRefresh(reason, signal)
       if (signal?.aborted) return
-      run = await getWorkspaceRefresh(signal)
-      setRefreshRun(run)
-      setSyncMessage(run.message)
+      observeRefresh(run)
+      if (run.status !== 'running') await refreshWorkspace(signal)
+    } finally {
+      refreshCommandRef.current = false
     }
-    if (signal?.aborted) return
-    await refreshWorkspace(signal)
-    void getDeadlineSchedule(signal).then(setDeadlineSchedule).catch(() => undefined)
-    if (run.status === 'published') {
-      setSyncState('success')
-      setSyncMessage('Fresh evidence produced a new validated decision receipt.')
-      return
-    }
-    if (run.status === 'reused') {
-      setSyncState('success')
-      setSyncMessage(run.message || 'The recent validated decision receipt is still current.')
-      return
-    }
-    if (run.status === 'not_ready' || run.status === 'blocked') {
-      setSyncState('attention')
-      setSyncMessage(run.message)
-      return
-    }
-    setSyncState('error')
-    setSyncMessage(run.message)
-  }, [refreshWorkspace])
+  }, [observeRefresh, refreshWorkspace])
 
   const syncLatestSquad = useCallback(async () => {
     setSyncState('syncing')
+    refreshCommandRef.current = true
     setSyncMessage('Reading the latest squad from your authenticated FPL session…')
     try {
-      if (workspace?.user.sync_state === 'mcp_connected') {
+      const connection = await getMcpConnection()
+      if (connection.status === 'connected') {
         const result = await syncMcpSquad()
         await refreshWorkspace()
         setSyncMessage(
           `Entry ${result.entry_id} is synced. Starting the decision refresh…`,
         )
+      } else if (requiresManagerSync) {
+        if (connection.status === 'ready' || connection.status === 'not_authenticated') {
+          setProfileOpen(true)
+          setSyncState('attention')
+          setSyncMessage('Connect FPL to sync your current squad and start the decision refresh.')
+          return
+        }
+        throw new ApiError('Start the local FPL MCP server, then reconnect to sync your squad.')
       } else {
         await refreshWorkspace()
       }
@@ -187,8 +187,23 @@ function App() {
     } catch (error) {
       setSyncMessage(error instanceof ApiError ? error.message : 'The FPL squad could not be synced.')
       setSyncState('error')
+    } finally {
+      refreshCommandRef.current = false
     }
-  }, [refreshWorkspace, runDecisionRefresh, workspace])
+  }, [refreshWorkspace, requiresManagerSync, runDecisionRefresh])
+
+  const profileCompleted = useCallback(async (synced = false) => {
+    await refreshWorkspace()
+    if (synced) {
+      setProfileOpen(false)
+      try {
+        await runDecisionRefresh('manual')
+      } catch (error) {
+        setSyncState('error')
+        setSyncMessage(error instanceof Error ? error.message : 'Could not start the decision refresh.')
+      }
+    }
+  }, [refreshWorkspace, runDecisionRefresh])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -211,16 +226,32 @@ function App() {
 
   useEffect(() => {
     const controller = new AbortController()
-    const timer = window.setInterval(() => {
-      void getDeadlineSchedule(controller.signal)
-        .then(setDeadlineSchedule)
-        .catch(() => undefined)
-    }, 30_000)
+    let timer: number
+    // Observe the persisted worker even when another tab or the scheduler started it.
+    // Reads never launch a refresh; one sequential poll avoids overlapping requests.
+    const poll = async () => {
+      try {
+        const [run, schedule] = await Promise.all([
+          getWorkspaceRefresh(controller.signal), getDeadlineSchedule(controller.signal),
+        ])
+        if (controller.signal.aborted) return
+        setDeadlineSchedule(schedule)
+        if (!refreshCommandRef.current && refreshIdentityRef.current !== refreshIdentity(run)) {
+          observeRefresh(run)
+          if (run.status !== 'running' && run.status !== 'idle') await refreshWorkspace(controller.signal)
+        }
+      } catch {
+        // Keep the last known status while the API is restarting; resume on the next poll.
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(poll, 3_000)
+      }
+    }
+    void poll()
     return () => {
       controller.abort()
-      window.clearInterval(timer)
+      window.clearTimeout(timer)
     }
-  }, [])
+  }, [observeRefresh, refreshWorkspace])
 
   useEffect(() => {
     if (loadState !== 'ready' || connectionCheckedRef.current) return
@@ -233,12 +264,13 @@ function App() {
       try {
         const connection = await getMcpConnection(controller.signal)
         if (connection.status === 'connected') {
+          const previousRun = await getWorkspaceRefresh(controller.signal)
           const previousSquadSignature = workspaceSquadSignatureRef.current
           await syncMcpSquad(controller.signal)
           await refreshWorkspace(controller.signal)
           if (
-            previousSquadSignature
-            && workspaceSquadSignatureRef.current !== previousSquadSignature
+            previousRun.status === 'not_ready' || previousRun.status === 'blocked'
+            || (previousSquadSignature && workspaceSquadSignatureRef.current !== previousSquadSignature)
           ) {
             refreshReason = 'manual'
           }
@@ -284,6 +316,8 @@ function App() {
 
   function changeSection(section: string) {
     setActiveSection(section)
+    if (section === 'review') { setReviewOpen(true); return }
+    if (section === 'scouting') { setScoutingOpen(true); return }
     if (section === 'evidence') {
       setEvidenceOpen(true)
       return
@@ -322,9 +356,11 @@ function App() {
     )
   }
 
-  function showModelSquad() {
+  function showRecommendation() {
     if (!workspace) return
-    changeSquadMode(authoritativeSquadMode(workspace))
+    // This is an explicit preview action. It must not fall back to the current squad while a
+    // refresh is changing which receipt is authoritative.
+    changeSquadMode(recommendationSquadMode(workspace))
     requestAnimationFrame(() => document.getElementById('squad')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
   }
 
@@ -371,6 +407,8 @@ function App() {
     ? 'expected_points'
     : 'robust_points'
   const recommendedProjection = workspace.decision.recommended_squad.expected_points
+  const recommendedTransfers = workspace.decision.recommended_squad.source === 'weekly_decision'
+    && workspace.decision.comparison.change_count > 0
   const recommendationLabel = workspace.decision.recommended_squad.source === 'weekly_decision'
     ? 'shared-scenario points incl. captain'
     : `${recommendationMetric.replace('_', ' ')} incl. captain`
@@ -386,21 +424,21 @@ function App() {
       ? workspace.decision.recommended_squad.formation
       : workspace.squad.formation)
   const summaryTitle = modelPreview
-    ? `Recommendation · GW${modelPreview.event}`
+    ? `Recommended new squad · GW${modelPreview.event}`
     : recommendedPreview
-      ? `Best XI · GW${decisionEvent}`
-      : `Your squad · GW${decisionEvent}`
+      ? `${recommendedTransfers ? 'Recommended squad' : 'Best lineup'} · GW${decisionEvent}`
+      : `Your FPL squad · GW${decisionEvent}`
   const summaryProjectionLabel = modelPreview
     ? 'GW1 xP incl. captain · horizon-selected'
     : recommendedPreview
       ? recommendationLabel
-      : 'GW1 xP incl. captain'
+      : `GW${decisionEvent} xP incl. captain`
   const summaryBuildLabel = modelPreview
     ? 'Validated 15-player optimiser result'
     : recommendedPreview
       ? (workspace.decision.recommended_squad.source === 'weekly_decision'
         ? 'Selected transfer route and legal XI'
-        : 'Best legal XI from your full squad')
+        : 'Best legal lineup from your current 15')
       : workspace.squad.source_label
   const intelligenceMode = activeSection === 'chat' ? 'chat' : 'analysis'
 
@@ -427,7 +465,7 @@ function App() {
                       <ArrowClockwiseIcon size={17} aria-hidden="true" />
                       {syncState === 'syncing' ? 'Syncing FPL…' : 'Sync FPL squad'}
                     </button>
-                    <button className="primary-button" type="button" onClick={showModelSquad}>
+                    <button className="primary-button" type="button" onClick={showRecommendation}>
                       <SparkleIcon size={16} aria-hidden="true" />
                       View recommendation
                       <span className="button-island"><ArrowRightIcon size={14} aria-hidden="true" /></span>
@@ -480,12 +518,12 @@ function App() {
               <ArrowClockwiseIcon className="is-spinning" size={20} aria-hidden="true" />
             )}
             <div className="run-notice-copy">
-              <strong>{syncState === 'syncing' ? 'Refreshing decision evidence' : syncState === 'success' ? 'Decision workspace is current' : syncState === 'attention' ? 'Preseason roles need verification' : 'Decision refresh failed'}</strong>
-              <span>
-                {syncState === 'attention'
-                  ? 'The previous validated workspace remains active while uncertain player roles are checked.'
-                  : syncMessage}
-              </span>
+              <strong>{refreshTitle(syncState, refreshRun)}</strong>
+              <span>{syncMessage}</span>
+              <small className="run-timestamp">
+                {refreshRun?.started_at ? `Started ${formatObservedAt(refreshRun.started_at)}` : 'No run started yet'}
+                {refreshRun?.completed_at ? ` · Finished ${formatObservedAt(refreshRun.completed_at)}` : ''}
+              </small>
               {syncState === 'syncing' && refreshRun?.total_stages ? (
                 <div className="run-progress-row">
                   <div
@@ -500,24 +538,39 @@ function App() {
                   </div>
                   <small>{refreshRun.completed_stage_count}/{refreshRun.total_stages} stages</small>
                 </div>
+              ) : syncState === 'syncing' ? (
+                <div className="run-progress-row">
+                  <div
+                    className="run-progress-track is-indeterminate"
+                    role="progressbar"
+                    aria-label="Decision refresh is processing current evidence"
+                  >
+                    <span />
+                  </div>
+                  <small>Current evidence and simulations</small>
+                </div>
               ) : null}
               {syncState === 'attention' || syncState === 'error' ? (
                 <details className="run-notice-details">
                   <summary>View refresh details</summary>
-                  <p>{syncMessage}</p>
+                  <p>{refreshScheduleCopy(refreshRun, deadlineSchedule)}</p>
+                  <p>Run: {refreshRun?.run_id ?? 'not started'}{refreshRun?.failure_code ? ` · ${refreshRun.failure_code}` : ''}</p>
                 </details>
               ) : null}
             </div>
-            {syncState !== 'syncing' ? <button type="button" onClick={() => setSyncState('idle')}>Dismiss</button> : null}
+            {syncState === 'attention' || syncState === 'error'
+              ? <button type="button" onClick={() => void syncLatestSquad()}>Sync FPL &amp; retry</button>
+              : syncState !== 'syncing' ? <button type="button" onClick={() => setSyncState('idle')}>Dismiss</button> : null}
           </div>
         ) : null}
 
         <DeadlineCockpit
           workspace={workspace}
           schedule={deadlineSchedule}
+          refreshRun={refreshRun}
           refreshing={syncState === 'syncing'}
-          onViewRecommendation={showModelSquad}
-          onRefresh={() => void runDecisionRefresh('manual')}
+          onViewRecommendation={showRecommendation}
+          onRefresh={() => void syncLatestSquad()}
         />
 
         {workspace.phase.phase === 'preseason' && !connectedPreseason ? (
@@ -533,7 +586,7 @@ function App() {
           <div><span>{summaryTitle}</span><strong>{summaryProjection.toFixed(1)}</strong><small>{summaryProjectionLabel}</small></div>
           <div><span>Squad cost</span><strong>£{summaryCost.toFixed(1)}</strong><small>£{summaryBank.toFixed(1)}m bank</small></div>
           <div><span>Build</span><strong>{summaryFormation}</strong><small>{summaryBuildLabel}</small></div>
-          <div className="summary-warning"><ShieldWarningIcon size={18} aria-hidden="true" /><span><strong>{modelPreview ? 'Recommended' : stateLabel.strong}</strong><small>{modelPreview ? 'Enter manually in FPL' : stateLabel.small}</small></span></div>
+          <div className="summary-warning"><ShieldWarningIcon size={18} aria-hidden="true" /><span><strong>{modelPreview || recommendedPreview ? 'Recommended' : stateLabel.strong}</strong><small>{modelPreview || recommendedPreview ? 'Enter manually in FPL' : stateLabel.small}</small></span></div>
         </div>
 
         <SquadPitch
@@ -594,7 +647,7 @@ function App() {
               selectedPlayer={selectedPlayer}
               onSelectPlayer={selectPlayer}
               onOpenEvidence={() => setEvidenceOpen(true)}
-              onPreviewRecommendation={showModelSquad}
+              onPreviewRecommendation={showRecommendation}
             />
           </div>
           <div className="intelligence-pane" hidden={intelligenceMode !== 'chat'}>
@@ -605,8 +658,10 @@ function App() {
 
       <ImportTeamDialog open={importOpen} onClose={() => setImportOpen(false)} onConfirmed={refreshWorkspace} onAddIdentity={() => setProfileOpen(true)} />
       <GenerateSquadDialog open={builderOpen} workspace={workspace} onClose={() => setBuilderOpen(false)} onComplete={refreshWorkspace} />
-      <ManagerProfileDialog open={profileOpen} workspace={workspace} onClose={() => setProfileOpen(false)} onComplete={refreshWorkspace} />
+      <ManagerProfileDialog open={profileOpen} workspace={workspace} onClose={() => setProfileOpen(false)} onComplete={profileCompleted} />
       <EvidenceDialog open={evidenceOpen} workspace={workspace} onClose={() => setEvidenceOpen(false)} />
+      <SeasonReviewDialog open={reviewOpen} onClose={() => setReviewOpen(false)} />
+      <ScoutingDialog open={scoutingOpen} onClose={() => setScoutingOpen(false)} initialPlayerId={selectedPlayerId} />
     </div>
   )
 }

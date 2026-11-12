@@ -98,7 +98,13 @@ def _inputs(tmp_path: Path) -> dict:
             "gates": {"a": {"passed": True}, "b": {"passed": True}},
             "market": {
                 "fixture_count": 10,
-                "defender_feature": {"status": "applied"},
+                "defender_feature": {
+                    "status": "applied",
+                    "attacker_goal_environment": {
+                        "applied_rows": 64,
+                        "weights": {"FWD": 0.05, "MID": 0.0},
+                    },
+                },
             },
         },
     )

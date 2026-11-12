@@ -4,6 +4,8 @@ import {
   DatabaseIcon,
   GearSixIcon,
   SoccerBallIcon,
+  ChartLineIcon,
+  BinocularsIcon,
 } from '@phosphor-icons/react'
 
 interface AppRailProps {
@@ -15,6 +17,8 @@ interface AppRailProps {
 const items = [
   { id: 'squad', label: 'Squad', icon: SoccerBallIcon },
   { id: 'decisions', label: 'Decisions', icon: ChartDonutIcon },
+  { id: 'review', label: 'Season review', icon: ChartLineIcon },
+  { id: 'scouting', label: 'Player scouting', icon: BinocularsIcon },
   { id: 'chat', label: 'Chat', icon: ChatCircleDotsIcon },
   { id: 'evidence', label: 'Evidence', icon: DatabaseIcon },
 ]

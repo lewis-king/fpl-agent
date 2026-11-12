@@ -31,6 +31,10 @@ TOP_LEVEL_FIELDS = (
     "squad_value",
     "free_transfers",
     "transfer_cost",
+    "transfer_cost_per_additional",
+    "transfer_limit",
+    "transfers_made",
+    "transfer_accounting_version",
     "chips",
 )
 PICK_FIELDS = (
@@ -147,7 +151,14 @@ def _manager_issues(snapshot: Mapping[str, Any]) -> list[str]:
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
             issues.append(f"{field} must be null or a non-negative integer")
-    for field in ("free_transfers", "transfer_cost"):
+    for field in (
+        "free_transfers",
+        "transfer_cost",
+        "transfer_cost_per_additional",
+        "transfer_limit",
+        "transfers_made",
+        "transfer_accounting_version",
+    ):
         value = snapshot.get(field)
         if value is not None and (
             isinstance(value, bool) or not isinstance(value, int) or value < 0

@@ -10,7 +10,7 @@ import numpy as np
 from .paths import MODEL_DATA, REPORTS
 
 VERSION = "prospective_2026_27_scoreboard_v1"
-SOURCE_ROOT = MODEL_DATA / "prospective_weekly_scoring_v2"
+SOURCE_ROOT = MODEL_DATA / "prospective_weekly_scoring_v4"
 OUTPUT_DIR = MODEL_DATA / VERSION
 RESULTS = OUTPUT_DIR / "results.json"
 REPORT = REPORTS / "prospective-2026-27-scoreboard.md"
@@ -23,7 +23,10 @@ def _latest_results(root: Path) -> list[dict[str, Any]]:
     if not root.is_dir():
         return results
     for event_dir in sorted(root.glob("event-*")):
-        files = sorted(event_dir.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        files = sorted(event_dir.glob("*.json"), key=lambda path: (
+            json.loads(path.read_text(encoding="utf-8"))["frozen_evidence"]["decision_created_at"],
+            path.name,
+        ))
         if not files:
             continue
         value = json.loads(files[-1].read_text(encoding="utf-8"))

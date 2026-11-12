@@ -67,7 +67,7 @@ def _target_rival(context: dict[str, Any]) -> dict[str, Any]:
 def evaluate_mini_league_shadow(
     decision: dict[str, Any], context: dict[str, Any]
 ) -> dict[str, Any]:
-    if decision.get("version") != "weekly_decision_synthesis_v3":
+    if decision.get("version") not in {"weekly_decision_synthesis_v3", "weekly_decision_synthesis_v4"}:
         raise MiniLeagueStrategyError("mini-league shadow needs a weekly decision v3")
     if context.get("version") != CONTEXT_VERSION:
         raise MiniLeagueStrategyError("mini-league context has an unsupported version")

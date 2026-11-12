@@ -19,7 +19,7 @@ VERSION = "full_distribution_calibration_v1"
 OUTPUT_DIR = MODEL_DATA / VERSION
 RESULTS = OUTPUT_DIR / "results.json"
 REPORT = REPORTS / "full-distribution-calibration.md"
-RESULT_ROOT = MODEL_DATA / "prospective_weekly_scoring_v2"
+RESULT_ROOT = MODEL_DATA / "prospective_weekly_scoring_v4"
 RESIDUAL_CALIBRATION = OUTPUT_DIR / "historical-residual-calibration.json"
 BACKTEST_FORECAST = MODEL_DATA / "forecasts" / "rolling-backtest.parquet"
 TRAINING_FEATURES = MODEL_DATA / "features" / "player_deadlines.parquet"
@@ -192,9 +192,25 @@ def _normalise_pmf(pmf: Mapping[str | int, float]) -> tuple[np.ndarray, np.ndarr
 def discrete_crps(pmf: Mapping[str | int, float], actual: float) -> float:
     scores, probabilities = _normalise_pmf(pmf)
     cdf = np.cumsum(probabilities)
-    observed_cdf = (scores >= float(actual)).astype(np.float64)
-    # On a unit-spaced support, the discrete ranked probability score is CRPS.
-    return float(np.sum(np.square(cdf - observed_cdf)))
+    # Integrate on the complete unit lattice; sparse PMFs must not compress gaps.
+    # Observations outside the support contribute their distance to its nearest edge.
+    lattice = np.arange(
+        min(int(scores[0]), math.floor(actual)), max(int(scores[-1]), math.ceil(actual)) + 1
+    )
+    indices = np.searchsorted(scores, lattice, side="right") - 1
+    full_cdf = np.where(indices < 0, 0.0, cdf[np.maximum(indices, 0)])
+    # FPL outcomes are integral. Fractional actuals use the energy-score identity.
+    if float(actual).is_integer():
+        return float(np.sum(np.square(full_cdf - (lattice >= actual))))
+    return float(
+        np.sum(probabilities * np.abs(scores - actual))
+        - 0.5
+        * np.sum(
+            probabilities[:, None]
+            * probabilities[None, :]
+            * np.abs(scores[:, None] - scores[None, :])
+        )
+    )
 
 
 def pmf_quantile(pmf: Mapping[str | int, float], quantile: float) -> int:
@@ -303,7 +319,18 @@ def score_distribution_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]
         role: _score_rows([row for row in rows if str(row.get("decision_role")) == role])
         for role in ("captain", "starter", "bench")
     }
-    return {"overall": overall, "by_position": by_position, "by_decision_role": by_role}
+    by_source = {
+        source: _score_rows(
+            [row for row in rows if str(row.get("distribution_source") or "unrecorded") == source]
+        )
+        for source in sorted({str(row.get("distribution_source") or "unrecorded") for row in rows})
+    }
+    return {
+        "overall": overall,
+        "by_position": by_position,
+        "by_decision_role": by_role,
+        "by_distribution_source": by_source,
+    }
 
 
 def _load_prospective_rows(result_root: Path) -> tuple[list[dict[str, Any]], list[int]]:
@@ -311,10 +338,18 @@ def _load_prospective_rows(result_root: Path) -> tuple[list[dict[str, Any]], lis
     events = set()
     if not result_root.is_dir():
         return rows, []
-    # There may be multiple candidate receipts per event. Score only the newest file;
+    # Multiple receipts may exist per event. Select by frozen decision time, not file mtime;
     # each result already checksum-locks a pre-deadline decision and final outcome.
     for event_dir in sorted(result_root.glob("event-*")):
-        candidates = sorted(event_dir.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        candidates = sorted(
+            event_dir.glob("*.json"),
+            key=lambda path: (
+                json.loads(path.read_text(encoding="utf-8"))["frozen_evidence"][
+                    "decision_created_at"
+                ],
+                path.name,
+            ),
+        )
         if not candidates:
             continue
         result = json.loads(candidates[-1].read_text(encoding="utf-8"))
@@ -353,6 +388,7 @@ def build_distribution_scoreboard(
         )
 
     checks = {
+        "single_distribution_method": len(score["by_distribution_source"]) == 1,
         "six_untouched_events": len(events) >= MINIMUM_EVENTS,
         "minimum_player_outcomes": int(overall.get("rows") or 0) >= MINIMUM_PLAYERS,
         "frozen_distribution_lineage": bool(rows)

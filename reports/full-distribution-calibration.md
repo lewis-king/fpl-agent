@@ -1,6 +1,6 @@
 # Full forecast-distribution calibration
 
-**Completed untouched events:** 0  
+**Completed untouched events:** 7  
 **Gate:** HOLD SHADOW  
 
 CRPS, central interval coverage, p10/p90 breaches and haul tails are scored by position and decision role.

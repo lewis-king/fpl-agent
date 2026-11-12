@@ -1,35 +1,39 @@
-# Current squad XI, captain and bench audit
+# Simulation-authoritative XI, captain and bench audit
 
-Verdict: **published_configuration_is_selection_champion**.
+Verdict: **simulation_champion_promoted_after_independent_holdout**.
+Production changed: **True**.
+Publishable: **True**.
 
-This is a read-only, checksum-bound audit of the currently published 15. It does not replace the squad or use a stale optimizer incumbent.
+This checksum-bound audit never replaces the selected 15. It exhaustively selects the actionable XI, all three outfield substitute positions, captain and vice-captain using residual and explicit football-component simulations.
 
 ## Published configuration
 
 - Formation: 3-4-3
-- Captain / vice: Bruno Fernandes / Tarkowski
-- XI: Donnarumma, Tarkowski, Maguire, Truffert, Bruno Fernandes, Mbeumo, Semenyo, Szoboszlai, Igor Thiago, Watkins, Calvert-Lewin
-- Bench order: Xhaka, N.Williams, Hill, Verbruggen
+- Captain / vice: Bruno Fernandes / Lacroix
+- XI: Donnarumma, Lacroix, Tarkowski, Maguire, Bruno Fernandes, Mbeumo, Semenyo, Szoboszlai, Igor Thiago, Calvert-Lewin, Richarlison
+- Bench order: Truffert, N.Williams, Gakpo, Verbruggen
 
-## Selection champion
+## Resolved configuration champion
 
-- Formation: 3-4-3
-- Captain / vice: Bruno Fernandes / Tarkowski
-- XI: Watkins, Truffert, Igor Thiago, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo
-- Bench order: Xhaka, N.Williams, Hill, Verbruggen
+- Formation: 4-4-2
+- Captain / vice: Bruno Fernandes / Lacroix
+- XI: Igor Thiago, Lacroix, Tarkowski, Calvert-Lewin, Szoboszlai, Donnarumma, Semenyo, Maguire, Bruno Fernandes, Mbeumo, N.Williams
+- Bench order: Richarlison, Truffert, Gakpo, Verbruggen
 
 ## Independent holdout difference versus published
 
 | Family | Mean | 95% CI | Beat probability |
 | --- | ---: | ---: | ---: |
-| Residual | +0.000 | [+0.000, +0.000] | 0.0% |
-| Component | +0.000 | [+0.000, +0.000] | 0.0% |
+| Residual | -0.274 | [-0.297, -0.252] | 31.2% |
+| Component | +0.660 | [+0.606, +0.713] | 46.5% |
 
 ## Coverage
 
 - Legal XIs: 550
 - Bench orders scored: 3300
-- Joint configurations scored: 4950
+- Joint configurations scored: 4951
 - Holdout finalists: 64
+- Independent holdout champion: XI-60ce4f7bfef5 (stable: True)
+- Holdout robust gain: +0.237
 
-Do not alter the published squad from this audit. Change its XI, bench priority, captain or vice only when the preselected challenger has a positive paired 95% holdout interval in both the residual and component simulation families.
+Never alter the selected 15 here. Select XI, bench priority, captain and vice by minimax regret across residual and explicit football-component simulations. Promote only when the preselected champion remains the independent holdout champion, or when both samples agree on captain and differ only between top-three vice-captains, orderings of the same bench, or one starter/bench swap within 0.0125 regret in both samples. Resolve that narrow single-action equivalence class using all simulated worlds. Every captain or multi-player XI disagreement fails closed.

@@ -13,6 +13,7 @@ from fplagent_engine import (
     component_models,
     market_feature_challenger,
     models,
+    participation_policy,
     understat_challenger,
 )
 
@@ -53,6 +54,7 @@ def test_direct_forecast_reuses_exact_input_generation_without_cuda(
     ):
         path.write_bytes(payload)
     inputs = {
+        "forecast_implementation_sha256": sha256_file(Path(models.__file__)),
         "features_sha256": sha256_file(features),
         "model_sha256": sha256_file(model),
         "appearance_calibration_sha256": sha256_file(calibration),
@@ -68,13 +70,10 @@ def test_direct_forecast_reuses_exact_input_generation_without_cuda(
     monkeypatch.setattr(models, "CALIBRATION_FILE", calibration)
     monkeypatch.setattr(models, "CURRENT_FORECAST", output)
     monkeypatch.setattr(models, "CURRENT_FORECAST_MANIFEST", manifest)
-    monkeypatch.setattr(
-        market_feature_challenger, "current_market_feature_inputs", dict
-    )
-    monkeypatch.setattr(
-        attacking_chance_challenger, "current_attacking_chance_inputs", dict
-    )
+    monkeypatch.setattr(market_feature_challenger, "current_market_feature_inputs", dict)
+    monkeypatch.setattr(attacking_chance_challenger, "current_attacking_chance_inputs", dict)
     monkeypatch.setattr(understat_challenger, "current_understat_inputs", dict)
+    monkeypatch.setattr(participation_policy, "current_participation_inputs", dict)
     monkeypatch.setattr(
         models,
         "require_cuda",
@@ -115,13 +114,10 @@ def test_direct_forecast_refuses_reuse_after_output_tampering(
     monkeypatch.setattr(models, "CALIBRATION_FILE", tmp_path / "absent.json")
     monkeypatch.setattr(models, "CURRENT_FORECAST", output)
     monkeypatch.setattr(models, "CURRENT_FORECAST_MANIFEST", manifest)
-    monkeypatch.setattr(
-        market_feature_challenger, "current_market_feature_inputs", dict
-    )
-    monkeypatch.setattr(
-        attacking_chance_challenger, "current_attacking_chance_inputs", dict
-    )
+    monkeypatch.setattr(market_feature_challenger, "current_market_feature_inputs", dict)
+    monkeypatch.setattr(attacking_chance_challenger, "current_attacking_chance_inputs", dict)
     monkeypatch.setattr(understat_challenger, "current_understat_inputs", dict)
+    monkeypatch.setattr(participation_policy, "current_participation_inputs", dict)
     monkeypatch.setattr(
         models,
         "require_cuda",
@@ -154,6 +150,7 @@ def test_component_forecast_reuses_exact_input_generation(
     inputs = {
         "features_sha256": sha256_file(features),
         "direct_forecast_sha256": sha256_file(direct),
+        "component_implementation_sha256": sha256_file(Path(component_models.__file__)),
         "component_model_sha256": sha256_file(model),
         "bps_priors_sha256": sha256_file(bps_priors),
         "bps_metrics_sha256": sha256_file(bps_metrics),

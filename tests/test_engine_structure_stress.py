@@ -61,6 +61,36 @@ def test_supported_gw1_reversal_is_reconciled_when_multiweek_selector_ranked_it_
     assert result["challenger_synthesis_regret_delta"] == pytest.approx(0.3)
 
 
+def test_reconciliation_uses_publication_ranks_after_unsafe_controls_are_removed() -> None:
+    decision = {
+        "ranking": [
+            {
+                "candidate_id": "season",
+                "rank": 20,
+                "publication_rank": 1,
+                "synthesis_regret": 1.2,
+            },
+            {
+                "candidate_id": "gw1",
+                "rank": 25,
+                "publication_rank": 2,
+                "synthesis_regret": 1.5,
+            },
+        ]
+    }
+
+    result = reconcile_structure_reversal(
+        decision,
+        published_candidate_id="season",
+        challenger_candidate_id="gw1",
+        supported_reversal=True,
+    )
+
+    assert result["passed"] is True
+    assert result["published_synthesis_rank"] == 1
+    assert result["challenger_synthesis_rank"] == 2
+
+
 def test_new_gw1_proxy_challenger_without_multiweek_score_blocks_publication() -> None:
     decision = {
         "ranking": [

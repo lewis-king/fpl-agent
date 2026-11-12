@@ -6,6 +6,39 @@ the architecture that application and model work should continue to follow.
 
 ## Active workstream
 
+**Latest audit — 21 October:** [GW1–7 results and Fantasy Football Scout product review](../reports/scout-product-audit-and-gw7-review-2026-10-21.md).
+Includes authenticated feature inspection, official results, prospective calibration warnings,
+the new Season review screen and the next points-first experiments. This supersedes the dated
+September status below. No GW8 recommendation was regenerated during that audit.
+
+**Latest search audit:** [GW4 deep search, exact configurations and independent holdouts](../reports/weekly-deep-search-2026-09-09.md).
+The completed 100-route / 540-policy audit retained Richarlison → Evanilson: the expanded-search
+Gonzalo challenger failed the predeclared points-based holdout acceptance test. The report includes
+reproduction commands, exact search scope, the production/research boundary and next priorities.
+
+**Latest release review:** [explicit promote/reject decisions, 9 September](../reports/points-first-promotion-decisions-2026-09-09.md).
+The current experiment versions have concluded deployment decisions, not pending approvals.
+This includes the additional admissible-risk-reference fix and its frozen-decision replay.
+
+The current implementation and evidence priorities are in the
+[9 September points-first improvement plan](decision-improvement-roadmap-2026-09-09.md).
+It distinguishes shipped correctness fixes, integrated research diagnostics and unproven changes
+that must still earn promotion. GW4 is now the actionable deadline.
+
+The latest [round-two implementation, validation and publication report](../reports/points-first-validation-round2-2026-09-09.md)
+records shared-world transfer/chip planning, the full-season chip-state audit, role-change rejection,
+allocation/risk comparisons, prospective capture and the final refreshed GW4 recommendation.
+
+The [adaptive-transfer follow-up](../reports/adaptive-transfer-replay-2026-09-09.md) records the
+paired historical test, its failed activation screen, prospective challenger scoring and fresh
+GW4 publication. It supplements the first implementation batch rather than replacing its receipts.
+
+Start a new engineering or AI-agent session with the
+[continuation handoff](agent-continuation-handoff.md). Its dated addenda record the current state,
+service commands, subsystem authority, validation failures, dirty-worktree warning and prioritised
+next actions. It supersedes dated preseason status paragraphs where they conflict with current
+runtime receipts.
+
 The final bounded V9 LoRA experiment concluded on 8 August 2026 and was rejected by the locked
 promotion gate. It improved application tool routing and screenshot extraction, but did not improve
 strict response contracts, legacy coverage, held-out vision reliability or blind qualitative
@@ -20,6 +53,8 @@ with the deeper research log in the
 
 ## Architecture guides
 
+- [Local saved FPL login](local-saved-fpl-login.md): optional owner-only credentials file, automatic
+  MCP sign-in, retry limits, plaintext storage trade-off and validation.
 - [Application capabilities and manual test guide](application-capabilities-and-manual-test.md):
   complete current product behavior, process topology, manual browser journey, health checks and
   honest boundaries.
@@ -38,7 +73,8 @@ with the deeper research log in the
   for independently sourced player statistics.
 - [Chip decision and retention shadow](squad-chip-shadow.md): exact permanent/temporary squad
   search, probabilistic rearrangements, continuous historical WC/FH and BB/TC timing replays, and
-  the evidence explaining why every chip policy still has zero authority.
+  historical shadow evidence. For current BB/TC authority and the WC/FH limits, use
+  [joint chip strategy v2](chip-strategy-v2.md).
 - [FPL LLM architecture](fpl-llm-architecture.md): base model, locally trained LoRA adapters,
   Unsloth/PEFT loading, multimodal team import, grounded tools, future RAG and promotion policy.
 - [Interactive LLM technical explainer](../reports/fpl-llm-technical-summary.html): standalone HTML
@@ -84,6 +120,20 @@ with the deeper research log in the
   and defensive-contribution misspecification.
 - [GW1 deadline pack](../reports/gw1-deadline-pack.md): the final human-readable squad plus the
   checksum-bound official, market, search, participation, scoring and bench publication gates.
+- [GW1 multi-seed decision stability](../reports/gw1-deadline-stability.md): the five leading legal
+  squads rerun on independent simulations and a bounded synthesis-weight grid, with a fail-closed
+  publication gate for seed sensitivity and material objective brittleness.
+- [GW1 canonical execution receipt](../reports/gw1-deadline-execution.html): the exact 15, XI,
+  bench order, captaincy and chip instruction that may be entered only after every machine gate
+  passes.
+- [Player-specific participation break-even](../reports/gw1-participation-break-even.md): isolated
+  expected-minutes curves for the watched squad players, with cross-model holdout boundaries for
+  switching away from the incumbent.
+- [GW1 deadline contingencies](../reports/gw1-deadline-contingencies.md): complete legal fallback
+  squads and configurations tied to the supported participation triggers.
+- [GW1 chip decision](../reports/gw1-chip-decision.md): exact no-chip, Bench Boost and Triple
+  Captain uplift on shared worlds, separated from the retained-option authority required to spend
+  a chip.
 - [Role-residual policy replay](../reports/role-residual-policy-replay.md): a position-aware
   participation challenger whose probability calibration improved for GK/FWD but lost points in
   both legal policy seasons, so it was rejected with zero production authority.

@@ -1,7 +1,7 @@
 # FPL 2026/27 rulebook audit
 
-**Audited:** 2026-08-16T06:44:55.931818+00:00  
-**Live snapshot:** 2026-08-16T06:10:27.816135+00:00  
+**Audited:** 2026-08-21T16:22:28.451554+00:00
+**Live snapshot:** 2026-08-21T16:17:11.970833+00:00
 **Verdict:** the initial-squad legality layer is current, but the engine is not yet a complete weekly decision agent.
 
 ## Confirmed 2026/27 state

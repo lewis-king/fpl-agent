@@ -22,6 +22,9 @@ from fplagent_data.participation_consensus import collect_participation_consensu
 from fplagent_data.paths import MANIFESTS
 
 from .audit import audit_features
+from .chip_strategy import CALIBRATION as CHIP_STRATEGY_CALIBRATION
+from .chip_strategy import VERSION as CHIP_STRATEGY_VERSION
+from .chip_timing import DEFAULT_RECEIPT_PATH as CHIP_TIMING_RECEIPT
 from .component_models import CURRENT_COMPONENT_FORECAST, forecast_components
 from .deadline_evidence import DEADLINE_STATUS_RECEIPT, audit_deadline_evidence
 from .features import build as build_features
@@ -29,8 +32,11 @@ from .manager_state_store import current_actionable_event, derive_latest_manager
 from .market_odds import build_current_market_goal_rates, disable_current_market_shadow
 from .models import CURRENT_FORECAST, forecast
 from .paths import DECISIONS
+from .role_shift_research import ARTIFACT as ROLE_SHIFT_CALIBRATION
 from .rules import SquadRules, load_rules
 from .schedule_scenarios import CURRENT_SCHEDULE_RECEIPT, build_schedule_receipt
+from .scouting import ROOT as SCOUTING_ROOT
+from .scouting import refresh_scouting_from_generation
 from .weekly_decision import run_weekly_decision
 
 PIPELINE_VERSION = 2
@@ -112,6 +118,9 @@ def refresh_current_generation(
         )
     processed = fpl_current.preprocess()
     live_outcomes = sync_finalized_event_outcomes(observed_at=as_of)
+    # Lazy import avoids the scorer's archive-path dependency on this module.
+    from .gameweek_review import sync_finalized_decision_scores
+    prospective_scoring = sync_finalized_decision_scores(live_outcomes.get("finalized_events", []))
     try:
         market_goal_rates = build_current_market_goal_rates(horizon=horizon)
     except (OSError, RuntimeError, ValueError, KeyError, pa.ArrowException) as error:
@@ -129,19 +138,55 @@ def refresh_current_generation(
     catalog = build_catalog()
     features = build_features(horizon)
     quality = audit_features(horizon)
-    direct = forecast()
-    component = forecast_components()
+    # Materialize an incumbent forecast first so the lineup receipt can record the
+    # exact model it challenged. Then rebuild the production forecast with the new
+    # official + two-source role evidence in its cache identity.
+    incumbent_direct = forecast()
+    participation = collect_participation_consensus(
+        event=current_actionable_event(),
+        observed_at=as_of,
+        forecast_path=CURRENT_FORECAST,
+    )
+    direct = forecast(force=True)
+    component = forecast_components(force=True)
+    # Explanations are a by-product of the automated decision workflow. Reuse its
+    # immutable inputs: no separate web click, live refetch or manual analysis is
+    # needed. Failure of this optional board must not prevent a legal decision.
+    try:
+        board = refresh_scouting_from_generation(official, forecast_path=CURRENT_FORECAST)
+        scouting = {
+            "status": board["status"],
+            "decision_event": board["decision_event"],
+            "players": len(board["players"]),
+            "official_snapshot_id": board["official_snapshot_id"],
+            "observed_at": board["observed_at"],
+            "built_at": board["built_at"],
+            "path": str(SCOUTING_ROOT / "current.json"),
+            "sha256": sha256_file(SCOUTING_ROOT / "current.json"),
+            "decision_authority": False,
+        }
+    except (OSError, ValueError, KeyError, TypeError, pa.ArrowException) as exc:
+        scouting = {
+            "status": "unavailable",
+            "previous_board_retained": True,
+            "reason": f"{type(exc).__name__}: {exc}",
+            "decision_authority": False,
+        }
     return {
         "official": official,
         "processed": processed,
         "live_outcomes": live_outcomes,
+        "prospective_scoring": prospective_scoring,
         "market_goal_rates": market_goal_rates,
         "schedule": schedule,
         "catalog": catalog,
         "features": features,
         "quality": quality,
+        "incumbent_direct_forecast": incumbent_direct,
+        "participation_consensus": participation,
         "direct_forecast": direct,
         "component_forecast": component,
+        "scouting": scouting,
     }
 
 
@@ -165,6 +210,21 @@ def _forecast_events(path: Path, *, event: int, horizon: int) -> tuple[int, ...]
 def _fingerprint(payload: Mapping[str, Any]) -> str:
     rendered = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def weekly_pipeline_implementation_sha256() -> str:
+    """Conservatively invalidate weekly receipts after any engine-code change.
+
+    Include transitive helpers (including new modules), not just the entrypoint.
+    UI-only changes do not invalidate engine decisions.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _generation_time(
@@ -205,7 +265,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def run_weekly_deadline_pipeline(
+def _run_weekly_deadline_pipeline_once(
     *,
     manager_entry_id: int,
     horizon: int = 5,
@@ -238,6 +298,30 @@ def run_weekly_deadline_pipeline(
     checked_text = checked.isoformat()
     if manager_entry_id < 1:
         raise DeadlinePipelineError("manager_entry_id must be positive")
+    previous = _read_json(pipeline_receipt_path)
+    stages: list[dict[str, Any]] = []
+    current_stage: str | None = None
+
+    def progress(stage: str) -> None:
+        nonlocal current_stage
+        if current_stage is not None:
+            stages.append({"name": current_stage, "completed_at": datetime.now(UTC).isoformat()})
+        current_stage = stage
+        _atomic_json(
+            pipeline_receipt_path,
+            {
+                "pipeline_version": PIPELINE_VERSION,
+                "status": "running",
+                "published": False,
+                "checked_at": checked_text,
+                "manager_entry_id": manager_entry_id,
+                "current_stage": stage,
+                "stages": stages,
+                "total_stages": 5,
+            },
+        )
+
+    progress("weekly_evidence")
     refresh = dict(
         refresh_runner(
             reuse_latest_official=reuse_latest_official,
@@ -246,23 +330,26 @@ def run_weekly_deadline_pipeline(
         )
     )
     event = event_resolver()
-    try:
-        participation_refresh = dict(
-            participation_refresher(
-                event=event,
-                observed_at=checked_text,
-                forecast_path=direct_forecast_path,
-                receipt_path=participation_receipt_path,
-                consensus_path=participation_consensus_path,
+    participation_refresh = dict(refresh.get("participation_consensus") or {})
+    if not participation_refresh:
+        try:
+            participation_refresh = dict(
+                participation_refresher(
+                    event=event,
+                    observed_at=checked_text,
+                    forecast_path=direct_forecast_path,
+                    receipt_path=participation_receipt_path,
+                    consensus_path=participation_consensus_path,
+                )
             )
-        )
-    except (OSError, ValueError) as exc:
-        participation_refresh = {
-            "status": "unavailable",
-            "production_weight": 0.0,
-            "error": f"{type(exc).__name__}: {exc}",
-        }
+        except (OSError, ValueError) as exc:
+            participation_refresh = {
+                "status": "unavailable",
+                "production_weight": 0.0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
     rules = rules_loader()
+    progress("weekly_manager_state")
     derive = state_deriver or (
         lambda entry_id, decision_event: derive_latest_manager_state(
             entry_id,
@@ -282,6 +369,9 @@ def run_weekly_deadline_pipeline(
             "manager_state": derived,
             "participation_evidence": participation_refresh,
             "published": False,
+            "stages": stages,
+            "total_stages": 5,
+            "failure_code": "manager_state_required",
             "message": str(derived.get("message") or "Exact manager state is unavailable."),
         }
         _atomic_json(pipeline_receipt_path, receipt)
@@ -296,6 +386,7 @@ def run_weekly_deadline_pipeline(
     ).isoformat()
     input_identity = {
         "pipeline_version": PIPELINE_VERSION,
+        "implementation_sha256": weekly_pipeline_implementation_sha256(),
         "checked_at": checked_text,
         "manager_entry_id": manager_entry_id,
         "event": event,
@@ -313,6 +404,16 @@ def run_weekly_deadline_pipeline(
             "ready_events", []
         ),
         "runtime_rules_sha256": _rules_hash(rules),
+        "chip_strategy_version": CHIP_STRATEGY_VERSION,
+        "chip_timing_receipt_sha256": (
+            sha256_file(CHIP_TIMING_RECEIPT) if CHIP_TIMING_RECEIPT.is_file() else None
+        ),
+        "role_shift_research_calibration_sha256": (
+            sha256_file(ROLE_SHIFT_CALIBRATION) if ROLE_SHIFT_CALIBRATION.is_file() else None
+        ),
+        "chip_strategy_calibration_sha256": (
+            sha256_file(CHIP_STRATEGY_CALIBRATION) if CHIP_STRATEGY_CALIBRATION.is_file() else None
+        ),
         "alternatives_per_transfer_count": alternatives_per_transfer_count,
         "max_total_transfers": max_total_transfers,
         "max_paid_transfers": max_paid_transfers,
@@ -321,7 +422,6 @@ def run_weekly_deadline_pipeline(
         "decision_created_at": decision_created_at,
     }
     input_fingerprint = _fingerprint(input_identity)
-    previous = _read_json(pipeline_receipt_path)
     if (
         previous
         and previous.get("status") == "published"
@@ -340,9 +440,17 @@ def run_weekly_deadline_pipeline(
             )
         )
         if current_gate.get("publishable"):
+            _atomic_json(pipeline_receipt_path, previous)
             return {**previous, "reused": True}
 
+    progress("weekly_optimisation")
     staged_path = staging_root / f"event-{event}-{input_fingerprint[:16]}.json"
+
+    def optimisation_progress(message: str) -> None:
+        receipt = _read_json(pipeline_receipt_path)
+        if receipt is not None and receipt.get("status") == "running":
+            _atomic_json(pipeline_receipt_path, {**receipt, "progress_message": message})
+
     decision_runner(
         rules,
         event=event,
@@ -358,7 +466,24 @@ def run_weekly_deadline_pipeline(
         component_forecast_path=component_forecast_path,
         schedule_receipt_path=schedule_receipt_path,
         created_at=decision_created_at,
+        progress=optimisation_progress,
     )
+    # Optional private comparison cannot change the advice or its evidence gate.
+    # Capture at decision time, not retrospectively once the result is known.
+    from .scout_benchmark import optional_capture
+
+    scout_comparison = optional_capture(
+        forecast_path=direct_forecast_path, contract_path=contract_path,
+        events=events, rules=rules,
+    )
+    staged_decision = _read_json(staged_path)
+    if staged_decision is not None:
+        staged_decision.setdefault("diagnostics", {})["scout_private_benchmark"] = scout_comparison
+        from .policy_release import attach_policy_release
+
+        attach_policy_release(staged_decision)
+        _atomic_json(staged_path, staged_decision)
+    progress("weekly_validation")
     staged_gate = dict(
         evidence_auditor(
             as_of=checked_text,
@@ -382,11 +507,18 @@ def run_weekly_deadline_pipeline(
             "staged_decision_sha256": sha256_file(staged_path),
             "evidence": staged_gate,
             "published": False,
-            "message": "The candidate decision failed the deadline evidence gate.",
+            "stages": stages,
+            "total_stages": 5,
+            "failure_code": "deadline_evidence_failed",
+            "message": (
+                "The candidate decision failed the deadline evidence gate: "
+                + "; ".join(str(issue) for issue in staged_gate.get("issues", [])[:3])
+            ),
         }
         _atomic_json(pipeline_receipt_path, receipt)
         return receipt
 
+    progress("weekly_publication")
     previous_published = (
         published_decision_path.read_bytes() if published_decision_path.is_file() else None
     )
@@ -434,7 +566,52 @@ def run_weekly_deadline_pipeline(
         "deadline_evidence_sha256": sha256_file(deadline_status_path),
         "published": True,
         "reused": False,
+        "stages": [
+            *stages,
+            {"name": "weekly_publication", "completed_at": datetime.now(UTC).isoformat()},
+        ],
+        "total_stages": 5,
         "message": "The weekly decision passed every evidence gate and is now active.",
     }
     _atomic_json(pipeline_receipt_path, receipt)
     return receipt
+
+
+def run_weekly_deadline_pipeline(
+    *,
+    chip_timing_runner: Callable[..., Mapping[str, Any]] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Publish the weekly decision, then make sure its chip timing is current.
+
+    Wildcard timing needs the published route as its comparison, so it runs
+    after publication. When the squad has no fresh timing receipt, the planner
+    runs on the published decision and a second pass re-decides with the
+    verdict, reusing the same official snapshot. The first publication stays
+    active if the timing run or the second pass fails.
+    """
+    from .chip_timing import run_live_wildcard_timing, timing_refresh_needed
+
+    first = _run_weekly_deadline_pipeline_once(**kwargs)
+    if first.get("status") != "published":
+        return first
+    decision_path = Path(kwargs.get("published_decision_path", CURRENT_WEEKLY_DECISION))
+    try:
+        needed = timing_refresh_needed(decision_path)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return first
+    if not needed:
+        return first
+    runner = chip_timing_runner or run_live_wildcard_timing
+    try:
+        runner(decision_path=decision_path)
+    except (OSError, ValueError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
+        return {**first, "chip_timing": {"status": "failed", "reason": str(exc)}}
+    # The second pass rebuilds forecasts now, so it needs its own check time:
+    # reusing the first pass's as_of would make those forecasts look future-dated.
+    second = _run_weekly_deadline_pipeline_once(
+        **{**kwargs, "reuse_latest_official": True, "as_of": datetime.now(UTC)}
+    )
+    return {**second, "chip_timing": {"status": "refreshed"}} if second.get(
+        "status"
+    ) == "published" else {**first, "chip_timing": {"status": "second_pass_failed"}}

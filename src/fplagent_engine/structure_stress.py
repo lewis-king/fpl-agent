@@ -6,10 +6,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow.parquet as pq
 
 from fplagent_data.http import sha256_file
+from fplagent_data.participation_consensus import CONSENSUS as PARTICIPATION_CONSENSUS
 
 from .artifact_lineage import load_json_artifact, require_current_forecast
+from .capital_efficiency import candidate_publication_role_risks
 from .component_simulator import (
     calibrate_empirical_components,
     predict_current_goal_rates,
@@ -137,8 +140,8 @@ def reconcile_structure_reversal(
         }
     published_regret = float(published["synthesis_regret"])
     challenger_regret = float(challenger["synthesis_regret"])
-    published_rank = int(published["rank"])
-    challenger_rank = int(challenger["rank"])
+    published_rank = int(published.get("publication_rank") or published["rank"])
+    challenger_rank = int(challenger.get("publication_rank") or challenger["rank"])
     regret_delta = challenger_regret - published_regret
     passed = challenger_rank > published_rank and regret_delta > 0.0
     return {
@@ -169,7 +172,11 @@ def _candidate_field(
     by_player: dict[int, dict[int, dict]],
     meta: dict[int, dict],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    requested = {str(row["candidate_id"]) for row in decision["ranking"]}
+    requested = {
+        str(row["candidate_id"])
+        for row in decision["ranking"]
+        if bool(row.get("publication_eligible", True))
+    }
     by_id = {
         str(candidate["candidate_id"]): candidate
         for candidate in shortlist["candidates"]
@@ -334,6 +341,7 @@ def run_structure_stress(
     shortlist_path: Path = SHORTLIST_JSON,
     results_path: Path = RESULTS_JSON,
     report_path: Path = REPORT,
+    participation_consensus_path: Path = PARTICIPATION_CONSENSUS,
 ) -> dict[str, Any]:
     if selection_simulations < 1_000 or holdout_simulations < 5_000:
         raise ValueError("Structure-stress simulation counts are below the safety minimum")
@@ -350,8 +358,42 @@ def run_structure_stress(
     by_player, meta = loaded["by_player"], loaded["meta"]
     candidates, proxy_runs = _candidate_field(decision, shortlist, rows, by_player, meta)
     current_id = str(decision["decision"]["candidate_id"])
+    if not participation_consensus_path.is_file():
+        raise FileNotFoundError(
+            "Run participation-consensus collection before structure stress: "
+            f"{participation_consensus_path}"
+        )
+    consensus = {
+        int(row["element"]): str(row.get("consensus") or "not_covered")
+        for row in pq.read_table(participation_consensus_path).to_pylist()
+        if int(row["event"]) == 1
+    }
+    role_gate_forecasts = {
+        int(row["element"]): {
+            **row,
+            "live_participation_consensus": consensus.get(int(row["element"]), "not_covered"),
+        }
+        for row in rows
+        if int(row["event_number"]) == 1
+    }
+    role_risks_by_id = {
+        str(candidate["candidate_id"]): candidate_publication_role_risks(
+            candidate,
+            role_gate_forecasts,
+            meta,
+        )
+        for candidate in candidates
+    }
+    candidates = [
+        candidate
+        for candidate in candidates
+        if not role_risks_by_id[str(candidate["candidate_id"])]
+    ]
+    eligible_ids = {str(candidate["candidate_id"]) for candidate in candidates}
+    for row in proxy_runs:
+        row["publication_eligible"] = str(row["candidate_id"]) in eligible_ids
     if current_id not in {str(candidate["candidate_id"]) for candidate in candidates}:
-        raise RuntimeError("Published candidate is absent from structure-stress field")
+        raise RuntimeError("Published candidate is absent from the role-safe structure field")
 
     rule_audit = audit_2026_27_rules()
     rule_checks = dict(rule_audit["assertions"])
@@ -414,7 +456,9 @@ def run_structure_stress(
     )
     checks = {
         "live_rule_assertions_pass": all(rule_checks.values()),
-        "all_synthesis_finalists_scored": len(decision["ranking"])
+        "all_synthesis_finalists_scored": len(
+            [row for row in decision["ranking"] if bool(row.get("publication_eligible", True))]
+        )
         <= len(candidates),
         "five_bench_proxy_settings_challenged": bench_proxy_coverage(proxy_runs),
         "exact_formation_valid_autosubs_used": True,
@@ -444,12 +488,18 @@ def run_structure_stress(
             for candidate in candidates
         },
         "bench_proxy_candidates": proxy_runs,
+        "role_integrity_exclusions": [
+            {"candidate_id": candidate_id, "risks": risks}
+            for candidate_id, risks in sorted(role_risks_by_id.items())
+            if risks
+        ],
         "method": {
             "selection_simulations": selection_simulations,
             "holdout_simulations_if_challenged": holdout_simulations,
             "scenarios": SCENARIOS,
             "candidate_scoring": "exact autosubs and captain fallback",
             "selection_objective": "80% mean scenario regret + 20% worst scenario regret",
+            "participation_consensus_sha256": sha256_file(participation_consensus_path),
         },
         "rule_audit": {
             "snapshot_at": rule_audit["snapshot_at"],

@@ -62,6 +62,7 @@ def evaluate_action_paths(
     played: np.ndarray,
     player_meta: dict[int, dict],
     horizon_decay: float = 0.88,
+    score_candidates=None,
 ) -> tuple[list[ActionPathMetric], np.ndarray]:
     if not actions:
         raise ValueError("At least one weekly action is required")
@@ -76,7 +77,7 @@ def evaluate_action_paths(
     if len(roll_indices) != 1:
         raise ValueError("Weekly action evaluation requires exactly one roll comparator")
     candidates = [_candidate_payload(action) for action in actions]
-    event_scores = _score_candidates(
+    event_scores = (score_candidates or _score_candidates)(
         candidates,
         player_ids,
         events,
@@ -87,35 +88,51 @@ def evaluate_action_paths(
     global_index = {element: index for index, element in enumerate(player_ids)}
     event_index = {event: index for index, event in enumerate(events)}
     for action_index, action in enumerate(actions):
-        chip = action.action.chip
-        if chip not in {ChipType.BENCH_BOOST, ChipType.TRIPLE_CAPTAIN}:
-            continue
-        if action.action.event not in event_index:
-            raise ValueError("Chip action event is outside the simulation horizon")
-        offset = event_index[action.action.event]
-        lineup = action.action.lineup
-        captain = global_index[lineup.captain]
-        vice = global_index[lineup.vice_captain]
-        captain_bonus = np.where(
-            played[:, offset, captain],
-            points[:, offset, captain],
-            np.where(played[:, offset, vice], points[:, offset, vice], 0),
-        )
-        if chip == ChipType.TRIPLE_CAPTAIN:
-            event_scores[:, action_index, offset] += captain_bonus
-            continue
-        squad_indices = [global_index[element] for element in action.selected_player_ids]
-        all_squad_points = np.sum(
-            points[:, offset, squad_indices] * played[:, offset, squad_indices],
-            axis=1,
-        )
-        event_scores[:, action_index, offset] = all_squad_points + captain_bonus
+        chip_events = list(action.planned_chips)
+        if action.action.chip is not None:
+            chip_events.insert(0, (action.action.event, action.action.chip))
+        if len({event for event, _ in chip_events}) != len(chip_events):
+            raise ValueError("Planned chips collide in one event")
+        lineups = {item.event: item.lineup for item in action.lineups}
+        squads = dict(action.event_squads)
+        for event, chip in chip_events:
+            if event not in event_index:
+                raise ValueError("Chip action event is outside the simulation horizon")
+            if chip not in {ChipType.BENCH_BOOST, ChipType.TRIPLE_CAPTAIN}:
+                continue  # WC/FH are represented by their exact event squads.
+            offset = event_index[event]
+            lineup = lineups[event]
+            captain = global_index[lineup.captain]
+            vice = global_index[lineup.vice_captain]
+            captain_bonus = np.where(
+                played[:, offset, captain],
+                points[:, offset, captain],
+                np.where(played[:, offset, vice], points[:, offset, vice], 0),
+            )
+            if chip == ChipType.TRIPLE_CAPTAIN:
+                event_scores[:, action_index, offset] += captain_bonus
+                continue
+            squad_indices = [
+                global_index[element] for element in squads.get(event, action.selected_player_ids)
+            ]
+            all_squad_points = np.sum(
+                points[:, offset, squad_indices] * played[:, offset, squad_indices], axis=1
+            )
+            event_scores[:, action_index, offset] = all_squad_points + captain_bonus
     weights = np.asarray(
         [horizon_decay ** (event - events[0]) for event in events], dtype=np.float64
     )
     totals = np.sum(event_scores * weights[None, None, :], axis=2)
     for index, action in enumerate(actions):
         totals[:, index] -= float(action.incremental_points_cost)
+        if len({event for event, _ in action.future_points_costs}) != len(
+            action.future_points_costs
+        ):
+            raise ValueError("Duplicate future hit event")
+        for event, cost in action.future_points_costs:
+            if event <= events[0] or event not in event_index or cost < 0 or cost % 4:
+                raise ValueError("Future hits must be legal costs at a later evaluated event")
+            totals[:, index] -= horizon_decay ** (event - events[0]) * cost
         totals[:, index] += float(action.terminal_transfer_value)
 
     roll = totals[:, roll_indices[0]]

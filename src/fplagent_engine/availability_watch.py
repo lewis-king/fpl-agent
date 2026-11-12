@@ -18,7 +18,7 @@ from fplagent_data.paths import MANIFESTS, PROCESSED
 from fplagent_data.preseason_lineups import fpl_role_mapping_fingerprint
 
 from .decision_synthesis import DECISION_JSON
-from .models import CURRENT_FORECAST
+from .models import CURRENT_FORECAST, CURRENT_FORECAST_MANIFEST
 from .preseason_role_scenario import (
     FLAG_NOT_LISTED,
     FLAG_ROLE_WATCH,
@@ -30,7 +30,7 @@ from .preseason_role_scenario import (
 from .preseason_role_scenario import RESULTS_JSON as SCENARIO_RESULTS
 from .preseason_role_threshold import RESULTS_JSON as THRESHOLD_RESULTS
 
-VERSION = 2
+VERSION = 3
 EVENT = 1
 PLAYERS = PROCESSED / "fpl" / "2026-27" / "preseason" / "players.parquet"
 TEAMS = PROCESSED / "fpl" / "2026-27" / "preseason" / "teams.parquet"
@@ -102,9 +102,7 @@ def _effective_official_chance(player: Mapping[str, Any]) -> int:
     return 100 if player.get("status") == "a" else 0
 
 
-def _attention_labels(
-    player: Mapping[str, Any], role_flag: str
-) -> list[str]:
+def _attention_labels(player: Mapping[str, Any], role_flag: str) -> list[str]:
     labels: list[str] = []
     chance = _effective_official_chance(player)
     if (
@@ -114,11 +112,7 @@ def _attention_labels(
         or chance == 0
     ):
         labels.append("official_unavailable")
-    elif (
-        player.get("status") != "a"
-        or chance < 100
-        or bool(str(player.get("news") or "").strip())
-    ):
+    elif player.get("status") != "a" or chance < 100 or bool(str(player.get("news") or "").strip()):
         labels.append("official_doubt_or_news")
     if role_flag == FLAG_NOT_LISTED:
         labels.append("three_plus_lineup_absence")
@@ -139,7 +133,7 @@ def _decision_frontier(
     issues: list[str],
 ) -> dict[str, Any]:
     """Audit evidence for every player who can win the final synthesis, not just its leader."""
-    published = ((decision.get("decision") or {}).get("candidate") or {})
+    published = (decision.get("decision") or {}).get("candidate") or {}
     ranking = list(decision.get("ranking") or [])
     requested_ids = [str(row["candidate_id"]) for row in ranking if row.get("candidate_id")]
     if not requested_ids and published.get("candidate_id"):
@@ -175,7 +169,9 @@ def _decision_frontier(
             "synthesis frontier candidates missing from the checksum-bound shortlist: "
             f"{missing_candidates}"
         )
-    frontier = [candidates[candidate_id] for candidate_id in requested_ids if candidate_id in candidates]
+    frontier = [
+        candidates[candidate_id] for candidate_id in requested_ids if candidate_id in candidates
+    ]
     exposure: dict[int, dict[str, int]] = {}
     for candidate in frontier:
         selected = set(map(int, candidate.get("selected") or []))
@@ -183,9 +179,7 @@ def _decision_frontier(
         starters = set(map(int, lineup.get("starters") or []))
         captain = int(lineup["captain"]) if lineup.get("captain") is not None else None
         for element in selected:
-            counts = exposure.setdefault(
-                element, {"squads": 0, "starts": 0, "captaincies": 0}
-            )
+            counts = exposure.setdefault(element, {"squads": 0, "starts": 0, "captaincies": 0})
             counts["squads"] += 1
             counts["starts"] += int(element in starters)
             counts["captaincies"] += int(element == captain)
@@ -257,8 +251,9 @@ def _decision_frontier(
         "players": rows,
         "missing": missing_layers,
         "authority": (
-            "Official, forecast and role coverage are publication gates. Predicted lineups are "
-            "shown across the entire decision frontier but retain zero production weight."
+            "Official, forecast and role coverage are publication gates. Current predicted-lineup "
+            "evidence may alter only the bounded Bayesian participation layer; every actionable "
+            "selection must still clear the role-integrity gate."
         ),
     }
 
@@ -275,17 +270,18 @@ def _scenario_stability(scenario: Mapping[str, Any]) -> dict[str, Any]:
     moderate = scenarios.get("moderate_role_stress")
 
     def retained(row: Any) -> bool:
-        return bool(
-            isinstance(row, Mapping)
-            and not row.get("configuration", {}).get(
-                "cross_family_holdout_support", False
-            )
-            and not row.get("squad", {}).get("cross_family_holdout_support", False)
-            and not (
-                isinstance(row.get("deep_squad_replay"), Mapping)
-                and row["deep_squad_replay"].get("cross_family_holdout_support")
-            )
-        )
+        if not isinstance(row, Mapping):
+            return False
+        if row.get("configuration", {}).get("cross_family_holdout_support", False):
+            return False
+        deep_replay = row.get("deep_squad_replay")
+        if isinstance(deep_replay, Mapping):
+            # A fast squad screen exists only to nominate a challenger for the
+            # independent deep replay. Once that replay is present, its result is
+            # authoritative; a screen reversal that failed both holdout families
+            # is not an unresolved production warning.
+            return not bool(deep_replay.get("cross_family_holdout_support"))
+        return not bool(row.get("squad", {}).get("cross_family_holdout_support", False))
 
     return {
         "baseline_stable": retained(baseline),
@@ -416,9 +412,7 @@ def _decision_impacts(
                     else ""
                 ),
                 "captain": (
-                    str(challenger.get("captain") or "")
-                    if isinstance(challenger, Mapping)
-                    else ""
+                    str(challenger.get("captain") or "") if isinstance(challenger, Mapping) else ""
                 ),
                 "vice_captain": (
                     str(challenger.get("vice_captain") or "")
@@ -441,6 +435,7 @@ def audit_availability_watch(
     teams_path: Path = TEAMS,
     events_path: Path = EVENTS,
     forecast_path: Path = CURRENT_FORECAST,
+    forecast_manifest_path: Path = CURRENT_FORECAST_MANIFEST,
     decision_path: Path = DECISION_JSON,
     role_receipt_path: Path = ROLE_RECEIPT,
     role_evidence_path: Path = ROLE_EVIDENCE,
@@ -458,18 +453,16 @@ def audit_availability_watch(
     decision = _load_json(decision_path, "decision", issues)
     role_receipt = _load_json(role_receipt_path, "preseason role receipt", issues)
     scenario = _load_json(scenario_results_path, "preseason scenario results", issues)
-    threshold = _load_json(
-        threshold_results_path, "preseason threshold results", issues
-    )
+    threshold = _load_json(threshold_results_path, "preseason threshold results", issues)
     players = _load_parquet(players_path, "official players table", issues)
     teams = _load_parquet(teams_path, "official teams table", issues)
     events = _load_parquet(events_path, "official events table", issues)
     forecasts = _load_parquet(forecast_path, "direct forecast", issues)
     role_rows = _load_parquet(role_evidence_path, "preseason role evidence", issues)
 
-    # Third-party predicted lineups are deliberately optional and shadow-only.  The live
-    # default consumes them when present, while isolated historical/unit replays do not
-    # accidentally inherit a workstation's current receipt.
+    # Third-party predicted lineups are an optional, bounded production layer. The live
+    # default consumes a current checksum-bound receipt, while isolated historical/unit
+    # replays do not accidentally inherit a workstation's current evidence.
     if (
         participation_receipt_path is None
         and participation_consensus_path is None
@@ -576,6 +569,36 @@ def audit_availability_watch(
             "preseason threshold does not describe the current forecast",
         ),
     ]
+    forecast_participation_authoritative = False
+    forecast_participation_policy: dict[str, Any] = {}
+    forecast_has_applied_participation = any(
+        bool(row.get("live_participation_applied"))
+        for row in forecasts
+        if int(row.get("event_number") or -1) == EVENT
+    )
+    forecast_manifest_bound = False
+    try:
+        forecast_manifest = json.loads(forecast_manifest_path.read_text(encoding="utf-8"))
+        candidate_policy = forecast_manifest.get("result", {}).get("participation_policy") or {}
+        if (
+            isinstance(candidate_policy, dict)
+            and forecast_manifest.get("forecast_sha256") == forecast_sha
+        ):
+            forecast_manifest_bound = True
+            forecast_participation_policy = candidate_policy
+            forecast_participation_authoritative = bool(candidate_policy.get("decision_authority"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        forecast_participation_policy = {}
+    if forecast_has_applied_participation and not forecast_manifest_bound:
+        issues.append(
+            "the forecast applies predicted-lineup evidence without a checksum-bound manifest"
+        )
+    if forecast_has_applied_participation and not forecast_participation_authoritative:
+        issues.append(
+            "the forecast applies predicted-lineup evidence without declared decision authority"
+        )
+    if forecast_participation_authoritative and participation_receipt is None:
+        issues.append("the production forecast requires its predicted-lineup receipt and consensus")
     if participation_receipt is not None and participation_consensus_path is not None:
         participation_output = participation_receipt.get("outputs") or {}
         participation_input = participation_receipt.get("inputs") or {}
@@ -590,9 +613,17 @@ def audit_availability_watch(
                 "predicted-lineup consensus uses a different official player generation"
             )
         if participation_input.get("forecast_sha256") != forecast_sha:
-            participation_issues.append(
-                "predicted-lineup consensus uses a different forecast generation"
+            production_lineage_ok = bool(
+                forecast_participation_authoritative
+                and forecast_participation_policy.get("receipt_sha256")
+                == sha256_file(participation_receipt_path)
+                and forecast_participation_policy.get("consensus_sha256")
+                == sha256_file(participation_consensus_path)
             )
+            if not production_lineage_ok:
+                participation_issues.append(
+                    "predicted-lineup consensus is not bound to this production forecast"
+                )
         try:
             participation_observed = _aware(
                 str(participation_receipt["observed_at"]),
@@ -600,20 +631,22 @@ def audit_availability_watch(
             )
             participation_age = checked - participation_observed
             if participation_age < -timedelta(minutes=5):
-                participation_issues.append(
-                    "predicted-lineup consensus was observed in the future"
-                )
-            elif participation_age > advisory_max_age:
+                participation_issues.append("predicted-lineup consensus was observed in the future")
+            elif participation_age > min(advisory_max_age, timedelta(hours=12)):
+                participation_max_age = min(advisory_max_age, timedelta(hours=12))
                 participation_issues.append(
                     "predicted-lineup consensus is stale: "
                     f"{int(participation_age.total_seconds())}s exceeds "
-                    f"{int(advisory_max_age.total_seconds())}s"
+                    f"{int(participation_max_age.total_seconds())}s"
                 )
         except (AvailabilityWatchError, KeyError, ValueError) as exc:
             participation_issues.append(str(exc))
         participation_current = not participation_issues
     if participation_issues:
-        warnings.extend(participation_issues)
+        if forecast_participation_authoritative:
+            issues.extend(participation_issues)
+        else:
+            warnings.extend(participation_issues)
     mapping_fingerprint = receipt_inputs.get("role_mapping_fingerprint")
     if mapping_fingerprint:
         current_mapping = fpl_role_mapping_fingerprint(teams, players, events)
@@ -662,13 +695,10 @@ def audit_availability_watch(
     forecast_by_id = {
         int(row["element"]): row
         for row in forecasts
-        if int(row.get("event_number") or -1) == EVENT
-        and row.get("element") is not None
+        if int(row.get("event_number") or -1) == EVENT and row.get("element") is not None
     }
     role_by_id = {
-        int(row["fpl_element"]): row
-        for row in role_rows
-        if row.get("fpl_element") is not None
+        int(row["fpl_element"]): row for row in role_rows if row.get("fpl_element") is not None
     }
     participation_by_id = (
         {
@@ -696,11 +726,7 @@ def audit_availability_watch(
         if elements:
             issues.append(f"selected players missing from {layer} evidence: {elements}")
 
-    flags = (
-        derive_role_flags(role_rows, set(selected))
-        if selected and not missing["role"]
-        else {}
-    )
+    flags = derive_role_flags(role_rows, set(selected)) if selected and not missing["role"] else {}
     boundary = threshold.get("boundary") or {}
     highest_supported = boundary.get("highest_supported_retention")
     boundary_point = next(
@@ -715,7 +741,11 @@ def audit_availability_watch(
 
     player_rows: list[dict[str, Any]] = []
     for element in selected:
-        if element not in player_by_id or element not in forecast_by_id or element not in role_by_id:
+        if (
+            element not in player_by_id
+            or element not in forecast_by_id
+            or element not in role_by_id
+        ):
             continue
         official = player_by_id[element]
         forecast = forecast_by_id[element]
@@ -776,11 +806,11 @@ def audit_availability_watch(
                         "predicted_not_start_sources": list(
                             map(str, predicted.get("predicted_not_start_sources") or [])
                         ),
-                        "complete_source_count": int(
-                            predicted.get("complete_source_count") or 0
+                        "complete_source_count": int(predicted.get("complete_source_count") or 0),
+                        "production_weight": float(predicted.get("production_weight") or 0.0),
+                        "production_adjustment_authorized": bool(
+                            predicted.get("production_adjustment_authorized")
                         ),
-                        "production_weight": 0.0,
-                        "production_adjustment_authorized": False,
                     }
                     if predicted is not None
                     else None
@@ -795,37 +825,29 @@ def audit_availability_watch(
         if any(label.startswith("official_") for label in row["attention"])
     ]
     role_verification = [
-        row
-        for row in player_rows
-        if row["preseason"]["flag"] in {FLAG_NOT_LISTED, FLAG_ROLE_WATCH}
+        row for row in player_rows if row["preseason"]["flag"] in {FLAG_NOT_LISTED, FLAG_ROLE_WATCH}
     ]
-    uncovered = [
-        row for row in player_rows if row["preseason"]["flag"] == FLAG_UNCOVERED
-    ]
+    uncovered = [row for row in player_rows if row["preseason"]["flag"] == FLAG_UNCOVERED]
     if role_verification:
         warnings.append(
             f"{len(role_verification)} selected players require attributable role verification"
         )
     if uncovered:
-        warnings.append(
-            f"{len(uncovered)} selected players have no confirmed preseason club feed"
-        )
+        warnings.append(f"{len(uncovered)} selected players have no confirmed preseason club feed")
     predicted_bench = [
         row
         for row in player_rows
-        if (row.get("predicted_lineups") or {}).get("consensus")
-        == "predicted_bench_consensus"
+        if (row.get("predicted_lineups") or {}).get("consensus") == "predicted_bench_consensus"
     ]
     predicted_disagreement = [
         row
         for row in player_rows
-        if (row.get("predicted_lineups") or {}).get("consensus")
-        == "source_disagreement"
+        if (row.get("predicted_lineups") or {}).get("consensus") == "source_disagreement"
     ]
     if predicted_bench:
         warnings.append(
             f"{len(predicted_bench)} selected players have a two-source predicted-bench flag; "
-            "this remains shadow evidence pending prospective calibration"
+            "the bounded production adjustment is active and must be refreshed at the deadline"
         )
     if predicted_disagreement:
         warnings.append(
@@ -872,19 +894,30 @@ def audit_availability_watch(
         "decision_change_authorized": False,
         "authority": (
             "Official status is already represented by the aligned forecast. Preseason lineup "
-            "evidence and sensitivity factors are advisory and cannot directly change production."
+            "friendlies remain advisory; current independent predicted lineups may change only the "
+            "bounded participation distribution and are then subject to action-level role gates."
         ),
         "evidence_hierarchy": {
             "production": [
                 "official_fpl_status_and_news",
                 "historically_validated_minute_model",
+                "bounded_independent_predicted_lineup_consensus",
             ],
             "deadline_override_requires": (
                 "timestamped official club, manager press-conference or official FPL evidence"
             ),
             "context_only": ["preseason_friendly_lineups"],
-            "prospective_shadow": ["independent_predicted_lineup_consensus"],
-            "predicted_lineup_production_weight": 0.0,
+            "prospective_validation_pending": ["predicted_lineup_consensus_scoreboard"],
+            "predicted_lineup_maximum_evidence_weight": float(
+                (participation_receipt or {})
+                .get("authority", {})
+                .get(
+                    "maximum_evidence_weight",
+                    (participation_receipt or {})
+                    .get("authority", {})
+                    .get("production_weight", 0.0),
+                )
+            ),
             "preseason_friendly_production_weight": 0.0,
             "reason": (
                 "The historical role-feature challenger lost points in exact legal replay; "
@@ -894,6 +927,20 @@ def audit_availability_watch(
         "lineage": {
             "decision_sha256": decision_sha,
             "forecast_sha256": forecast_sha,
+            "forecast_manifest_sha256": (
+                sha256_file(forecast_manifest_path) if forecast_manifest_path.is_file() else None
+            ),
+            "participation_receipt_sha256": (
+                sha256_file(participation_receipt_path)
+                if participation_receipt_path is not None and participation_receipt_path.is_file()
+                else None
+            ),
+            "participation_consensus_sha256": (
+                sha256_file(participation_consensus_path)
+                if participation_consensus_path is not None
+                and participation_consensus_path.is_file()
+                else None
+            ),
             "official_players_sha256": players_sha,
             "role_receipt_sha256": role_receipt_sha,
             "role_evidence_sha256": role_evidence_sha,
@@ -901,9 +948,7 @@ def audit_availability_watch(
             "threshold_results_sha256": threshold_sha,
             "official_snapshot_at": player_snapshot,
             "forecast_snapshot_at": forecast_snapshot,
-            "role_collected_at": (
-                collected_at.isoformat() if collected_at is not None else None
-            ),
+            "role_collected_at": (collected_at.isoformat() if collected_at is not None else None),
         },
         "scenario_stability": stability,
         "predicted_lineup_consensus": {
@@ -914,8 +959,30 @@ def audit_availability_watch(
                 if participation_receipt is not None
                 else "not_collected"
             ),
-            "production_weight": 0.0,
-            "production_adjustment_authorized": False,
+            "maximum_evidence_weight": float(
+                (participation_receipt or {})
+                .get("authority", {})
+                .get(
+                    "maximum_evidence_weight",
+                    (participation_receipt or {})
+                    .get("authority", {})
+                    .get("production_weight", 0.0),
+                )
+            ),
+            "production_weight": float(
+                (participation_receipt or {})
+                .get("authority", {})
+                .get(
+                    "maximum_evidence_weight",
+                    (participation_receipt or {})
+                    .get("authority", {})
+                    .get("production_weight", 0.0),
+                )
+            ),
+            "production_adjustment_authorized": bool(
+                (participation_receipt or {}).get("authority", {}).get("predicted_lineup_consensus")
+                in {"bounded_production", "bounded_production_operator_override"}
+            ),
             "promotion_gate": (
                 participation_receipt.get("promotion_gate") or {}
                 if participation_receipt is not None
@@ -956,10 +1023,7 @@ def audit_availability_watch(
             "teams_without_confirmed_lineups": list(
                 map(
                     str,
-                    (scenario.get("coverage") or {}).get(
-                        "teams_without_confirmed_lineups"
-                    )
-                    or [],
+                    (scenario.get("coverage") or {}).get("teams_without_confirmed_lineups") or [],
                 )
             ),
         },

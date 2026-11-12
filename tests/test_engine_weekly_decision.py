@@ -17,13 +17,43 @@ from fplagent_engine.weekly_actions import (
     generate_weekly_actions,
 )
 from fplagent_engine.weekly_decision import (
+    freeze_weekly_player_forecasts,
+    frozen_participation_fields,
     require_weekly_forecast_lineage,
+    selected_incoming_role_risks,
     summarize_market_shadow_scenario,
     synthesize_squad_chip_shadow,
     synthesize_team_chip_shadow,
     synthesize_weekly_decision,
 )
 from fplagent_engine.weekly_simulation import ActionPathMetric
+
+
+@pytest.mark.parametrize(
+    ("row", "minutes", "source"),
+    [
+        ({"expected_minutes": 0.0, "p_play": 0.0}, 0.0, "forecast"),
+        ({"p_1_59": 0.1, "p_60_89": 0.2, "p_90_or_more": 0.6}, 71.8, "participation_bin_proxy"),
+        ({"p_play": 0.8}, 60.0, "appearance_probability_proxy"),
+    ],
+)
+def test_frozen_participation_retains_minutes_with_honest_provenance(row, minutes, source):
+    frozen = frozen_participation_fields(row)
+    assert frozen["expected_minutes"] == pytest.approx(minutes)
+    assert frozen["minutes_source"] == source
+    assert frozen["p_90_or_more"] == row.get("p_90_or_more")
+
+
+def test_forecast_freeze_covers_unselected_pool_without_outcome_labels(monkeypatch):
+    monkeypatch.setattr("fplagent_engine.weekly_decision.sha256_file", lambda _: "calibration")
+    monkeypatch.setattr("fplagent_engine.weekly_decision.frozen_score_distribution",
+                        lambda row: {"points_pmf": {"0": 1 - row["p_play"], "1": row["p_play"]}})
+    rows = {r["element"]: dict(r, target_points=99) for r in _rows() if r["event_number"] == 2}
+    frozen = freeze_weekly_player_forecasts(rows)
+    assert len(frozen) == len(rows)
+    assert set(frozen) == {str(p) for p in rows}
+    assert all("target_points" not in r for r in frozen.values())
+    assert all(sum(r["points_pmf"].values()) == pytest.approx(1) for r in frozen.values())
 
 
 def _lineage_artifacts(tmp_path: Path) -> tuple[Path, Path, Path, list[dict], list[dict]]:
@@ -95,6 +125,26 @@ def _actions(*, free_transfers: int = 1, max_transfers: int = 1):
     )
 
 
+def test_selected_incoming_role_gate_uses_the_players_forecast_row() -> None:
+    action = next(row for row in _actions() if row.route_type == "one_free_transfer")
+    incoming = action.action.transfers[0].incoming
+    covered_row = {
+        "element": incoming.player_id,
+        "player_name": "Covered incoming player",
+        "position": incoming.position,
+        "market_price": incoming.current_price,
+        "expected_minutes": 77.2,
+        "p_play": 0.944,
+        "live_participation_consensus": "not_covered",
+    }
+
+    assert selected_incoming_role_risks(action, {incoming.player_id: covered_row}) == []
+
+    missing = selected_incoming_role_risks(action, {})
+    assert missing[0]["element"] == incoming.player_id
+    assert missing[0]["reasons"] == ["current_event_forecast_missing"]
+
+
 def test_market_action_shadow_summary_detects_changed_leader() -> None:
     actions = _actions()
     roll = next(action for action in actions if action.route_type == "roll")
@@ -138,9 +188,10 @@ def test_stable_free_transfer_is_promoted_over_roll() -> None:
     )
 
     assert result["selected_action_id"] == transfer.action_id
-    assert result["version"] == "weekly_decision_synthesis_v3"
+    assert result["version"] == "weekly_decision_synthesis_v4"
     assert result["promotion_gate"]["passed"] is True
     assert result["strongest_rejected"]["action_id"] == roll.action_id
+    assert result["objective_tradeoff"]["mean_points_sacrificed_to_robust_ranking"] == 0
     summaries = {row["action_id"]: row for row in result["action_summaries"]}
     assert summaries[transfer.action_id]["transfer_count"] == 1
     assert summaries[transfer.action_id]["captain_player_id"] in summaries[transfer.action_id][
@@ -184,6 +235,114 @@ def test_ambiguous_paid_transfer_falls_back_to_roll() -> None:
     assert result["robust_leader_action_id"] == hit.action_id
     assert result["selected_action_id"] == roll.action_id
     assert result["promotion_gate"]["status"] == "roll_due_to_uncertainty"
+    assert result["objective_tradeoff"]["mean_points_sacrificed_to_safety_gates"] > 0
+    assert result["objective_tradeoff"]["mean_points_sacrificed_to_robust_ranking"] == 0
+
+
+@pytest.mark.parametrize("rejected_count", [1, 2])
+def test_rejected_leaders_do_not_hide_an_admissible_runner_up(rejected_count) -> None:
+    base = _actions()
+    roll = next(action for action in base if action.route_type == "roll")
+    safe = next(action for action in base if action.route_type == "one_free_transfer")
+    rejected = [replace(safe, action_id=f"brittle-{i}") for i in range(rejected_count)]
+    actions = [roll, safe, *rejected]
+    metrics = {
+        name: [
+            _metric(roll, regret=4, delta=0, low=0, beat=0),
+            _metric(safe, regret=3, delta=0.7, low=0.4, beat=0.6),
+            *[
+                _metric(action, regret=i, delta=1.5, low=-0.5, beat=0.5)
+                for i, action in enumerate(rejected)
+            ],
+        ] for name in ("residual", "component")
+    }
+    result = synthesize_weekly_decision(actions, metrics,
+                                        scenario_weights={"residual": 0.5, "component": 0.5})
+    assert result["selected_action_id"] == safe.action_id
+    assert result["robust_leader_action_id"] == rejected[0].action_id
+    assert result["promotion_gate"]["status"] == "promoted_after_rejections"
+    assert result["promotion_gate"]["passed"]
+    assert result["selection_audit"]["selected_rank"] == rejected_count + 1
+    assert result["selection_audit"]["rejected_higher_ranked_action_ids"] == [
+        action.action_id for action in rejected
+    ]
+
+
+def test_role_rejected_leader_allows_safe_alternative() -> None:
+    actions = generate_weekly_actions(
+        _state(), _rows(), _rules(), events=(2, 3),
+        alternatives_per_transfer_count=3, max_total_transfers=1,
+    )
+    roll = next(action for action in actions if action.route_type == "roll")
+    transfers = [a for a in actions if a.route_type == "one_free_transfer"]
+    risky = transfers[0]
+    risky_in = risky.action.transfers[0].incoming.player_id
+    alternatives = generate_weekly_actions(
+        _state(), [row for row in _rows() if row["element"] != risky_in], _rules(),
+        events=(2, 3), alternatives_per_transfer_count=1, max_total_transfers=1,
+    )
+    safe = next(a for a in alternatives if a.route_type == "one_free_transfer")
+    actions = [risky, safe, roll]
+    metrics = {"central": [
+        _metric(risky, regret=0, delta=2, low=1, beat=0.7),
+        _metric(safe, regret=1, delta=1, low=0.5, beat=0.6),
+        _metric(roll, regret=2, delta=0, low=0, beat=0),
+    ]}
+    event_rows = {row["element"]: row for row in _rows() if row["event_number"] == 2}
+    event_rows[risky_in] = {**event_rows[risky_in], "p_play": 0, "expected_minutes": 0}
+    result = synthesize_weekly_decision(actions, metrics, scenario_weights={"central": 1},
+                                        event_rows=event_rows)
+    assert result["selected_action_id"] == safe.action_id
+    audit = result["selection_audit"]
+    assert audit["incoming_roles_checked"]
+    assert not audit["gates_by_action"][risky.action_id]["passed"]
+    assert not audit["gates_by_action"][risky.action_id]["checks"][-1]["passed"]
+
+
+def test_rejected_paid_leader_does_not_hide_safe_free_move() -> None:
+    actions = _actions(max_transfers=2)
+    hit = next(a for a in actions if a.route_type == "paid_transfer")
+    free = next(a for a in actions if a.route_type == "one_free_transfer")
+    roll = next(a for a in actions if a.route_type == "roll")
+    metrics = {"central": [
+        _metric(hit, regret=0, delta=2, low=0.2, beat=0.51),
+        _metric(free, regret=1, delta=1, low=0.3, beat=0.61),
+        _metric(roll, regret=2, delta=0, low=0, beat=0),
+    ]}
+    result = synthesize_weekly_decision(actions, metrics, scenario_weights={"central": 1})
+    assert result["selected_action_id"] == free.action_id
+    assert not result["selection_audit"]["gates_by_action"][hit.action_id]["passed"]
+
+
+def test_inadmissible_candidates_cannot_change_the_risk_reference_for_safe_moves():
+    base = _actions()
+    roll = next(a for a in base if a.route_type == "roll")
+    move = next(a for a in base if a.route_type == "one_free_transfer")
+    a, b, rejected = [replace(move, action_id=key) for key in ("safe-a", "safe-b", "rejected")]
+    weights = {"residual": 0.5, "component": 0.5}
+
+    def decide(include_rejected):
+        actions = [roll, a, b, *([rejected] if include_rejected else [])]
+        deltas = {roll.action_id: (0, 0), a.action_id: (7, 1), b.action_id: (3, 4),
+                  rejected.action_id: (1, 100)}
+        metrics = {}
+        for offset, name in enumerate(weights):
+            best = max(deltas[item.action_id][offset] for item in actions)
+            metrics[name] = [
+                _metric(item, regret=best - deltas[item.action_id][offset],
+                        delta=deltas[item.action_id][offset],
+                        low=-10 if item == rejected else 0.3, beat=0.65)
+                for item in actions
+            ]
+        return synthesize_weekly_decision(actions, metrics, scenario_weights=weights)
+
+    control, expanded = decide(False), decide(True)
+    assert control["selected_action_id"] == a.action_id
+    assert not expanded["selection_audit"]["gates_by_action"][rejected.action_id]["passed"]
+    assert expanded["selected_action_id"] == control["selected_action_id"]
+    assert expanded["selected_robust_metrics"]["robust_regret"] == pytest.approx(
+        control["selected_robust_metrics"]["robust_regret"]
+    )
 
 
 def test_roll_can_be_the_robust_leader_without_a_transfer_gate() -> None:
@@ -321,6 +480,66 @@ def test_team_chip_shadow_requires_complete_half_and_retention_adjusted_edge() -
         check["name"] == "chip-half horizon complete" and not check["passed"]
         for check in retained["candidates"][0]["checks"]
     )
+
+
+def test_team_chip_search_compares_every_transfer_chip_pair_to_selected_no_chip_route() -> None:
+    state = _state()
+    base = generate_weekly_actions(
+        state,
+        _rows(),
+        _rules(),
+        events=(2, 3),
+        alternatives_per_transfer_count=1,
+        max_total_transfers=1,
+    )
+    selected = next(action for action in base if action.route_type == "roll")
+    alternate = next(action for action in base if action.route_type == "one_free_transfer")
+    variants = generate_team_chip_shadow_actions(
+        state,
+        base,
+        _rows(),
+        _rules(),
+        events=(2, 3),
+    )
+    columns = [*base, *variants]
+    index = {action.action_id: offset for offset, action in enumerate(columns)}
+    totals = np.zeros((2_000, len(columns)))
+    totals[:, index[selected.action_id]] = 100.0
+    totals[:, index[alternate.action_id]] = 90.0
+    for variant in variants:
+        parent_total = 100.0 if variant.parent_action_id == selected.action_id else 90.0
+        own_route_uplift = (
+            4.0 if variant.parent_action_id == selected.action_id else 5.0
+        )
+        totals[:, index[variant.action_id]] = parent_total + own_route_uplift
+    scenarios = {
+        "residual": totals,
+        "component_anchored": totals,
+        "component_raw": totals,
+    }
+
+    result = synthesize_team_chip_shadow(
+        base,
+        variants,
+        scenarios,
+        scenario_weights={"residual": 0.5, "component_anchored": 0.45, "component_raw": 0.05},
+        schedule_status={"fully_confirmed": True, "issues": []},
+        comparison_action_id=selected.action_id,
+    )
+    bench_boosts = [
+        row for row in result["candidates"] if row["chip"] == ChipType.BENCH_BOOST.value
+    ]
+    winner = max(bench_boosts, key=lambda row: row["weighted_delta_to_comparison_ordinary"])
+    misleading_own_route_leader = next(
+        row for row in bench_boosts if row["parent_action_id"] == alternate.action_id
+    )
+
+    assert winner["parent_action_id"] == selected.action_id
+    assert winner["weighted_delta_to_comparison_ordinary"] == 4.0
+    assert misleading_own_route_leader["scenario_metrics"]["residual"][
+        "mean_current_chip_uplift"
+    ] == 5.0
+    assert misleading_own_route_leader["weighted_delta_to_comparison_ordinary"] == -5.0
 
 
 def test_team_chip_shadow_is_blocked_by_unresolved_schedule() -> None:

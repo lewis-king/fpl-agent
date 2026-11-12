@@ -171,3 +171,10 @@ def test_simulator_maps_sparse_official_team_ids_to_dense_indices(monkeypatch) -
     assert points.shape == (8, 1, 1)
     assert played.shape == (8, 1, 1)
     assert set(np.unique(points)).issubset({0, 4})
+
+    for probability in (0., 1.):
+        by_player[101][1]["p_play"] = probability
+        points, played = _simulate_player_outcomes([101], (1,), by_player, calibration,
+                                                   simulations=10000, seed=11)
+        assert np.all(played == bool(probability))
+        assert np.all(points == int(4 * probability))

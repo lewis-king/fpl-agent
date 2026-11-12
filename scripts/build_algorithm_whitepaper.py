@@ -8,12 +8,12 @@ Markdown package or the network.
 from __future__ import annotations
 
 import base64
-from datetime import datetime
 import hashlib
 import html
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -406,6 +406,35 @@ def validation_visual(
     )
 
 
+def episode_visual(candidate_universe: int) -> str:
+    """Embed the film poster while keeping the MP4 as an offline sibling artifact."""
+
+    poster_path = REPORTS / "fplagent-decision-episode-poster.png"
+    video_path = REPORTS / "fplagent-decision-episode.mp4"
+    if not poster_path.exists() or not video_path.exists():
+        raise RuntimeError("Build the decision episode and poster before publishing the whitepaper")
+    poster = base64.b64encode(poster_path.read_bytes()).decode("ascii")
+    return (
+        '<figure class="major-visual episode-visual">'
+        '<div class="visual-kicker">COMPANION DECISION FILM · 02:20</div>'
+        '<div class="episode-layout"><div class="episode-copy">'
+        f'<span class="episode-number">{candidate_universe:,} → 1</span>'
+        '<h3>The squad knockout.</h3>'
+        f'<p>Watch real named squads enter a visible tournament: {candidate_universe:,} legal builds become 10,000, '
+        'then 512, then 64. Survivors face 25,000 correlated worlds, horizon challengers, an eight-squad '
+        'bracket and three publication vetoes. Composition-derived call signs make each contender '
+        'recognisable; checksum IDs remain underneath as the audit receipt.</p>'
+        '<a class="episode-link" href="fplagent-decision-episode.mp4">Play the 1080p film <span>↗</span></a>'
+        '</div><video controls preload="none" '
+        f'poster="data:image/png;base64,{poster}" aria-label="FPLAgent squad knockout film">'
+        '<source src="fplagent-decision-episode.mp4" type="video/mp4">'
+        '<a href="fplagent-decision-episode.mp4">Download the decision film.</a>'
+        '</video></div><figcaption>The film is generated from the same current machine artifacts '
+        'as this paper. Its original 128 BPM tournament score changes by round and synchronises '
+        'elimination impacts, finals tension and the champion payoff without third-party media.</figcaption></figure>'
+    )
+
+
 def build() -> str:
     markdown = SOURCE.read_text(encoding="utf-8")
     robust = read_json(DATA / "model" / "robust_search_v2_global" / "results.json")
@@ -426,8 +455,12 @@ def build() -> str:
     expected_leader = synthesis["decision"]["candidate_id"]
     expected_universe = robust["funnel"]["combined_universe"]
     expected_common = synthesis["candidate_coverage"]["common_finalists"]
-    if robust["leader"]["candidate_id"] != expected_leader:
-        raise RuntimeError("Robust and synthesis leaders disagree; do not publish the whitepaper")
+    robust_finalists = {row["candidate_id"] for row in robust["finalist_metrics"]}
+    horizon_finalists = {row["candidate_id"] for row in horizon["finalist_metrics"]}
+    if expected_leader not in robust_finalists or expected_leader not in horizon_finalists:
+        raise RuntimeError(
+            "The synthesized decision was not deeply evaluated by both audit families"
+        )
     if not pipeline["published"] or pipeline["status"] != "published":
         raise RuntimeError("The deadline pipeline is not published; do not publish the whitepaper")
     if readiness["selected_candidate_id"] != expected_leader:
@@ -438,7 +471,7 @@ def build() -> str:
         raise RuntimeError("The structure audit does not authorize the published candidate")
     if role["production_changed"]:
         raise RuntimeError("The role audit changed production; rebuild the canonical decision first")
-    if len(pipeline["stages"]) != 12 or any(
+    if len(pipeline["stages"]) != 15 or any(
         stage["status"] != "completed" for stage in pipeline["stages"]
     ):
         raise RuntimeError("The canonical deadline pipeline is incomplete")
@@ -470,6 +503,7 @@ def build() -> str:
     abstract_offset = markdown.index("## Abstract")
     article_source = markdown[abstract_offset:]
     visuals = {
+        "episode": episode_visual(expected_universe),
         "funnel": funnel_visual(robust, synthesis),
         "synthesis": synthesis_visual(synthesis),
         "team": team_visual(synthesis),
@@ -592,6 +626,16 @@ h1{{max-width:840px;margin:26px 0 28px;font:500 clamp(58px,7vw,108px)/.91 var(--
 .major-visual{{position:relative;margin:70px 0;padding:32px;border:1px solid rgba(18,33,38,.22);background:var(--surface);box-shadow:8px 8px 0 rgba(18,33,38,.08)}}
 .major-visual:before{{content:"";position:absolute;inset:7px;pointer-events:none;border:1px solid rgba(18,33,38,.08)}}
 .major-visual figcaption{{position:relative;margin-top:24px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}}
+.episode-visual{{padding:0;overflow:hidden;background:var(--ink);color:var(--surface);box-shadow:10px 10px 0 var(--blue)}}
+.episode-visual:before{{display:none}}.episode-visual>.visual-kicker{{padding:22px 26px;border-bottom:1px solid #405054;color:#aeb9b7}}
+.episode-layout{{display:grid;grid-template-columns:minmax(250px,.64fr) minmax(0,1.36fr);align-items:stretch}}
+.episode-copy{{display:flex;min-height:390px;flex-direction:column;padding:34px 30px}}
+.episode-number{{color:var(--blue-soft);font:500 42px var(--serif);letter-spacing:-.04em}}
+.episode-copy h3{{margin:46px 0 14px;color:white;font:500 36px/1 var(--serif)}}
+.episode-copy p{{margin:0;color:#aeb9b7;font-size:12px;line-height:1.65}}
+.episode-link{{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:18px;border-top:1px solid #405054;color:white;font-size:11px;font-weight:700;letter-spacing:.06em;text-decoration:none;text-transform:uppercase}}
+.episode-link span{{font-size:18px}}.episode-visual video{{display:block;width:100%;height:100%;min-height:390px;object-fit:cover;background:#0f1813}}
+.episode-visual figcaption{{margin:0;padding:17px 26px;border-top:1px solid #405054;color:#aeb9b7}}
 .overview-wrap .major-visual{{top:60px;margin:0;color:var(--surface);background:var(--ink);border-color:#405054;box-shadow:10px 10px 0 var(--blue)}}
 .overview-wrap .major-visual:before{{border-color:#405054}}
 .overview-wrap .major-visual figcaption{{border-color:#405054;color:#aeb9b7}}
@@ -682,7 +726,7 @@ th:last-child,td:last-child{{text-align:right}}
 .footer p{{max-width:560px;font-size:12px}}
 .hashes{{font:500 9px/1.9 ui-monospace,"Cascadia Mono","Courier New",monospace;overflow-wrap:anywhere}}
 @media(max-width:900px){{.flow-grid{{grid-template-columns:repeat(4,1fr)}}.flow-line{{display:none}}.paper-layout{{grid-template-columns:190px minmax(0,1fr);gap:45px}}.validation-grid{{grid-template-columns:repeat(2,1fr)}}}}
-@media(max-width:720px){{body{{font-size:15px}}.top-meta span{{display:none}}.hero{{min-height:760px;padding-top:130px}}.hero-grid{{grid-template-columns:1fr;gap:45px}}h1{{font-size:62px}}.decision-banner{{grid-template-columns:1fr 1fr;margin-top:55px}}.status{{grid-column:1/-1;width:max-content}}.flow-grid{{grid-template-columns:repeat(2,1fr)}}.paper-layout{{display:block;padding-top:120px}}.toc{{display:none}}.paper h2{{font-size:42px}}.major-visual{{margin-left:-12px;margin-right:-12px;padding:22px}}.synthesis-grid{{grid-template-columns:1fr}}.comparison-strip{{display:grid}}.funnel-row{{grid-template-columns:1fr}}.funnel-row small{{display:none}}.funnel-bar{{margin:0}}.pitch{{min-height:520px;padding-left:5px;padding-right:5px}}.shirt span{{font-size:8px}}.shirt small{{display:none}}.bench{{grid-template-columns:1fr 1fr}}.bench>strong{{grid-column:1/-1;writing-mode:initial}}.footer-grid{{grid-template-columns:1fr;gap:30px}}}}
+@media(max-width:720px){{body{{font-size:15px}}.top-meta span{{display:none}}.hero{{min-height:760px;padding-top:130px}}.hero-grid{{grid-template-columns:1fr;gap:45px}}h1{{font-size:62px}}.decision-banner{{grid-template-columns:1fr 1fr;margin-top:55px}}.status{{grid-column:1/-1;width:max-content}}.flow-grid{{grid-template-columns:repeat(2,1fr)}}.paper-layout{{display:block;padding-top:120px}}.toc{{display:none}}.paper h2{{font-size:42px}}.major-visual{{margin-left:-12px;margin-right:-12px;padding:22px}}.episode-visual{{padding:0}}.episode-layout{{grid-template-columns:1fr}}.episode-copy{{min-height:330px}}.episode-visual video{{min-height:0;aspect-ratio:16/9}}.synthesis-grid{{grid-template-columns:1fr}}.comparison-strip{{display:grid}}.funnel-row{{grid-template-columns:1fr}}.funnel-row small{{display:none}}.funnel-bar{{margin:0}}.pitch{{min-height:520px;padding-left:5px;padding-right:5px}}.shirt span{{font-size:8px}}.shirt small{{display:none}}.bench{{grid-template-columns:1fr 1fr}}.bench>strong{{grid-column:1/-1;writing-mode:initial}}.footer-grid{{grid-template-columns:1fr;gap:30px}}}}
 @media(prefers-reduced-motion:reduce){{html{{scroll-behavior:auto}}.reveal{{opacity:1;transform:none;transition:none}}}}
 @media print{{@page{{margin:16mm}}body{{background:white;font-size:10pt}}.topbar,.reading-progress,.toc{{display:none!important}}.hero{{min-height:0;padding:20mm 0 15mm;background:white}}.hero:before,.hero:after{{display:none}}.paper-layout{{display:block;max-width:none;padding:20mm 0}}.paper-section{{break-before:page;padding-top:12mm}}.paper-section:first-child{{break-before:auto}}.major-visual,.code-panel,.table-scroll{{break-inside:avoid;box-shadow:none}}.reveal{{opacity:1;transform:none}}.footer{{padding:15mm 0;color:#333;background:white}}}}
 </style>
@@ -692,11 +736,11 @@ th:last-child,td:last-child{{text-align:right}}
 <nav class="topbar" aria-label="Whitepaper controls"><div class="brand"><span class="brand-mark">F</span>FPLAgent</div>
   <div class="top-meta"><span>{section_count} sections · {read_minutes} min read</span><button class="print-button" type="button" onclick="window.print()">Print / PDF</button></div></nav>
 <header class="hero">
-  <div class="hero-grid"><div><div class="eyebrow">Technical whitepaper · Version 2.0</div>
+  <div class="hero-grid"><div><div class="eyebrow">Technical whitepaper · Version 2.1</div>
     <h1>Evidence before instinct.</h1>
     <p class="hero-copy">How point-in-time data, independent forecasting, bookmaker calibration,
     exact FPL mechanics and adversarial decision audits produced the current 2026/27 squad.</p></div>
-    <aside class="hero-side"><dl><dt>Prepared</dt><dd>16 Aug 2026</dd><dt>Snapshot</dt><dd>{snapshot_label}</dd>
+    <aside class="hero-side"><dl><dt>Prepared</dt><dd>19 Aug 2026</dd><dt>Snapshot</dt><dd>{snapshot_label}</dd>
       <dt>Words</dt><dd>{word_count:,}</dd><dt>Reading time</dt><dd>{read_minutes} minutes</dd><dt>Format</dt><dd>Self-contained HTML</dd></dl></aside></div>
   <div class="decision-banner"><div><small>Current decision</small><strong>{decision_id}</strong></div>
     <div><small>Shape & captain</small><strong>{formation} · {captain}</strong></div><span class="status">Published · role verification open</span></div>

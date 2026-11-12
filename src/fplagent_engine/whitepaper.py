@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pyarrow.parquet as pq
+
 from fplagent_data.http import sha256_file
 from fplagent_data.paths import MANIFESTS
 
@@ -14,7 +16,7 @@ from .paths import MODEL_DATA, REPORTS, ensure_engine_layout
 from .sota_readiness import RESULTS_JSON as READINESS_RESULTS
 from .sota_readiness import build_sota_readiness_audit
 
-VERSION = "gw1_whitepaper_v2"
+VERSION = "gw1_whitepaper_v4"
 OUTPUT = REPORTS / "fplagent-gw1-2026-27-whitepaper.html"
 DEADLINE_PACK = MANIFESTS / "gw1-deadline-pack.json"
 SYNTHESIS_RESULTS = MODEL_DATA / "gw1_decision_synthesis_v1" / "results.json"
@@ -29,6 +31,9 @@ STRUCTURE_RESULTS = MODEL_DATA / "gw1_structure_stress_v1" / "results.json"
 UNDERSTAT_RESULTS = MODEL_DATA / "understat_preseason_v1" / "results.json"
 BENCH_ALLOCATION_RESULTS = MODEL_DATA / "bench_allocation_audit_v2" / "results.json"
 ROLE_SCENARIO_RESULTS = MODEL_DATA / "preseason_role_scenario_v1" / "results.json"
+FORECAST_MANIFEST = MODEL_DATA / "forecasts" / "2026-27-preseason-manifest.json"
+TOP_PLAYER_AUDIT = MODEL_DATA / "top_player_omission_audit_v1" / "results.json"
+ATTACKER_MARKET = MODEL_DATA / "attacker_market_calibration_v1" / "results.json"
 FONT_DIR = REPORTS / "assets"
 
 
@@ -67,10 +72,10 @@ def _player_card(player: dict[str, Any], role: dict[int, dict[str, Any]]) -> str
         metrics.append(f"{100 * float(p_play):.0f}% play")
     return f"""
       <article class="player-card">
-        <div class="player-top"><span class="position">{_e(player['position'])}</span><span>{''.join(tags)}</span></div>
-        <strong>{_e(player['name'])}</strong>
-        <span>{_e(player['team'])} · £{float(player['price']):.1f}m</span>
-        <small>{_e(' · '.join(metrics))}</small>
+        <div class="player-top"><span class="position">{_e(player["position"])}</span><span>{"".join(tags)}</span></div>
+        <strong>{_e(player["name"])}</strong>
+        <span>{_e(player["team"])} · £{float(player["price"]):.1f}m</span>
+        <small>{_e(" · ".join(metrics))}</small>
       </article>"""
 
 
@@ -79,10 +84,10 @@ def _gate_card(row: dict[str, Any]) -> str:
     label = {"pass": "Passed", "partial": "Partial", "not_ready": "Not ready"}[state]
     return f"""
       <article class="gate-card {state}">
-        <div class="gate-head"><span class="status-dot"></span><span>{_e(label)}</span><small>{_e(row['scope'].replace('_', ' '))}</small></div>
-        <h3>{_e(row['label'])}</h3>
-        <p>{_e(row['evidence'])}</p>
-        <details><summary>Promotion standard</summary><p>{_e(row['requirement'])}</p></details>
+        <div class="gate-head"><span class="status-dot"></span><span>{_e(label)}</span><small>{_e(row["scope"].replace("_", " "))}</small></div>
+        <h3>{_e(row["label"])}</h3>
+        <p>{_e(row["evidence"])}</p>
+        <details><summary>Promotion standard</summary><p>{_e(row["requirement"])}</p></details>
       </article>"""
 
 
@@ -101,6 +106,9 @@ def build_algorithm_whitepaper(
     understat_path: Path = UNDERSTAT_RESULTS,
     bench_allocation_path: Path = BENCH_ALLOCATION_RESULTS,
     role_scenario_path: Path = ROLE_SCENARIO_RESULTS,
+    forecast_manifest_path: Path = FORECAST_MANIFEST,
+    top_player_audit_path: Path = TOP_PLAYER_AUDIT,
+    attacker_market_path: Path = ATTACKER_MARKET,
     readiness_path: Path = READINESS_RESULTS,
     output_path: Path = OUTPUT,
 ) -> dict[str, Any]:
@@ -120,6 +128,9 @@ def build_algorithm_whitepaper(
     understat = _load(understat_path) if understat_path.is_file() else {}
     bench_allocation = _load(bench_allocation_path)
     role_scenario = _load(role_scenario_path)
+    forecast_manifest = _load(forecast_manifest_path)
+    top_player_audit = _load(top_player_audit_path)
+    attacker_market_receipt = _load(attacker_market_path)
     readiness = _load(readiness_path)
 
     decision = dict(pack["decision"])
@@ -137,9 +148,7 @@ def build_algorithm_whitepaper(
     picker_summary = dict(picker["summary"])
     market_policy = dict(market["production_policy"])
     understat_current = dict((understat.get("mapping") or {}).get("current") or {})
-    understat_coverage = dict(
-        (understat_current.get("coverage") or {}).get("2026-27") or {}
-    )
+    understat_coverage = dict((understat_current.get("coverage") or {}).get("2026-27") or {})
     bench_targeted = dict(bench_allocation.get("targeted_winner") or {})
     bench_retention = dict(bench_allocation.get("targeted_retention") or {})
     baseline_role = dict((role_scenario.get("scenarios") or {}).get("baseline") or {})
@@ -161,15 +170,81 @@ def build_algorithm_whitepaper(
     five = dict(selected_families.get("five_week_robust") or {})
     eight = dict(selected_families.get("eight_week_horizon") or {})
     role_summary = dict(availability.get("summary") or {})
-    watkins = role.get(55, {})
-    watkins_preseason = dict(watkins.get("preseason") or {})
-    watkins_lineups = dict(watkins.get("predicted_lineups") or {})
+    lineup_consensus = dict(availability.get("predicted_lineup_consensus") or {})
+    forecast_result = dict(forecast_manifest.get("result") or {})
+    live_market_policy = dict(forecast_result.get("market_feature_policy") or {})
+    attacker_market = dict(live_market_policy.get("attacker_goal_environment") or {})
+    attacker_weights = dict(attacker_market.get("weights") or {})
+    attacker_checks = dict(attacker_market_receipt.get("checks") or {})
+    omission_summary = dict(top_player_audit.get("summary") or {})
+    capital_efficiency = dict(synthesis.get("capital_efficiency") or {})
+    capital_excluded = list(capital_efficiency.get("excluded_candidates") or [])
+    capital_risk_names = sorted(
+        {
+            str(risk.get("player_name"))
+            for candidate in capital_excluded
+            for risk in candidate.get("risks") or []
+            if risk.get("player_name")
+        }
+    )
+    near_misses = list(top_player_audit.get("near_misses") or [])
+    selected_role_watch = list(top_player_audit.get("selected_role_watch") or [])
+    lineup_summary = dict(lineup_consensus.get("summary") or {})
+    diversity_guard = dict((robust.get("diversity") or {}).get("captain_publication_guard") or {})
+    captain = next((player for player in starters if player.get("captain")), {})
+    vice_captain = next((player for player in starters if player.get("vice_captain")), {})
+    haaland_finalist = next(
+        (
+            row
+            for row in robust.get("finalist_metrics") or []
+            if "Haaland captain" in str(row.get("display_name") or "")
+        ),
+        {},
+    )
+    forecast_path = Path(str(forecast_result.get("forecast") or ""))
+    haaland_forecast: dict[str, Any] = {}
+    if forecast_path.is_file():
+        rows = pq.read_table(
+            forecast_path,
+            filters=[("event_number", "=", 1), ("element", "=", 411)],
+        ).to_pylist()
+        if rows:
+            haaland_forecast = dict(rows[0])
+    omission_checks = dict(top_player_audit.get("checks") or {})
+    near_miss_names = ", ".join(str(row.get("player_name")) for row in near_misses[:4]) or "none"
+    selected_watch_challenges = (
+        "; ".join(
+            (
+                f"{row.get('player_name')}: best joint XV without him "
+                f"{float((row.get('best_exclusion_counterfactual') or {}).get('synthesis_regret_delta') or 0):+.3f}"
+            )
+            for row in selected_role_watch
+            if row.get("best_exclusion_counterfactual")
+        )
+        or "none"
+    )
+    if bool(bench_retention.get("exact_fresh_holdout_winner")):
+        bench_holdout_headline = "The active squad won the fresh targeted holdout."
+        bench_holdout_detail = (
+            "It ranked first across the independently regenerated five/eight-week bench "
+            "comparison. All 15 players are scheduled to start at least once in the opening "
+            "five events, so the evidence supports deliberate rotation—not a general rule to "
+            "spend heavily on the bench."
+        )
+    else:
+        bench_holdout_headline = "A practically equivalent fresh holdout result."
+        bench_holdout_detail = (
+            "The targeted winner led the active squad by only "
+            f"{float(bench_retention.get('active_minus_winner_regret') or 0):.3f} composite "
+            "points, inside the practical-equivalence bound. The receipt therefore resolves "
+            "the tie toward the less brittle multi-family policy, not toward nominal bench spend."
+        )
     now = datetime.now(UTC).isoformat()
 
     font_css = f"""
-    @font-face{{font-family:Manrope;src:url(data:font/ttf;base64,{_font(FONT_DIR / 'manrope-400.ttf')}) format('truetype');font-weight:400;font-display:swap}}
-    @font-face{{font-family:Manrope;src:url(data:font/ttf;base64,{_font(FONT_DIR / 'manrope-600.ttf')}) format('truetype');font-weight:600;font-display:swap}}
-    @font-face{{font-family:Newsreader;src:url(data:font/ttf;base64,{_font(FONT_DIR / 'newsreader-500.ttf')}) format('truetype');font-weight:500;font-display:swap}}
+    @font-face{{font-family:Manrope;src:url(data:font/ttf;base64,{_font(FONT_DIR / "manrope-400.ttf")}) format('truetype');font-weight:400;font-display:swap}}
+    @font-face{{font-family:Manrope;src:url(data:font/ttf;base64,{_font(FONT_DIR / "manrope-600.ttf")}) format('truetype');font-weight:600;font-display:swap}}
+    @font-face{{font-family:Newsreader;src:url(data:font/ttf;base64,{_font(FONT_DIR / "newsreader-500.ttf")}) format('truetype');font-weight:500;font-display:swap}}
     """
     gate_cards = "".join(_gate_card(row) for row in readiness["checks"])
     pitch_rows = "".join(
@@ -179,7 +254,7 @@ def build_algorithm_whitepaper(
     bench_cards = "".join(_player_card(player, role) for player in bench)
     priority_rows = "".join(
         f"""
-        <article class="priority"><span>0{gap['priority']}</span><div><h3>{_e(gap['name'])}</h3><p>{_e(gap['why'])}</p><small>{_e(gap['promotion_rule'])}</small></div></article>
+        <article class="priority"><span>0{gap["priority"]}</span><div><h3>{_e(gap["name"])}</h3><p>{_e(gap["why"])}</p><small>{_e(gap["promotion_rule"])}</small></div></article>
         """
         for gap in readiness["priority_gaps"]
     )
@@ -223,52 +298,52 @@ def build_algorithm_whitepaper(
   <main class="shell">
     <section class="hero" data-reveal>
       <div><div class="eyebrow">Technical white paper · 2026/27 · GW1</div><h1>The first<br>fifteen.</h1><p class="dek">How an independent FPL forecast, calibrated football markets, half a million legal squads and correlated match simulation produced one deadline-ready team.</p></div>
-      <aside class="hero-note"><span class="verdict"><i></i>{_e(readiness['verdict'].replace('_',' '))}</span><div class="hero-meta"><div><span>Selected candidate</span><strong>{_e(decision['candidate_id'])}</strong></div><div><span>GW1 central xP</span><strong>{float(decision['expected_points']):.2f}</strong></div><div><span>Budget</span><strong>£{float(squad['budget_spent']):.1f}m</strong></div><div><span>Evidence frozen</span><strong>{_e(pack['freshness']['official_snapshot_at'][:10])}</strong></div></div></aside>
+      <aside class="hero-note"><span class="verdict"><i></i>{_e(readiness["verdict"].replace("_", " "))}</span><div class="hero-meta"><div><span>Selected candidate</span><strong>{_e(decision["candidate_id"])}</strong></div><div><span>GW1 central xP</span><strong>{float(decision["expected_points"]):.2f}</strong></div><div><span>Budget</span><strong>£{float(squad["budget_spent"]):.1f}m</strong></div><div><span>Evidence frozen</span><strong>{_e(pack["freshness"]["official_snapshot_at"][:10])}</strong></div></div></aside>
     </section>
 
-    <section id="claim" data-reveal><div class="section-head"><div><span class="chapter">01 · The claim</span><h2>Confidence,<br>without theatre.</h2></div><p>The algorithm is strong enough to publish a coherent GW1 recommendation. It is not scientifically honest to call it universally state of the art before a matched external benchmark and untouched 2026/27 outcomes exist.</p></div><div class="bezel"><div class="panel claim-panel"><article class="claim good"><b>What the evidence supports</b><p>{_e(readiness['claim']['defensible'])}</p></article><article class="claim limit"><b>What it does not prove</b><p>{_e(readiness['claim']['not_defensible'])}</p></article></div></div></section>
+    <section id="claim" data-reveal><div class="section-head"><div><span class="chapter">01 · The claim</span><h2>Confidence,<br>without theatre.</h2></div><p>The algorithm is strong enough to publish a coherent GW1 recommendation. It is not scientifically honest to call it universally state of the art before a matched external benchmark and untouched 2026/27 outcomes exist.</p></div><div class="bezel"><div class="panel claim-panel"><article class="claim good"><b>What the evidence supports</b><p>{_e(readiness["claim"]["defensible"])}</p></article><article class="claim limit"><b>What it does not prove</b><p>{_e(readiness["claim"]["not_defensible"])}</p></article></div></div></section>
 
-    <section id="squad" data-reveal><div class="section-head"><div><span class="chapter">02 · The output</span><h2>The selected<br>GW1 squad.</h2></div><p>A {_e(squad['formation'])} built for this deadline and for inexpensive adaptation, not a fixed eight-week team. Bruno Fernandes is captain; Tarkowski is vice-captain. Every bench place is scored in exact autosub worlds after discovery.</p></div>
-      <div class="score-grid"><div class="metric"><strong>{float(decision['expected_points']):.1f}</strong><span>Central GW1 xP</span></div><div class="metric"><strong>{_e(squad['formation'])}</strong><span>Starting shape</span></div><div class="metric"><strong>£{sum(float(x['price']) for x in bench):.1f}m</strong><span>GW1 bench</span></div><div class="metric"><strong>£{float(squad.get('bank',0)):.1f}m</strong><span>In the bank</span></div></div>
+    <section id="squad" data-reveal><div class="section-head"><div><span class="chapter">02 · The output</span><h2>The selected<br>GW1 squad.</h2></div><p>A {_e(squad["formation"])} built for this deadline and for inexpensive adaptation, not a fixed eight-week team. {_e(captain.get("name", "—"))} is captain; {_e(vice_captain.get("name", "—"))} is vice-captain. After the 15 is selected, every legal XI, outfield bench order and armband pairing is evaluated in exact autosub worlds and must retain its win on independent holdout seeds.</p></div>
+      <div class="score-grid"><div class="metric"><strong>{float(decision["expected_points"]):.1f}</strong><span>Central GW1 xP</span></div><div class="metric"><strong>{_e(squad["formation"])}</strong><span>Starting shape</span></div><div class="metric"><strong>£{sum(float(x["price"]) for x in bench):.1f}m</strong><span>GW1 bench</span></div><div class="metric"><strong>£{float(squad.get("bank", 0)):.1f}m</strong><span>In the bank</span></div></div>
       <div class="bezel"><div class="pitch"><div>{pitch_rows}</div></div></div><div class="bench-label"><strong>Bench order</strong><small>Left to right · legal formation autosubs</small></div><div class="bench">{bench_cards}</div>
     </section>
 
     <section id="method" data-reveal><div class="section-head"><div><span class="chapter">03 · The engine</span><h2>Prediction is<br>only layer one.</h2></div><p>The useful object is not a list of player xP values. It is a decision policy: a legal 15, a legal XI, captaincy, bench order and plausible future transfers, evaluated together under the same uncertain match worlds.</p></div>
-      <div class="layers"><div class="bezel"><article class="panel layer"><span class="layer-number">I</span><h3>Forecast</h3><ul><li>{int(metrics['training_rows']):,} deadline rows</li><li>{int(metrics['feature_count'])} point-in-time features</li><li>Position-specific XGBoost hurdle models</li><li>Appearance classes: DNP, 1–59, 60–89, 90+</li><li>FPL's own xP prohibited</li></ul></article></div><div class="bezel"><article class="panel layer"><span class="layer-number">II</span><h3>Simulate</h3><ul><li>Team goal and player component identities</li><li>Correlated match outcomes</li><li>Exact autosubs and captain fallback</li><li>Raw, anchored and high-goal worlds</li><li>Untouched selection/holdout seeds</li></ul></article></div><div class="bezel"><article class="panel layer"><span class="layer-number">III</span><h3>Decide</h3><ul><li>£100m, 2/5/5/3, max three per club</li><li>Open, fixed and rolled-GW2 policies</li><li>GW1–3, GW1–5 and GW1–8 views</li><li>Mean and downside-aware regret</li><li>Transactional evidence gate</li></ul></article></div></div>
+      <div class="layers"><div class="bezel"><article class="panel layer"><span class="layer-number">I</span><h3>Forecast</h3><ul><li>{int(metrics["training_rows"]):,} deadline rows</li><li>{int(metrics["feature_count"])} point-in-time features</li><li>Position-specific XGBoost hurdle models</li><li>Appearance classes: DNP, 1–59, 60–89, 90+</li><li>FPL's own xP prohibited</li></ul></article></div><div class="bezel"><article class="panel layer"><span class="layer-number">II</span><h3>Simulate</h3><ul><li>Team goal and player component identities</li><li>Correlated match outcomes</li><li>Exact autosubs and captain fallback</li><li>Residual and explicit component families</li><li>Untouched selection/holdout seeds</li></ul></article></div><div class="bezel"><article class="panel layer"><span class="layer-number">III</span><h3>Decide</h3><ul><li>£100m, 2/5/5/3, max three per club</li><li>Open, fixed and rolled-GW2 policies</li><li>GW1–3, GW1–5 and GW1–8 views</li><li>Simulated XI, bench and armbands</li><li>Transactional evidence gate</li></ul></article></div></div>
       <div class="plain-tech"><article class="explain plain"><span class="eyebrow">In plain English</span><h3>We ask which team we would regret least.</h3><p>The model estimates who plays and what they score. The simulator then plays thousands of plausible versions of the fixtures. Squads that only look good under one fragile assumption fall away; legal teams that remain close to the best across several views survive.</p></article><article class="bezel"><div class="panel explain"><span class="eyebrow">Technical form</span><h3>A hurdle forecast feeding minimax-flavoured regret.</h3><code class="formula">xPᵢ = E[pointsᵢ | plays] × P(plays), with calibrated minute-class probabilities</code><code class="formula">R(c) = 0.75 Σₛ wₛ[max Vₛ − Vₛ(c)] + 0.25 maxₛ[max Vₛ − Vₛ(c)]</code><p><small>A central-regret cap prevents a stress-only winner from displacing a materially stronger base squad.</small></p></div></article></div>
     </section>
 
-    <section id="search" data-reveal><div class="section-head"><div><span class="chapter">04 · Search</span><h2>From {int(funnel['combined_universe']):,}<br>to one.</h2></div><p>No single optimiser objective is trusted. Deterministic grids, local legal neighbours, distant MILP restarts and evolutionary squads create a diverse field before expensive exact simulation.</p></div>
-      <div class="funnel"><div><strong>{int(funnel['combined_universe']):,}</strong><span>Legal combined universe</span></div><div><strong>{int(funnel['discovery_candidates']):,}</strong><span>Multi-objective discovery</span></div><div><strong>{int(funnel['shortlist']):,}</strong><span>Component screen</span></div><div><strong>{int(funnel['finalists']):,}</strong><span>Deep robust finalists</span></div><div><strong>{int(funnel['holdout_simulations']):,}</strong><span>Untouched worlds</span></div></div>
-      <div class="evidence-strip"><div class="bezel"><article class="panel"><strong>{int(global_challenge['milp_generated']) + int(global_challenge['evolution_generated']):,}</strong><span>Distant MILP + evolutionary challengers</span><p>The best distant finalist still trailed the selected robust leader by {float((global_challenge.get('leader_minus_best_global') or {{}}).get('mean_delta') or 0):.2f} paired central points.</p></article></div><div class="bezel"><article class="panel"><strong>{int((horizon.get('funnel') or {{}})['deep_finalists'])}</strong><span>Eight-week policy finalists</span><p>The horizon audit solves legal future transfers, including a deliberate GW2 roll, rather than pretending the starting 15 is frozen.</p></article></div></div><p class="footnote">This is a broad adversarial search, not a mathematical certificate over every combinatorial roster under the nonlinear simulation objective. The distant search and protected alternatives reduce—without eliminating—search miss risk.</p>
+    <section id="search" data-reveal><div class="section-head"><div><span class="chapter">04 · Search</span><h2>From {int(funnel["combined_universe"]):,}<br>to one.</h2></div><p>No single optimiser objective is trusted. Deterministic grids, local legal neighbours, distant MILP restarts and evolutionary squads create a diverse field before expensive exact simulation.</p></div>
+      <div class="funnel"><div><strong>{int(funnel["combined_universe"]):,}</strong><span>Legal combined universe</span></div><div><strong>{int(funnel["discovery_candidates"]):,}</strong><span>Multi-objective discovery</span></div><div><strong>{int(funnel["shortlist"]):,}</strong><span>Component screen</span></div><div><strong>{int(funnel["finalists"]):,}</strong><span>Deep robust finalists</span></div><div><strong>{int(funnel["holdout_simulations"]):,}</strong><span>Untouched worlds</span></div></div>
+      <div class="evidence-strip"><div class="bezel"><article class="panel"><strong>{int(global_challenge["milp_generated"]) + int(global_challenge["evolution_generated"]):,}</strong><span>Distant MILP + evolutionary challengers</span><p>The best distant finalist still trailed the selected robust leader by {float((global_challenge.get("leader_minus_best_global") or {{}}).get("mean_delta") or 0):.2f} paired central points.</p></article></div><div class="bezel"><article class="panel"><strong>{int((horizon.get("funnel") or {{}})["deep_finalists"])}</strong><span>Eight-week policy finalists</span><p>The horizon audit solves legal future transfers, including a deliberate GW2 roll, rather than pretending the starting 15 is frozen.</p></article></div></div><div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Anti-homogeneity publication guard</span><h3>{int(diversity_guard.get("distinct_captains") or 0)} captains and {int(diversity_guard.get("explicit_captain_counterfactuals") or 0)} explicit captain counterfactuals reached the deep 64.</h3><p>The funnel must also retain a squad without the incumbent mean-xP leader. It now fails closed if premium and captain alternatives disappear before the expensive audit. Haaland captain reached the deep holdout with robust regret {float(haaland_finalist.get("robust_regret") or 0):.3f}; the winning robust seed scored {float(robust["leader"]["robust_regret"]):.3f}. That is a measured loss, not a pruning accident.</p></article></div><div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Premium role-capital publication gate</span><h3>{int(capital_efficiency.get("excluded_common_finalists") or 0)} jointly tested finalists were barred from publication.</h3><p>No premium GW1 purchase may carry less than 60 expected minutes or 85% play probability. The current rejected set exposed {_e(", ".join(capital_risk_names) or "no players")}; the selected XV has zero unresolved premium role-capital risks.</p></article></div><div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Top-player omission gate · {_e(top_player_audit.get("verdict", "—"))}</span><h3>{sum(bool(value) for value in omission_checks.values())}/{len(omission_checks)} forensic checks passed across {int(omission_summary.get("material_players") or 0)} material players.</h3><p>Every material omission had to reach the same joint five/eight-week synthesis used to select the winner. {int(omission_summary.get("near_misses") or 0)} finished within +0.500 synthesis regret ({_e(near_miss_names)}), and {int(omission_summary.get("open_role_assumptions") or 0)} omitted role assumptions remain explicitly sensitivity-tested. The full omission receipt shows prices, ownership, minutes, xP, required swaps and joint regret deltas.</p></article></div><p class="footnote">This is a broad adversarial search, not a mathematical certificate over every combinatorial roster under the nonlinear simulation objective. The distant search and protected alternatives reduce—without eliminating—search miss risk.</p>
     </section>
 
     <section id="data" data-reveal><div class="section-head"><div><span class="chapter">05 · Inputs</span><h2>What is signal.<br>What is opinion.</h2></div><p>Every source receives an authority level. More data is not automatically better: it must be timestamp-safe, mapped, replayable and improve legal decisions before it can change the squad.</p></div>
       <div class="bezel"><div class="panel" style="padding:24px 34px"><table class="source-table"><thead><tr><th>Source</th><th>What enters</th><th>Authority</th><th>Why</th></tr></thead><tbody>
         <tr><td>Official FPL</td><td>Rules, prices, positions, fixtures, status, realised points and lagged xG/xA/BPS/DC</td><td><span class="pill">Production</span></td><td>Canonical game state and labels. Its authored xP is explicitly excluded.</td></tr>
-        <tr><td>Betfair Exchange</td><td>De-vigged 1X2 and over/under 2.5 → team goal/clean-sheet priors</td><td><span class="pill bounded">{100 * float(market_policy.get('preseason_weight') or 0):.0f}% DEF, preseason</span></td><td>10/10 GW1 fixtures; only the bounded policy passed the historical legal-decision gate.</td></tr>
+        <tr><td>Betfair Exchange</td><td>De-vigged 1X2 and over/under 2.5 → team goal/clean-sheet priors</td><td><span class="pill bounded">{100 * float(market_policy.get("preseason_weight") or 0):.0f}% DEF · {100 * float(attacker_weights.get("MID") or 0):.0f}% MID · {100 * float(attacker_weights.get("FWD") or 0):.0f}% FWD</span></td><td>{int(live_market_policy.get("fixtures") or 0)}/10 GW1 fixtures. Defender weight passed legal-decision replay. The reproducible attacker receipt rejected MID ({"pass" if all((attacker_checks.get("MID") or {{}}).values()) else "failed gate"}) and retained only the bounded FWD correction ({"pass" if all((attacker_checks.get("FWD") or {{}}).values()) else "failed gate"}), applied to non-appearance scoring.</td></tr>
         <tr><td>Team/player history</td><td>Lagged form, minutes, chance quality, set pieces, venue-adjusted team strength</td><td><span class="pill">Production</span></td><td>Strictly pre-deadline features; unavailable xG remains missing rather than backfilled from the future.</td></tr>
-        <tr><td>FFScout + RotoWire</td><td>Predicted-start consensus</td><td><span class="pill bounded">Shadow</span></td><td>Visible for role review, zero forecast weight until prospective calibration passes.</td></tr>
-        <tr><td>Understat</td><td>Prior-season npxG, xA, shots, key passes, xGChain and xGBuildup</td><td><span class="pill bounded">{_e(understat.get('verdict','Not run'))}</span></td><td>{int(understat_coverage.get('matched') or 0)}/{int(understat_coverage.get('players') or 0)} current players mapped. A time-forward legal replay selected {100 * float((understat.get('sequential_policy') or {{}}).get('selected_weight') or 0):.0f}% weight, so it remains independent shadow evidence rather than being forced into xP.</td></tr>
+        <tr><td>FFScout + RotoWire</td><td>Predicted-start consensus and expected-minute classes</td><td><span class="pill bounded">Bounded production</span></td><td>{int(lineup_consensus.get("eligible_source_count") or 0)} independent sources; {int(lineup_summary.get("predicted_start_consensus") or 0)} two-source starts and {int(lineup_summary.get("predicted_bench_consensus") or 0)} two-source benches. Start evidence updates play odds and player-specific conditional duration with explicit uplift caps; bench evidence uses 75%/35% two-/one-source weights. Disagreement retains the incumbent with extra uncertainty. Prospective scoring remains mandatory.</td></tr>
+        <tr><td>Understat</td><td>Prior-season npxG, xA, shots, key passes, xGChain and xGBuildup</td><td><span class="pill bounded">{_e(understat.get("verdict", "Not run"))}</span></td><td>{int(understat_coverage.get("matched") or 0)}/{int(understat_coverage.get("players") or 0)} current players mapped. A time-forward legal replay selected {100 * float((understat.get("sequential_policy") or {{}}).get("selected_weight") or 0):.0f}% weight, so it remains independent shadow evidence rather than being forced into xP.</td></tr>
         <tr><td>SofaScore player-event feed</td><td>Independent chance, role and defensive event context</td><td><span class="pill shadow">Shadow replay</span></td><td>1,140 historical EPL matches are checksum-bound with 95–99% fail-closed identity mapping. The first frozen legal-policy challenger lost 15 points, so the feed has zero production weight pending a better validated feature model.</td></tr>
       </tbody></table></div></div>
     </section>
 
     <section id="evidence" data-reveal><div class="section-head"><div><span class="chapter">06 · Evidence</span><h2>The tests that<br>can say no.</h2></div><p>The strongest sign of a useful research system is not how often it says “promote,” but whether rejected challengers remain rejected and incomplete evidence fails closed.</p></div>
-      <div class="score-grid"><div class="metric"><strong>{backtest_gate['mae_wins_vs_form5']}/{backtest_gate['slices']}</strong><span>MAE slices won</span></div><div class="metric"><strong>{backtest_gate['top_k_wins_vs_form5']}/{backtest_gate['slices']}</strong><span>Top-k slices won</span></div><div class="metric"><strong>+{float(picker_summary['total_actual_point_lift']):.0f}</strong><span>GW1 replay points</span></div><div class="metric"><strong>{len(quality.get('checks') or [])}/0</strong><span>Data checks / failures</span></div></div>
+      <div class="score-grid"><div class="metric"><strong>{backtest_gate["mae_wins_vs_form5"]}/{backtest_gate["slices"]}</strong><span>MAE slices won</span></div><div class="metric"><strong>{backtest_gate["top_k_wins_vs_form5"]}/{backtest_gate["slices"]}</strong><span>Top-k slices won</span></div><div class="metric"><strong>+{float(picker_summary["total_actual_point_lift"]):.0f}</strong><span>GW1 replay points</span></div><div class="metric"><strong>{len(quality.get("checks") or [])}/0</strong><span>Data checks / failures</span></div></div>
       <div class="gates">{gate_cards}</div>
     </section>
 
     <section id="tradeoff" data-reveal><div class="section-head"><div><span class="chapter">07 · The close call</span><h2>Why not the<br>GW1-only leader?</h2></div><p>The selected squad is not the maximum central GW1 projection. It is a declared season-opening robustness choice. That trade-off is visible so you can disagree with the risk policy rather than being handed a mysterious “optimal” team.</p></div>
-      <div class="risk-grid"><div class="bezel"><article class="panel risk-box"><span class="eyebrow">Selected · {_e(decision['candidate_id'])}</span><h3>{_e(decision['formation'])} · {float(decision['expected_points']):.2f} published GW1 xP</h3><p>Five-week robust regret {float(five.get('robust_regret') or 0):.3f}; eight-week robust regret {float(eight.get('robust_regret') or 0):.3f}. It remains rank one in the historically gated five/eight-week synthesis.</p></article></div><article class="risk-box warning"><span class="eyebrow">GW1 structure leader · {_e(structure.get('stress_leader_id','—'))}</span><h3>+{float(structure_holdout.get('mean_delta') or 0):.2f} GW1 points in the independent holdout</h3><p>The 95% interval is {float(structure_holdout.get('delta_95ci_low') or 0):+.2f} to {float(structure_holdout.get('delta_95ci_high') or 0):+.2f}. It is a real alternative, but ranks {int(structure_reconciliation.get('challenger_synthesis_rank') or 0)} in the multiweek synthesis and carries {float(structure_reconciliation.get('challenger_synthesis_regret_delta') or 0):+.3f} more synthesis regret. A newly generated squad without that deep multiweek score would block publication.</p></article></div>
-      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Eight-week challenger · {_e(alternative.get('candidate_id','—'))}</span><h3>{_e(alternative.get('gw1_formation','—'))} · {float(alt_delta.get('mean_delta') or 0):+.2f} weighted points over eight weeks</h3><p>It wins the central long-horizon view and a separate exhaustive baseline role/configuration replay ({float(baseline_residual.get('mean') or 0):+.2f} residual; {float(baseline_component.get('mean') or 0):+.2f} component). It has materially worse five-week high-goal/raw-component regret, however. The declared synthesis retains the lower combined-regret squad and marks the disagreement for live role verification rather than treating it as settled.</p></article></div>
-      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Fresh bench/allocation selector · {_e(bench_targeted.get('candidate_id','—'))}</span><h3>A fresh rank-two result, not a material defeat.</h3><p>The targeted winner beat the active squad by only {float(bench_retention.get('active_minus_winner_regret') or 0):.3f} composite points, inside the {_e(bench_retention.get('practical_equivalence_regret','—'))} practical-equivalence bound. The active squad retained the lower worst-family regret ({float(bench_retention.get('active_family_worst_regret') or 0):.3f} vs {float(bench_retention.get('targeted_winner_family_worst_regret') or 0):.3f}) and won the original selector. The evidence therefore supports a practical tie resolved toward the less brittle squad—not a general rule to spend heavily on the bench.</p></article></div>
-      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Immediate role watch · {int(role_summary.get('role_verification') or 0)} selected players flagged</span><h3>Ollie Watkins is the most important deadline verification.</h3><p>Official status is available and the model gives {100 * float((watkins.get('forecast') or {{}}).get('p_play') or 0):.0f}% play probability, but he appeared in {int(watkins_preseason.get('appearances') or 0)}/{int(watkins_preseason.get('eligible_team_matches') or 0)} eligible preseason lineups and {int(watkins_lineups.get('complete_source_count') or 0)} captured sources currently flag him as bench. Those sources have zero production weight; the scenario audit shows the counterfactual rather than silently overriding the model.</p></article></div>
+      <div class="risk-grid"><div class="bezel"><article class="panel risk-box"><span class="eyebrow">Selected · {_e(decision["candidate_id"])}</span><h3>{_e(decision["formation"])} · {float(decision["expected_points"]):.2f} published GW1 xP</h3><p>Five-week robust regret {float(five.get("robust_regret") or 0):.3f}; eight-week robust regret {float(eight.get("robust_regret") or 0):.3f}. It remains rank one in the historically gated five/eight-week synthesis.</p></article></div><article class="risk-box warning"><span class="eyebrow">GW1 structure leader · {_e(structure.get("stress_leader_id", "—"))}</span><h3>+{float(structure_holdout.get("mean_delta") or 0):.2f} GW1 points in the independent holdout</h3><p>The 95% interval is {float(structure_holdout.get("delta_95ci_low") or 0):+.2f} to {float(structure_holdout.get("delta_95ci_high") or 0):+.2f}. It is a real alternative, but ranks {int(structure_reconciliation.get("challenger_synthesis_rank") or 0)} in the multiweek synthesis and carries {float(structure_reconciliation.get("challenger_synthesis_regret_delta") or 0):+.3f} more synthesis regret. A newly generated squad without that deep multiweek score would block publication.</p></article></div>
+      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Eight-week challenger · {_e(alternative.get("candidate_id", "—"))}</span><h3>{_e(alternative.get("gw1_formation", "—"))} · {float(alt_delta.get("mean_delta") or 0):+.2f} weighted points over eight weeks</h3><p>It wins the central long-horizon view and a separate exhaustive baseline role/configuration replay ({float(baseline_residual.get("mean") or 0):+.2f} residual; {float(baseline_component.get("mean") or 0):+.2f} component). It has materially worse five-week high-goal/raw-component regret, however. The declared synthesis retains the lower combined-regret squad and marks the disagreement for live role verification rather than treating it as settled.</p></article></div>
+      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Fresh bench/allocation selector · {_e(bench_targeted.get("candidate_id", "—"))}</span><h3>{_e(bench_holdout_headline)}</h3><p>{_e(bench_holdout_detail)}</p></article></div>
+      <div class="bezel" style="margin-top:18px"><article class="panel risk-box"><span class="eyebrow">Live participation ensemble · {int(role_summary.get("role_verification") or 0)} selected players flagged</span><h3>All {int(role_summary.get("selected_players") or 0)} are officially selectable; {len(selected_role_watch)} still require role verification.</h3><p>The former Haaland anomaly is a useful audit example: two independent predicted starts moved expected minutes from {float(haaland_forecast.get("incumbent_expected_minutes_before_live_participation") or 0):.1f} to {float(haaland_forecast.get("live_participation_expected_minutes") or 0):.1f}, play probability from {100 * float(haaland_forecast.get("incumbent_p_play_before_live_participation") or 0):.0f}% to {100 * float(haaland_forecast.get("p_play") or 0):.0f}%, and GW1 xP from {float(haaland_forecast.get("incumbent_expected_points_before_live_participation") or 0):.2f} to {float(haaland_forecast.get("expected_points") or 0):.2f}. The policy was applied across the pool—not special-cased to one premium. Every selected role watch must also have a jointly tested exclusion XV; current deltas are {_e(selected_watch_challenges)}. Selected warnings remain visible rather than being described as “cleared.”</p></article></div>
     </section>
 
     <section id="limits" data-reveal><div class="section-head"><div><span class="chapter">08 · Frontier</span><h2>What would make<br>this genuinely SOTA.</h2></div><p>The gaps below are ordered by information value. None should be patched with an unvalidated scraper or an opinion-weight chosen because it changes the team.</p></div><div class="priority-list">{priority_rows}</div></section>
 
-    <section id="receipts" data-reveal><div class="section-head"><div><span class="chapter">09 · Reproducibility</span><h2>The proof is<br>content-addressed.</h2></div><p>The paper is a readable index over machine artifacts. Hashes detect accidental mixing of forecasts, searches, reports and decisions from different generations.</p></div><div class="receipt-grid"><div><table class="receipt-table"><thead><tr><th>Artifact</th><th>SHA-256 prefix</th></tr></thead><tbody>{checksums}</tbody></table></div><div><h3>Primary references</h3><p><a href="https://fantasy.premierleague.com/help/" rel="noreferrer">Official FPL rules and help</a></p><p><a href="https://arxiv.org/abs/2508.09992" rel="noreferrer">OpenFPL: a public position-specific forecast benchmark</a></p><p><a href="https://github.com/daniegr/OpenFPL" rel="noreferrer">OpenFPL released implementation</a></p><p><a href="https://github.com/solioanalytics/open-fpl-solver" rel="noreferrer">Open FPL Solver: multi-period optimisation reference</a></p><p class="footnote">External references establish comparison targets and rule context. They do not contribute expected-points values to this squad.</p></div></div></section>
+    <section id="receipts" data-reveal><div class="section-head"><div><span class="chapter">09 · Reproducibility</span><h2>The proof is<br>content-addressed.</h2></div><p>The paper is a readable index over machine artifacts. The direct forecast, component forecast, forecast manifest, predicted-lineup receipt and consensus are published atomically as one immutable generation. Hash checks fail closed if any search, report or decision is mixed with different evidence.</p></div><div class="receipt-grid"><div><table class="receipt-table"><thead><tr><th>Artifact</th><th>SHA-256 prefix</th></tr></thead><tbody>{checksums}</tbody></table></div><div><h3>Primary references</h3><p><a href="https://fantasy.premierleague.com/help/" rel="noreferrer">Official FPL rules and help</a></p><p><a href="https://arxiv.org/abs/2508.09992" rel="noreferrer">OpenFPL: a public position-specific forecast benchmark</a></p><p><a href="https://github.com/daniegr/OpenFPL" rel="noreferrer">OpenFPL released implementation</a></p><p><a href="https://github.com/solioanalytics/open-fpl-solver" rel="noreferrer">Open FPL Solver: multi-period optimisation reference</a></p><p class="footnote">External references establish comparison targets and rule context. They do not contribute expected-points values to this squad.</p></div></div></section>
   </main>
   <footer class="shell"><span>FPLAgent · local research build · no FPL account writes</span><span>Generated {_e(now)} · {_e(VERSION)}</span></footer>
   <script>

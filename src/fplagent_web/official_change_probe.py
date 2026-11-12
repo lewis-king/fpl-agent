@@ -24,8 +24,6 @@ class OfficialChangeProbeResult:
 
 ELEMENT_FIELDS = (
     "id",
-    "code",
-    "web_name",
     "team",
     "element_type",
     "now_cost",
@@ -79,6 +77,18 @@ def _decision_relevant_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
     fixtures = payloads.get("fixtures.json")
     if not isinstance(bootstrap, Mapping) or not isinstance(fixtures, list):
         raise TypeError("official change probe received invalid FPL payload shapes")
+    config = bootstrap.get("game_config")
+    if isinstance(config, Mapping):
+        config = dict(config)
+        status = config.get("status")
+        if isinstance(status, Mapping):
+            # FPL advances this bookkeeping timestamp even when no price has
+            # changed. Actual prices remain fingerprinted via elements.now_cost.
+            # Preserve every other status/config key, including unknown ones.
+            config["status"] = {
+                key: value for key, value in status.items()
+                if key != "price_change_last_updated"
+            }
     return {
         "bootstrap-static.json": {
             "elements": _project_rows(bootstrap.get("elements"), ELEMENT_FIELDS),
@@ -86,7 +96,7 @@ def _decision_relevant_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
             "teams": bootstrap.get("teams"),
             "chips": bootstrap.get("chips"),
             "element_types": bootstrap.get("element_types"),
-            "game_config": bootstrap.get("game_config"),
+            "game_config": config,
         },
         "fixtures.json": _project_rows(fixtures, FIXTURE_FIELDS),
     }

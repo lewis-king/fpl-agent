@@ -174,8 +174,9 @@ def test_paired_delta_metrics_use_shared_paths() -> None:
     assert metrics["beat_probability"] == 1.0
 
 
+@pytest.mark.parametrize("explicit_inputs", [False, True])
 def test_component_simulator_scores_doubles_per_fixture_and_blanks_as_zero(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, explicit_inputs
 ) -> None:
     fixtures = tmp_path / "fixtures.parquet"
     pq.write_table(
@@ -272,6 +273,23 @@ def test_component_simulator_scores_doubles_per_fixture_and_blanks_as_zero(
         recent_rows=0,
     )
 
+    inputs = None
+    if explicit_inputs:
+        inputs = component_simulator.ComponentSimulationInputs(
+            fixture_rows=pq.read_table(fixtures).to_pylist(),
+            residual_calibration=SimpleNamespace(play_rho=0.0),
+            component_forecasts={}, score_correlation=0.0,
+            provenance={"scope": "test historical prefix"},
+        )
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Explicit historical inputs must not read live artifacts")
+
+        monkeypatch.setattr(component_simulator, "calibrate_residuals", forbidden)
+        monkeypatch.setattr(component_simulator, "_load_component_event_forecasts", forbidden)
+        monkeypatch.setattr(component_simulator.joblib, "load", forbidden)
+        monkeypatch.setattr(component_simulator.pq, "read_table", forbidden)
+
     player_ids, raw, _anchored, played, means, diagnostics = simulate_component_outcomes(
         by_player,
         (1, 2),
@@ -280,6 +298,7 @@ def test_component_simulator_scores_doubles_per_fixture_and_blanks_as_zero(
         simulations=20,
         seed=23,
         component_forecast_path=tmp_path / "absent.parquet",
+        simulation_inputs=inputs,
     )
 
     assert player_ids == [1, 2, 3]
@@ -325,3 +344,36 @@ def test_component_simulation_rejects_fractional_scoring_stress() -> None:
             1,
             component_point_weights={"bonus_points": 0.5},  # type: ignore[dict-item]
         )
+
+
+def test_every_empirical_pool_obeys_the_historical_cutoff(tmp_path, monkeypatch):
+    path = tmp_path / "history.parquet"
+    monkeypatch.setattr(component_simulator, "PLAYER_GAMEWEEKS", path)
+    rows = []
+    for season in ("2023-24", "2025-26"):
+        for i, position in enumerate(("GK", "DEF", "MID", "FWD")):
+            for fixture in (1, 2):
+                rows.append({"season": season, "position": position, "element": i,
+                             "GW": 1, "fixture": fixture, "minutes": 90,
+                             "goals_scored": 1, "assists": 1, "yellow_cards": 0,
+                             "red_cards": 0, "own_goals": 0, "penalties_missed": 0,
+                             "penalties_saved": 0, "saves": 2, "defensive_contribution": 12})
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    first = component_simulator.calibrate_empirical_components(before_season="2024-25")
+    # Poison every later-season outcome, including the future DC prior and
+    # multi-fixture appearance pattern. None may enter a historical prefix.
+    for row in rows:
+        if row["season"] == "2025-26":
+            row.update(minutes=0, goals_scored=50, saves=99, defensive_contribution=100)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    second = component_simulator.calibrate_empirical_components(before_season="2024-25")
+    assert first.rows == second.rows == 8
+    assert first.dc_probability == second.dc_probability == {}
+    assert first.goal_rate90 == second.goal_rate90
+    assert first.save_rate90 == second.save_rate90 == 2
+    for key in first.minute_pools:
+        np.testing.assert_array_equal(first.minute_pools[key], second.minute_pools[key])
+    for key in first.multi_fixture_appearance_probability:
+        np.testing.assert_array_equal(first.multi_fixture_appearance_probability[key],
+                                      second.multi_fixture_appearance_probability[key])
+    assert component_simulator.calibrate_empirical_components().rows == 16

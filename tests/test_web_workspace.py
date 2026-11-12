@@ -7,12 +7,40 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from fastapi.testclient import TestClient
 
 from fplagent_data.http import sha256_file
 from fplagent_llm.runtime_tools import DEFAULT_DECISION
 from fplagent_web.app import create_app
 from fplagent_web.workspace import WorkspaceBuilder
+
+
+@pytest.fixture(autouse=True)
+def stable_workspace_view_clock(tmp_path, monkeypatch):
+    """View tests must not change as live receipts/calendar advance each day.
+
+    This is a presentation fixture, not point-in-time forecast validation. Keep
+    the squad shape but freeze its display timestamp and the GW1 live flag.
+    Explicit test inputs still take precedence; production files are untouched.
+    """
+    snapshot = tmp_path / "view-fixture.json"
+    payload = json.loads(DEFAULT_DECISION.read_text())
+    payload["created_at"] = "2026-08-21T10:00:00+00:00"
+    snapshot.write_text(json.dumps(payload))
+    monkeypatch.setattr(__import__(__name__), "DEFAULT_DECISION", snapshot)
+    original_init = WorkspaceBuilder.__init__
+    original_calendar = WorkspaceBuilder._event_calendar
+
+    def init(builder, **kwargs):
+        kwargs.setdefault("decision_path", snapshot)
+        original_init(builder, **kwargs)
+
+    def calendar(builder):
+        return [dict(row, data_checked=False, finished=False) for row in original_calendar(builder)]
+
+    monkeypatch.setattr(WorkspaceBuilder, "__init__", init)
+    monkeypatch.setattr(WorkspaceBuilder, "_event_calendar", calendar)
 
 
 def _weekly_receipt(path: Path) -> None:
@@ -126,11 +154,7 @@ def _weekly_receipt(path: Path) -> None:
                     "operational_recommendation": "no_chip",
                     "shadow_preference": {"chip": "bench_boost"},
                     "candidates": [
-                        {
-                            "checks": [
-                                {"name": "retention policy promoted", "passed": False}
-                            ]
-                        }
+                        {"checks": [{"name": "retention policy promoted", "passed": False}]}
                     ],
                 },
                 "squad_chip_shadow": {
@@ -154,12 +178,85 @@ def _weekly_receipt(path: Path) -> None:
                         "operational_recommendation": "wait",
                         "route_blocked_by_threshold_stress": True,
                         "next_price_change_at": "2026-08-23T23:00:00+00:00",
-                    }
+                    },
+                    "retained_role_counterfactuals": {
+                        "status": "evaluated",
+                        "watches": [
+                            {
+                                "element": 527,
+                                "player_name": "Richarlison",
+                                "expected_minutes": 23.9,
+                                "p_play": 0.53,
+                                "expected_points": 1.66,
+                                "participation_consensus": "single_source_bench",
+                                "selected_action_sells_player": False,
+                                "best_forced_sale_rank": 3,
+                                "best_forced_sale_transfers": [
+                                    {
+                                        "outgoing_name": "Richarlison",
+                                        "incoming_name": "Igor Jesus",
+                                    }
+                                ],
+                                "forced_sale_delta_to_selected": -0.8,
+                                "forced_sale_beats_selected": False,
+                            }
+                        ],
+                    },
                 },
             }
         ),
         encoding="utf-8",
     )
+
+
+def test_weekly_decision_exposes_the_retained_role_sale_challenge(tmp_path: Path) -> None:
+    weekly_path = tmp_path / "weekly.json"
+    _weekly_receipt(weekly_path)
+    builder = WorkspaceBuilder(
+        active_decision_path=tmp_path / "missing-active.json",
+        profile_path=tmp_path / "profile.json",
+        deadline_status_path=None,
+        weekly_decision_path=weekly_path,
+    )
+
+    weekly = builder._weekly_decision(event=2)
+
+    assert len(weekly.retained_role_watches) == 1
+    watch = weekly.retained_role_watches[0]
+    assert watch.player_name == "Richarlison"
+    assert watch.best_forced_sale_rank == 3
+    assert watch.best_forced_sale_transfers[0].incoming_name == "Igor Jesus"
+    assert watch.forced_sale_delta_to_selected == -0.8
+
+
+def test_weekly_decision_exposes_configuration_validation_and_exact_chip_plan(tmp_path):
+    path = tmp_path / "weekly.json"
+    _weekly_receipt(path)
+    payload = json.loads(path.read_text())
+    parent = next(s for s in payload["action_summaries"] if s["action_id"] == "roll")
+    payload["execution_plan"] = {
+        **parent, "configuration_action_id": "roll-triple_captain", "chip": "triple_captain",
+    }
+    payload["chip_strategy"] = {
+        "operational_recommendation": "triple_captain",
+        "recommended_action_id": "roll-triple_captain",
+        "candidates": [{"action_id": "roll-triple_captain", "parent_action_id": "roll",
+                        "chip": "triple_captain"}],
+    }
+    payload.setdefault("diagnostics", {})["configuration_optimisation"] = {
+        "status": "validated", "message": "Frozen lineup passed independent validation.",
+    }
+    path.write_text(json.dumps(payload))
+    view = WorkspaceBuilder(weekly_decision_path=path)._weekly_decision(event=2)
+    assert view.status == "ready"
+    assert view.selected.action_id == "roll"
+    assert view.selected.configuration_action_id == "roll-triple_captain"
+    assert view.selected.captain_player_id == parent["captain_player_id"]
+    assert view.chip_advice.parent_action_id == "roll"
+    assert "independent validation" in view.explanation
+    payload["execution_plan"]["configuration_action_id"] = "different-chip"
+    path.write_text(json.dumps(payload))
+    assert WorkspaceBuilder(weekly_decision_path=path)._weekly_decision(event=2).status == "blocked"
 
 
 def test_workspace_builder_exposes_grounded_gw1_read_model(tmp_path: Path) -> None:
@@ -182,8 +279,9 @@ def test_workspace_builder_exposes_grounded_gw1_read_model(tmp_path: Path) -> No
     assert workspace.freshness.squad_synced_at is None
     assert workspace.freshness.age_seconds >= 0
     assert workspace.freshness.status in {"fresh", "attention", "stale"}
-    assert workspace.decision.captain.captain_name == "Bruno Fernandes"
-    assert workspace.decision.captain.vice_captain_name == "Tarkowski"
+    starter_names = {player["name"] for player in published["decision"]["squad"]["starters"]}
+    assert workspace.decision.captain.captain_name in starter_names
+    assert workspace.decision.captain.vice_captain_name in starter_names
     assert workspace.decision.captain.receipt_id.startswith("captain-v1-")
     assert workspace.squad.starters[0].fixture is not None
     assert len(workspace.decision.horizon) == 5
@@ -195,7 +293,9 @@ def test_fixture_view_preserves_every_match_in_a_double_gameweek(tmp_path: Path)
     connection = duckdb.connect(str(database))
     try:
         connection.execute("CREATE TABLE fpl_current_teams (id INTEGER, short_name VARCHAR)")
-        connection.execute("INSERT INTO fpl_current_teams VALUES (1, 'ARS'), (2, 'CHE'), (3, 'LIV')")
+        connection.execute(
+            "INSERT INTO fpl_current_teams VALUES (1, 'ARS'), (2, 'CHE'), (3, 'LIV')"
+        )
         connection.execute(
             """
             CREATE TABLE fpl_current_fixtures (
@@ -221,9 +321,30 @@ def test_fixture_view_preserves_every_match_in_a_double_gameweek(tmp_path: Path)
     assert fixtures[1][0].kickoff_time < fixtures[1][1].kickoff_time
 
 
-def test_workspace_exposes_selected_and_rejected_weekly_actions(tmp_path: Path) -> None:
+def test_workspace_exposes_selected_and_rejected_weekly_actions(
+    tmp_path: Path, monkeypatch
+) -> None:
     weekly_path = tmp_path / "weekly.json"
     _weekly_receipt(weekly_path)
+    original_context = WorkspaceBuilder._participation_context
+    requested_players = []
+
+    def context(builder, path, forecasts, **kwargs):
+        requested_players.append(set(forecasts))
+        summary, rows = original_context(builder, path, forecasts, **kwargs)
+        if 1 in forecasts:
+            rows[1] = {
+                "element": 1,
+                "attention": [],
+                "official": {"chance": 100, "news": ""},
+                "predicted_lineups": {
+                    "consensus": "single_source_start",
+                    "predicted_start_sources": ["rotowire"],
+                },
+            }
+        return summary, rows
+
+    monkeypatch.setattr(WorkspaceBuilder, "_participation_context", context)
 
     workspace = WorkspaceBuilder(
         active_decision_path=tmp_path / "missing-active.json",
@@ -244,9 +365,13 @@ def test_workspace_exposes_selected_and_rejected_weekly_actions(tmp_path: Path) 
     assert workspace.decision.recommended_squad.source == "weekly_decision"
     assert workspace.decision.recommended_squad.event == 2
     assert workspace.decision.recommended_squad.expected_points == 60.2
-    assert any(
-        player.player_id == 1 for player in workspace.decision.recommended_squad.bench
+    assert any(player.player_id == 1 for player in workspace.decision.recommended_squad.bench)
+    incoming = next(
+        player for player in workspace.decision.recommended_squad.bench if player.player_id == 1
     )
+    assert incoming.participation.predicted_start_sources == ["rotowire"]
+    assert 1 not in requested_players[0]
+    assert any(1 in request for request in requested_players[1:])
     assert workspace.decision.captain.captain_name == "Bruno Fernandes"
     assert workspace.decision.captain.evidence_status == "weekly_decision_receipt"
     assert weekly.chip_advice is not None
@@ -279,6 +404,39 @@ def test_workspace_blocks_an_invalid_weekly_receipt(tmp_path: Path) -> None:
     assert workspace.decision.weekly.status == "blocked"
     assert workspace.decision.weekly.selected is None
     assert "cannot be trusted" in workspace.decision.weekly.explanation
+
+
+def test_workspace_hides_weekly_action_when_deadline_evidence_is_blocked(
+    tmp_path: Path,
+) -> None:
+    weekly_path = tmp_path / "weekly.json"
+    _weekly_receipt(weekly_path)
+    builder = WorkspaceBuilder(
+        active_decision_path=tmp_path / "missing-active.json",
+        profile_path=tmp_path / "profile.json",
+        deadline_status_path=tmp_path / "deadline-status.json",
+        weekly_decision_path=weekly_path,
+    )
+    forecast_path, component_path = builder._analysis_forecast_paths(2)
+    (tmp_path / "deadline-status.json").write_text(
+        json.dumps(
+            {
+                "publishable": False,
+                "issues": ["manager snapshot predates the previous Gameweek deadline"],
+                "direct_forecast": {"sha256": sha256_file(forecast_path)},
+                "component_forecast": {"sha256": sha256_file(component_path)},
+                "decision": {"sha256": sha256_file(weekly_path)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    workspace = builder.build(now=datetime(2026, 8, 22, 12, tzinfo=UTC))
+
+    assert workspace.decision.weekly.status == "blocked"
+    assert workspace.decision.weekly.selected is None
+    assert "previous Gameweek deadline" in workspace.decision.weekly.explanation
+    assert workspace.decision.recommended_squad.source != "weekly_decision"
 
 
 def test_workspace_api_is_available(tmp_path: Path) -> None:
@@ -378,9 +536,7 @@ def test_live_gameweek_manual_refresh_targets_next_decision_event() -> None:
     )
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/workspace/refresh", json={"reason": "manual"}
-        )
+        response = client.post("/api/v1/workspace/refresh", json={"reason": "manual"})
 
     assert response.status_code == 202
     assert refresh.call == {
@@ -396,6 +552,89 @@ def test_forecast_freshness_is_independent_from_final_deadline_confirmation() ->
     assert WorkspaceBuilder._freshness_status(60) == "fresh"
     assert WorkspaceBuilder._freshness_status(21_601) == "attention"
     assert WorkspaceBuilder._freshness_status(86_401) == "stale"
+
+
+def test_deadline_handoff_surfaces_chip_and_minutes_switches() -> None:
+    view = WorkspaceBuilder._deadline_handoff_view(
+        {
+            "verdict": "DEADLINE_READY",
+            "publishable": True,
+            "chip": {
+                "label": "NO_CHIP",
+                "strongest_immediate_signal": {
+                    "chip": "bench_boost",
+                    "cross_family_floor": 12.90396,
+                },
+            },
+            "contingencies": {"routes": 6, "precomputed_fallbacks": 4},
+            "participation_break_even": {
+                "players": [
+                    {
+                        "element": 55,
+                        "name": "Watkins",
+                        "boundary": {
+                            "classification": "challenger_boundary_bracketed",
+                            "highest_supported_challenger_minutes": 30.0,
+                            "next_tested_incumbent_minutes": 45.0,
+                            "highest_supported_challenger_squad_id": "R-fallback",
+                        },
+                    },
+                    {
+                        "element": 323,
+                        "name": "McAteer",
+                        "boundary": {
+                            "classification": "incumbent_stable_on_tested_minutes",
+                            "highest_supported_challenger_minutes": None,
+                            "next_tested_incumbent_minutes": 0.0,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+
+    assert view is not None
+    assert view.status == "ready"
+    assert view.chip_label == "NO_CHIP"
+    assert "+12.90" in view.chip_detail
+    assert view.precomputed_fallbacks == 4
+    assert view.boundaries[0].trigger_expected_minutes == 30.0
+    assert view.boundaries[0].fallback_candidate_id == "R-fallback"
+    assert view.boundaries[1].stable_on_tested_range is True
+
+
+def test_workspace_marks_a_superseded_deadline_pack_stale(tmp_path: Path) -> None:
+    decision = tmp_path / "decision.json"
+    pipeline = tmp_path / "pipeline.json"
+    pack = tmp_path / "pack.json"
+    decision.write_text('{"decision":{"candidate_id":"new"}}\n', encoding="utf-8")
+    pipeline.write_text('{"status":"published"}\n', encoding="utf-8")
+    pack.write_text(
+        json.dumps(
+            {
+                "verdict": "DEADLINE_READY",
+                "publishable": True,
+                "lineage": {
+                    "decision_sha256": "old",
+                    "pipeline_sha256": sha256_file(pipeline),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    builder = WorkspaceBuilder(
+        decision_path=decision,
+        deadline_pack_path=pack,
+        deadline_pipeline_path=pipeline,
+    )
+
+    stored = builder._deadline_pack()
+    view = builder._deadline_handoff_view(stored)
+
+    assert stored["verdict"] == "STALE"
+    assert stored["publishable"] is False
+    assert view is not None
+    assert view.status == "blocked"
 
 
 def test_phase_resolver_advances_from_live_event_to_next_decision_deadline() -> None:
@@ -416,14 +655,10 @@ def test_phase_resolver_advances_from_live_event_to_next_decision_deadline() -> 
         },
     ]
 
-    live = WorkspaceBuilder._phase(
-        datetime(2026, 8, 22, 12, tzinfo=UTC), events
-    )
+    live = WorkspaceBuilder._phase(datetime(2026, 8, 22, 12, tzinfo=UTC), events)
     events[0]["finished"] = True
     events[0]["data_checked"] = True
-    next_desk = WorkspaceBuilder._phase(
-        datetime(2026, 8, 24, 12, tzinfo=UTC), events
-    )
+    next_desk = WorkspaceBuilder._phase(datetime(2026, 8, 24, 12, tzinfo=UTC), events)
 
     assert live.phase == "live_gameweek"
     assert live.event == 1
@@ -462,6 +697,43 @@ def test_failed_deadline_evidence_gate_forces_visible_refresh_state(
     assert "forecast source snapshot" in workspace.freshness.message
 
 
+def test_deadline_receipt_cannot_validate_a_mixed_published_generation(
+    tmp_path: Path,
+) -> None:
+    forecast = tmp_path / "forecast.parquet"
+    component = tmp_path / "component.parquet"
+    decision = tmp_path / "decision.json"
+    status = tmp_path / "deadline.json"
+    forecast.write_bytes(b"new-forecast")
+    component.write_bytes(b"old-component")
+    decision.write_text("{}", encoding="utf-8")
+    status.write_text(
+        json.dumps(
+            {
+                "publishable": True,
+                "issues": [],
+                "direct_forecast": {"sha256": sha256_file(forecast)},
+                "component_forecast": {"sha256": "not-the-component"},
+                "decision": {"sha256": sha256_file(decision)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    builder = WorkspaceBuilder(
+        decision_path=decision,
+        forecast_path=forecast,
+        component_path=component,
+        deadline_status_path=status,
+        active_decision_path=None,
+    )
+
+    result = builder._deadline_evidence_status()
+
+    assert result is not None
+    assert result["publishable"] is False
+    assert any("component forecast" in issue for issue in result["issues"])
+
+
 def test_workspace_joins_aligned_participation_evidence_and_minute_bands(
     tmp_path: Path,
 ) -> None:
@@ -496,9 +768,7 @@ def test_workspace_joins_aligned_participation_evidence_and_minute_bands(
                 "checked_at": "2026-08-21T10:00:00+00:00",
                 "lineage": {
                     "decision_sha256": sha256_file(DEFAULT_DECISION),
-                    "forecast_sha256": sha256_file(
-                        Path("data/model/forecasts/2026-27-preseason.parquet")
-                    ),
+                    "forecast_sha256": sha256_file(WorkspaceBuilder().forecast_path),
                 },
                 "summary": {
                     "selected_players": 15,
@@ -556,9 +826,7 @@ def test_workspace_joins_aligned_participation_evidence_and_minute_bands(
     ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
 
     player = next(
-        row
-        for row in workspace.squad.starters + workspace.squad.bench
-        if row.player_id == flagged
+        row for row in workspace.squad.starters + workspace.squad.bench if row.player_id == flagged
     )
     assert workspace.participation.status == "attention"
     assert workspace.participation.teams_with_confirmed_lineups == 19
@@ -585,9 +853,7 @@ def test_workspace_joins_aligned_participation_evidence_and_minute_bands(
         participation_consensus_path=consensus_path,
     ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
     connected_player = next(
-        row
-        for row in connected.squad.starters + connected.squad.bench
-        if row.player_id == flagged
+        row for row in connected.squad.starters + connected.squad.bench if row.player_id == flagged
     )
     assert connected_player.participation.evidence_status == "verify_role"
     assert connected.participation.baseline_stable is None
@@ -645,3 +911,113 @@ def test_workspace_exposes_only_a_hash_aligned_successful_app_open_receipt(
         refresh_state_path=refresh,
     ).build(now=datetime(2026, 8, 21, 12, tzinfo=UTC))
     assert all(item.label != "App-open decision pipeline" for item in rebuilt.decision.evidence)
+
+
+def test_joint_chip_strategy_is_exposed_with_expiry_and_calendar() -> None:
+    advice = WorkspaceBuilder._chip_advice_view(
+        {
+            "operational_recommendation": "no_chip",
+            "headline": "Retain all chips this Gameweek",
+            "reason": "GW4 has the stronger collision-aware Bench Boost window.",
+            "half_expiry_event": 19,
+            "events_until_expiry": 16,
+            "candidates": [
+                {
+                    "chip": "bench_boost",
+                    "checks": [
+                        {
+                            "name": "positive joint retained-value edge",
+                            "passed": False,
+                        }
+                    ],
+                }
+            ],
+            "visible_calendar": [
+                {
+                    "event": 4,
+                    "chip": "bench_boost",
+                    "projected_uplift": 12.4,
+                }
+            ],
+        },
+        {},
+        {},
+    )
+
+    assert advice is not None
+    assert advice.headline == "Retain all chips this Gameweek"
+    assert advice.half_expiry_event == 19
+    assert advice.next_opportunities[0].event == 4
+    assert advice.next_opportunities[0].projected_uplift == 12.4
+    assert advice.blockers == ["positive joint retained-value edge"]
+    assert advice.candidate_statuses[0].status == "needs_review"
+
+
+def test_chip_status_distinguishes_retention_research_and_missing_branch():
+    advice = WorkspaceBuilder._chip_advice_view(
+        {
+            "operational_recommendation": "no_chip",
+            "available_chips": ["bench_boost", "triple_captain", "wildcard", "free_hit"],
+            "calibration": {"authority_by_chip": {"bench_boost": True, "wildcard": False}},
+            "candidates": [
+                {"chip": "bench_boost", "joint_net_value": -2, "checks": []},
+                {
+                    "chip": "wildcard",
+                    "joint_net_value": 5,
+                    "checks": [{"name": "historical outcome authority", "passed": False}],
+                },
+            ],
+        },
+        {},
+        {},
+    )
+    statuses = {row.chip: row for row in advice.candidate_statuses}
+    assert statuses["bench_boost"].status == "retain"
+    assert statuses["wildcard"].status == "research_only"
+    assert statuses["wildcard"].joint_net_value == 5
+    assert statuses["free_hit"].status == "not_evaluated"
+    assert advice.needs_review
+    assert "unresolved" in advice.headline
+    assert "does NOT establish" in advice.detail
+
+
+def test_weekly_confidence_keeps_its_own_mean_and_scenario(tmp_path):
+    path = tmp_path / "weekly.json"
+    _weekly_receipt(path)
+    payload = json.loads(path.read_text())
+    payload["method"]["scenario_weights"] = {"residual": 0.6, "stress": 0.4}
+    payload["scenario_metrics_by_action"]["stress"] = {
+        key: {**value, "mean_delta_to_roll": -0.2}
+        for key, value in payload["scenario_metrics_by_action"]["residual"].items()
+    }
+    payload["promotion_gate"]["status"] = "promoted_after_rejections"
+    path.write_text(json.dumps(payload))
+    weekly = WorkspaceBuilder(weekly_decision_path=path)._weekly_decision(event=2)
+    assert abs(weekly.expected_gain_vs_roll - 0.64) < 1e-9
+    assert weekly.confidence_mean == 1.2
+    assert weekly.confidence_scenario == "residual"
+    assert "Higher-ranked moves failed" in weekly.explanation
+
+
+def test_fallback_lineup_evidence_does_not_invent_a_second_source(tmp_path):
+    consensus = tmp_path / "one-source.parquet"
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "element": 1,
+                    "consensus": "single_source_start",
+                    "predicted_start_sources": ["rotowire"],
+                    "predicted_not_start_sources": [],
+                    "complete_source_count": 1,
+                }
+            ]
+        ),
+        consensus,
+    )
+    builder = WorkspaceBuilder(availability_watch_path=None)
+    summary, _ = builder._participation_context(
+        builder.decision_path, {1: {}}, consensus_path=consensus
+    )
+    assert summary.predicted_lineup_eligible_sources == 1
+    assert summary.predicted_lineup_captured_sources == 1

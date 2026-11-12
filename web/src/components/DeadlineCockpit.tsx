@@ -8,11 +8,13 @@ import {
 } from '@phosphor-icons/react'
 
 import { formatObservedAt } from '../lib'
-import type { DeadlineSchedule, Workspace } from '../types'
+import { lastValidatedAt } from '../refreshStatus'
+import type { DeadlineSchedule, Workspace, WorkspaceRefresh } from '../types'
 
 interface DeadlineCockpitProps {
   workspace: Workspace
   schedule: DeadlineSchedule | null
+  refreshRun: WorkspaceRefresh | null
   refreshing: boolean
   onViewRecommendation: () => void
   onRefresh: () => void
@@ -21,25 +23,44 @@ interface DeadlineCockpitProps {
 export function DeadlineCockpit({
   workspace,
   schedule,
+  refreshRun,
   refreshing,
   onViewRecommendation,
   onRefresh,
 }: DeadlineCockpitProps) {
   const comparison = workspace.decision.comparison
+  const handoff = workspace.deadline_handoff
   const delta = comparison.expected_points_delta
   const incoming = comparison.incoming.map((player) => player.name).join(', ')
   const outgoing = comparison.outgoing.map((player) => player.name).join(', ')
   const ready = comparison.status !== 'awaiting_refresh'
     && workspace.freshness.status !== 'stale'
-  const nextCheck = schedule?.next_window_at
+    && (!handoff || handoff.status === 'ready')
+  const event = workspace.phase.decision_event ?? workspace.phase.event
+  const validatedAt = lastValidatedAt(refreshRun, schedule, event)
+  const attemptedAt = refreshRun?.event === event ? refreshRun.started_at : schedule?.last_attempt_at
+  const waitingForInput = refreshRun?.status === 'not_ready' || refreshRun?.status === 'blocked'
+  const nextCheck = waitingForInput
+    ? refreshRun?.status === 'not_ready' ? 'Waiting for input' : 'Paused until resolved'
+    : refreshing || schedule?.status === 'running'
+      ? 'Running now'
+      : schedule?.next_window_at
     ? formatObservedAt(schedule.next_window_at)
-    : 'after the next evidence check'
+    : 'Checking schedule…'
   const cadenceDetail = refreshing || schedule?.status === 'running'
-    ? 'A full validation is running now'
-    : `Next automatic validation ${nextCheck}`
+    ? 'Runs on the server — you can leave this page'
+    : waitingForInput ? 'Not running. Resolve the notice above, then retry.'
+      : 'Earlier checks also run when material evidence changes'
   const recommendationLabel = comparison.authoritative_squad === 'weekly'
+    || workspace.decision.recommended_squad.source === 'weekly_decision'
     ? 'View recommended moves'
-    : 'View recommended squad'
+    : comparison.authoritative_squad === 'model'
+      ? 'View recommended squad'
+      : 'View best lineup'
+  const switchBoundaries = handoff?.boundaries
+    .filter((boundary) => boundary.trigger_expected_minutes !== null)
+    .map((boundary) => `${boundary.player_name} ≤${boundary.trigger_expected_minutes?.toFixed(0)}m`)
+    .join(' · ')
 
   return (
     <section className={`deadline-cockpit is-${comparison.status}`} aria-labelledby="deadline-decision-title">
@@ -82,12 +103,35 @@ export function DeadlineCockpit({
           <ArrowRightIcon size={15} aria-hidden="true" />
           <p><span>Out</span><strong>{outgoing}</strong></p>
         </div>
-      ) : (
+      ) : comparison.status !== 'awaiting_refresh' ? (
         <div className="deadline-aligned">
           <CheckCircleIcon size={17} weight="fill" aria-hidden="true" />
           <span>All 15 player selections are aligned.</span>
         </div>
-      )}
+      ) : null}
+
+      {handoff ? (
+        <div className="deadline-operating-plan" aria-label="Deadline operating plan">
+          <div>
+            <span>Chip instruction</span>
+            <strong>{handoff.chip_label.replace('_', ' ')}</strong>
+            <small>{handoff.chip_detail}</small>
+          </div>
+          <div>
+            <span>Evidence switches</span>
+            <strong>{switchBoundaries || 'Central squad holds'}</strong>
+            <small>
+              {handoff.precomputed_fallbacks} legal fallbacks from {handoff.route_count} tested routes
+            </small>
+          </div>
+        </div>
+      ) : null}
+
+      <dl className="refresh-timeline" aria-label={`GW${event} refresh history`}>
+        <div><dt>Last attempt</dt><dd>{attemptedAt ? formatObservedAt(attemptedAt) : 'Not yet run'}</dd></div>
+        <div><dt>GW{event} last validated</dt><dd>{validatedAt ? formatObservedAt(validatedAt) : 'No validated decision yet'}</dd></div>
+        <div><dt>Next automatic check</dt><dd>{nextCheck}</dd></div>
+      </dl>
 
       <div className="deadline-actions">
         <div className="cadence-copy">
@@ -99,9 +143,9 @@ export function DeadlineCockpit({
         </div>
         <button className="secondary-button" type="button" onClick={onRefresh} disabled={refreshing}>
           <ArrowClockwiseIcon className={refreshing ? 'is-spinning' : ''} size={16} aria-hidden="true" />
-          {refreshing ? 'Refreshing…' : 'Check evidence now'}
+          {refreshing ? 'Refreshing…' : waitingForInput ? 'Sync FPL & retry' : 'Refresh decisions'}
         </button>
-        <button className="primary-button" type="button" onClick={onViewRecommendation}>
+        <button className="primary-button" type="button" onClick={onViewRecommendation} disabled={!ready}>
           {recommendationLabel}
           <span className="button-island"><ArrowRightIcon size={14} aria-hidden="true" /></span>
         </button>
