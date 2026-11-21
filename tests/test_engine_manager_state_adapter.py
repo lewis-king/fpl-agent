@@ -202,3 +202,33 @@ def test_player_catalog_is_event_scoped() -> None:
     ]
 
     assert set(player_catalog_from_rows(rows, event=2)) == set(range(1, 16))
+
+
+def test_active_wildcard_is_planned_as_played_this_week() -> None:
+    snapshot = _snapshot()
+    snapshot["chips"] = [
+        {"name": "wildcard", "start_event": 2, "status_for_entry": "active",
+         "played_by_entry": [2]},
+        {"name": "freehit", "start_event": 2, "status_for_entry": "unavailable",
+         "played_by_entry": []},
+        {"name": "bboost", "start_event": 1, "status_for_entry": "unavailable",
+         "played_by_entry": []},
+        {"name": "3xc", "start_event": 1, "status_for_entry": "played",
+         "played_by_entry": [1]},
+    ]
+    state = manager_state_from_snapshot(
+        snapshot, event=2, player_catalog=_catalog(), rules=_rules()
+    )
+    status = {slot.chip: slot.status for slot in state.chips if slot.half == 1}
+    assert state.active_chip == ChipType.WILDCARD
+    assert status[ChipType.WILDCARD] == ChipStatus.AVAILABLE
+    assert status[ChipType.FREE_HIT] == ChipStatus.AVAILABLE
+    assert status[ChipType.BENCH_BOOST] == ChipStatus.AVAILABLE
+    assert status[ChipType.TRIPLE_CAPTAIN] == ChipStatus.PLAYED
+
+
+def test_other_active_chips_fail_closed() -> None:
+    snapshot = _snapshot()
+    snapshot["chips"][2]["status_for_entry"] = "active"
+    with pytest.raises(ManagerStateInputError, match="only an active Wildcard"):
+        manager_state_from_snapshot(snapshot, event=2, player_catalog=_catalog(), rules=_rules())

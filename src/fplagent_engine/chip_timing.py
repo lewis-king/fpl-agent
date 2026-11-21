@@ -278,8 +278,11 @@ def run_live_wildcard_timing(
     if any(t["status"] == "unresolved" for t in trace):
         raise RuntimeError(f"Root search incomplete: {trace}")
     published = _published_action(decision, state, roots, rules)
+    wildcard_active = state.active_chip == ChipType.WILDCARD
     if wildcard_held:
-        named = {
+        # An active Wildcard cannot be cancelled: waiting is not an option, so
+        # only the published plan is kept as the reference.
+        named = {} if wildcard_active else {
             ("roll" if not r.action.transfers else f"ordinary_{len(r.action.transfers)}"): r
             for r in roots
         }
@@ -310,6 +313,8 @@ def run_live_wildcard_timing(
             dates = [None]
         elif root.action.chip == ChipType.WILDCARD:
             dates = [event]
+        elif wildcard_active:
+            dates = [events[1]]
         else:
             dates = list(events[1:])
         for date in dates:
@@ -359,6 +364,13 @@ def run_live_wildcard_timing(
         group_rows = result["groups"]
         limitations = list(result["limitations"])
         verdict = timing_verdict(group_rows, event=event, next_gap_days=next_gap)
+        if wildcard_active:
+            verdict = {
+                **verdict, "play_now": True, "best_wildcard_event": event,
+                "already_active": True,
+                "rule": "The Wildcard is already active for this Gameweek and cannot be "
+                        "cancelled. The simulation only chooses the squad.",
+            }
         chosen_group = verdict["best_now_group"] if verdict["play_now"] else (
             verdict["best_later_group"] or verdict["best_now_group"]
         )

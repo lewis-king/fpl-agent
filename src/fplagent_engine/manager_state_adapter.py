@@ -54,6 +54,22 @@ def _chip_status(value: Any) -> ChipStatus:
     return mapping[normalized]
 
 
+def active_chip_from_snapshot(raw_chips: Any) -> ChipType | None:
+    """The chip already activated for the open Gameweek, if any."""
+    active = [
+        CHIP_NAMES.get(str(raw.get("name") or raw.get("chip") or "").casefold())
+        for raw in raw_chips if isinstance(raw, Mapping)
+        and str(raw.get("status_for_entry") or raw.get("status") or "").casefold() == "active"
+    ] if isinstance(raw_chips, list) else []
+    if not active:
+        return None
+    if active != [ChipType.WILDCARD]:
+        raise ManagerStateInputError(
+            "only an active Wildcard is supported; cancel the active chip or wait for the deadline"
+        )
+    return ChipType.WILDCARD
+
+
 def _chip_inventory(raw_chips: Any, event: int) -> tuple[ChipSlot, ...]:
     if not isinstance(raw_chips, list):
         raise ManagerStateInputError("manager snapshot chips must be a list")
@@ -67,6 +83,7 @@ def _chip_inventory(raw_chips: Any, event: int) -> tuple[ChipSlot, ...]:
             for slot in slots
         )
 
+    active = active_chip_from_snapshot(raw_chips)
     observed: dict[ChipType, tuple[ChipStatus, int | None]] = {}
     for raw in raw_chips:
         if not isinstance(raw, Mapping):
@@ -79,7 +96,14 @@ def _chip_inventory(raw_chips: Any, event: int) -> tuple[ChipSlot, ...]:
         raw_half = 2 if isinstance(start_event, int) and start_event >= 20 else half
         if raw_half != half:
             continue
-        status = _chip_status(raw.get("status_for_entry") or raw.get("status"))
+        raw_status = raw.get("status_for_entry") or raw.get("status")
+        if active and (chip == active or not raw.get("played_by_entry")):
+            # The active Wildcard is spent at this deadline, so it is planned as
+            # played now. FPL marks the unplayed chips unavailable only for this
+            # week (one chip per Gameweek); they are held for later weeks.
+            status = ChipStatus.AVAILABLE
+        else:
+            status = _chip_status(raw_status)
         played_event = raw.get("played_event")
         observed[chip] = (
             status,
@@ -204,6 +228,7 @@ def manager_state_from_snapshot(
         previous_chip=previous_chip,
         previous_chip_event=previous_chip_event,
         committed_points_cost=committed_points_cost,
+        active_chip=active_chip_from_snapshot(snapshot.get("chips")),
         club_overflow_allowed=any(
             sum(h.team_id == candidate.team_id for h in holdings) > rules.club_limit
             for candidate in holdings

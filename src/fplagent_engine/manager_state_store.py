@@ -172,6 +172,7 @@ def _state_payload(state: ManagerState) -> dict[str, Any]:
         "previous_chip_event": state.previous_chip_event,
         "committed_points_cost": state.committed_points_cost,
         **({"club_overflow_allowed": True} if state.club_overflow_allowed else {}),
+        **({"active_chip": state.active_chip.value} if state.active_chip else {}),
     }
 
 
@@ -224,6 +225,9 @@ def _state_from_payload(value: Mapping[str, Any]) -> ManagerState:
             ),
             committed_points_cost=int(value.get("committed_points_cost", 0)),
             club_overflow_allowed=value.get("club_overflow_allowed", False),
+            active_chip=(
+                ChipType(str(value["active_chip"])) if value.get("active_chip") else None
+            ),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ManagerStateContractError("manager-state payload has an invalid schema") from exc

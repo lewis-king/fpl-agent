@@ -99,6 +99,9 @@ class ManagerState:
     # Only authenticated held squads / observed real-club transitions can set
     # this. Any actual fantasy transfer must restore the ordinary club limit.
     club_overflow_allowed: bool = False
+    # A Wildcard already activated for this Gameweek. It cannot be cancelled,
+    # so every plan for the week plays it; its slot stays AVAILABLE until then.
+    active_chip: ChipType | None = None
 
 
 @dataclass(frozen=True)

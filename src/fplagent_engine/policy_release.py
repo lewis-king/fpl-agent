@@ -173,7 +173,7 @@ def attach_policy_release(result: dict) -> None:
     chip = strategy.get("operational_recommendation")
     if chip in {"wildcard", "free_hit"}:
         timing = (strategy.get("squad_timing") or {}).get("verdict") or {}
-        authorised = bool(strategy.get("expiry_forced")) or (
+        authorised = bool(strategy.get("expiry_forced")) or strategy.get("active_chip") == chip or (
             timing.get("play_now") is True if chip == "wildcard"
             else (strategy.get("policy") or {}).get("free_hit_timing")
             == "joint calendar and uncertainty gates"

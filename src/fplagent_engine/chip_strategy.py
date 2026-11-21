@@ -1034,6 +1034,12 @@ def synthesize_joint_chip_strategy(
                 schedule_check,
                 authority_check,
             ]
+        if state.active_chip is not None and chip == state.active_chip.value:
+            checks = [{
+                "name": "chip already active for this Gameweek",
+                "passed": True,
+                "evidence": "activated in FPL; it cannot be cancelled",
+            }]
         candidates.append(
             {
                 **row,
@@ -1051,6 +1057,12 @@ def synthesize_joint_chip_strategy(
         (row for row in candidates if row["operational_gate_passed"]),
         None,
     )
+    if state.active_chip is not None:
+        promoted = next(
+            (row for row in candidates if row["chip"] == state.active_chip.value), None
+        )
+        if promoted is None:
+            raise RuntimeError(f"No plan was built for the active {state.active_chip.value}")
     expiry_forced = False
     if promoted is None and expiry_binding and candidates:
         # Use-it-or-lose-it: the best-valued chip now beats a guaranteed zero.
@@ -1107,6 +1119,8 @@ def synthesize_joint_chip_strategy(
                 f"expiry: play {recommendation.replace('_', ' ').title()} now so no chip is lost."
             )
             if expiry_forced
+            else f"{recommendation.replace('_', ' ').title()} is already active for this Gameweek."
+            if state.active_chip is not None
             else f"{recommendation.replace('_', ' ').title()} clears the joint calendar, scenario and timing gates."
             if promoted
             else (
@@ -1115,6 +1129,7 @@ def synthesize_joint_chip_strategy(
             )
         ),
         "expiry_forced": expiry_forced,
+        "active_chip": state.active_chip.value if state.active_chip else None,
         "expiry_binding": expiry_binding,
         "weeks_left_in_half": weeks_left,
         "deadline_plan": deadline_plan,
